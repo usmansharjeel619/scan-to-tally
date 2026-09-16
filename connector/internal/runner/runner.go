@@ -278,7 +278,7 @@ func buildVoucher(pj protocol.PostVoucherJob) (tally.Voucher, error) {
 				BatchName:  box.BoxSerial,
 				GodownName: pj.Godown,
 				Qty:        tally.Qty{Value: box.Qty, Unit: line.Unit},
-				MfgDate:    box.MfgDate,
+				MfgDate:    box.MfgDate.AsTime(),
 			})
 		}
 		entries = append(entries, tally.InventoryEntry{

@@ -9,3 +9,5 @@ local.properties
 .env
 .env.local
 /connector/bin/
+/relay/data/
+/relay/dist/

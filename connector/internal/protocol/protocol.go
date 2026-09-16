@@ -72,8 +72,9 @@ type Box struct {
 	// outgoing scan reproduces the receipt's batch name byte for byte.
 	BoxSerial string `json:"boxSerial"`
 	Qty       float64 `json:"qty"`
-	// MfgDate derived from the serial's date prefix, when it parsed.
-	MfgDate *time.Time `json:"mfgDate,omitempty"`
+	// MfgDate derived from the serial's date prefix, when it parsed. A
+	// calendar date, never an instant -- see the Date type.
+	MfgDate *Date `json:"mfgDate,omitempty"`
 	// RawPayload is the untouched scanner output, carried all the way through
 	// and stored forever. It is the only evidence available when a scan is
 	// later disputed.

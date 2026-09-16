@@ -1,0 +1,261 @@
+import { test, beforeEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { openDb, applySync, nowIso, type DB } from '../src/db.ts';
+import { decideIncomingScan, decideOutgoingScan, validateOutgoingQty } from '../src/validation.ts';
+
+const ITEM = '4098-9792 SSD SENSOR BASE';
+const PID = '4098-9792';
+const BOX_A = '1124241658336425'; // seeded at 13 -- label says 18
+const BOX_B = '1124241658336426'; // seeded at 18
+const SESSION = 'sess-test-1';
+const SO = 'SO-2026-0041';
+const GODOWN = 'Main Store';
+
+/** The exact payload the photographed carton produces. */
+function label(pid: string, serial: string, qty: number): string {
+  return `${pid}|${serial}|${qty}|`;
+}
+
+let db: DB;
+
+beforeEach(() => {
+  db = openDb(':memory:');
+
+  applySync(db, {
+    items: [
+      { name: ITEM, partNo: '0677197CN', baseUnits: 'Nos', hasBatches: true },
+      { name: '4090-9001 ADDRESSABLE HEAT DETECTOR', partNo: '0655011AB', baseUnits: 'Nos', hasBatches: true },
+      { name: 'MISC-CABLE-2C', baseUnits: 'Mtr', hasBatches: false },
+    ],
+    godowns: [GODOWN],
+    balances: [
+      { stockItemName: ITEM, batchName: BOX_A, godownName: GODOWN, closingQty: 13, unit: 'Nos' },
+      { stockItemName: ITEM, batchName: BOX_B, godownName: GODOWN, closingQty: 18, unit: 'Nos' },
+      { stockItemName: ITEM, batchName: '1124241658336427', godownName: GODOWN, closingQty: 0, unit: 'Nos' },
+    ],
+    orders: [{
+      voucherNumber: SO, partyName: 'Example Project FZC', date: '2026-09-10',
+      lines: [{ stockItemName: ITEM, orderedQty: 30, deliveredQty: 0, unit: 'Nos' }],
+    }],
+  });
+
+  db.prepare(
+    `INSERT INTO sessions (id, kind, company, godown, sales_order, state, created_at)
+     VALUES (?,?,?,?,?,?,?)`,
+  ).run(SESSION, 'INCOMING', 'ACME', GODOWN, SO, 'DRAFT', nowIso());
+});
+
+/** Mirrors what the relay does after accepting a scan. */
+function addLine(sessionId: string, pid: string, serial: string, qty: number, item = ITEM): void {
+  db.prepare(
+    `INSERT INTO session_lines
+       (session_id, pid, box_serial, qty, unit, stock_item_name, raw_payload, scanned_at)
+     VALUES (?,?,?,?,?,?,?,?)`,
+  ).run(sessionId, pid, serial, qty, 'Nos', item, label(pid, serial, qty), nowIso());
+}
+
+// --- incoming: the duplicate rule -------------------------------------------
+
+test('same part number across different boxes is the normal case', () => {
+  const a = decideIncomingScan(db, { sessionId: SESSION, raw: label(PID, BOX_A, 18), symbology: 'CODE128' });
+  assert.equal(a.outcome, 'ACCEPT');
+  assert.equal(a.beep, 'ACCEPT');
+  assert.equal(a.box?.stockItemName, ITEM);
+  addLine(SESSION, PID, BOX_A, 18);
+
+  const b = decideIncomingScan(db, { sessionId: SESSION, raw: label(PID, BOX_B, 18), symbology: 'CODE128' });
+  assert.equal(b.outcome, 'ACCEPT', 'a different box of the same part must be accepted');
+  assert.equal(b.beep, 'ACCEPT');
+});
+
+test('same part number and same box is a duplicate, hard blocked', () => {
+  addLine(SESSION, PID, BOX_A, 18);
+
+  const dup = decideIncomingScan(db, { sessionId: SESSION, raw: label(PID, BOX_A, 18), symbology: 'CODE128' });
+  assert.equal(dup.outcome, 'DUPLICATE');
+  assert.equal(dup.beep, 'DUPLICATE');
+  assert.ok(!dup.overridable, 'an in-session duplicate must not be overridable');
+  assert.ok(dup.message.includes('already on this receipt'));
+});
+
+test('the same box number under a different product is a different box', () => {
+  addLine(SESSION, PID, BOX_A, 18);
+  // Tally scopes a batch under a stock item, so this must NOT collide.
+  const other = decideIncomingScan(db, {
+    sessionId: SESSION, raw: label('4090-9001', BOX_A, 24), symbology: 'CODE128',
+  });
+  assert.equal(other.outcome, 'ACCEPT');
+});
+
+test('a box received in an earlier session warns but can be overridden', () => {
+  db.prepare(
+    `INSERT INTO received_boxes (pid, box_serial, session_id, qty, received_at) VALUES (?,?,?,?,?)`,
+  ).run(PID, BOX_A, 'old-session', 18, '2026-08-01T10:00:00.000Z');
+
+  const dup = decideIncomingScan(db, { sessionId: SESSION, raw: label(PID, BOX_A, 18), symbology: 'CODE128' });
+  assert.equal(dup.outcome, 'DUPLICATE');
+  assert.equal(dup.overridable, true, 'returns and reprinted labels are real');
+  assert.ok(dup.message.includes('2026-08-01'));
+
+  const forced = decideIncomingScan(db, {
+    sessionId: SESSION, raw: label(PID, BOX_A, 18), symbology: 'CODE128', overrideDuplicate: true,
+  });
+  assert.equal(forced.outcome, 'FLAGGED');
+  assert.ok(forced.flags.includes('DUPLICATE_OVERRIDE'), 'an override must be traceable');
+});
+
+// --- incoming: never block the dock -----------------------------------------
+
+test('an unknown product is counted and flagged, never refused', () => {
+  const d = decideIncomingScan(db, {
+    sessionId: SESSION, raw: label('9999-0000', '1124249900000001', 12), symbology: 'CODE128',
+  });
+  assert.equal(d.outcome, 'FLAGGED');
+  assert.equal(d.beep, 'FLAGGED');
+  assert.ok(d.flags.includes('UNRESOLVED_PID'));
+  assert.equal(d.box?.labelQty, 12, 'the count is right even when the identity is not');
+});
+
+test('an item without batch support is flagged, because a box cannot be tracked on it', () => {
+  db.prepare(
+    `INSERT INTO pid_bindings (pid, stock_item_name, source, bound_at) VALUES (?,?,?,?)`,
+  ).run('CABLE-01', 'MISC-CABLE-2C', 'SUPERVISOR', nowIso());
+
+  const d = decideIncomingScan(db, {
+    sessionId: SESSION, raw: label('CABLE-01', '1124249900000002', 5), symbology: 'CODE128',
+  });
+  assert.equal(d.outcome, 'FLAGGED');
+  assert.ok(d.flags.includes('NO_BATCH_SUPPORT'));
+});
+
+test('scanning one of the label\'s other barcodes says which one to use', () => {
+  const pidCode = decideIncomingScan(db, { sessionId: SESSION, raw: PID, symbology: 'CODE128' });
+  assert.equal(pidCode.outcome, 'WRONG_BARCODE');
+  assert.ok(pidCode.message.includes('long serial barcode'));
+
+  const partNo = decideIncomingScan(db, { sessionId: SESSION, raw: '0677197CN', symbology: 'CODE128' });
+  assert.equal(partNo.outcome, 'WRONG_BARCODE');
+  assert.ok(partNo.message.includes('part-number'));
+});
+
+// --- outgoing: the ceiling --------------------------------------------------
+
+test('the printed box quantity is not the ceiling -- Tally is', () => {
+  const d = decideOutgoingScan(db, {
+    sessionId: SESSION, salesOrder: SO, godown: GODOWN,
+    raw: label(PID, BOX_A, 18), symbology: 'CODE128',
+  });
+  assert.equal(d.outcome, 'ACCEPT');
+  assert.equal(d.box?.labelQty, 18, 'the label still says 18');
+  assert.equal(d.available, 13, 'but only 13 remain');
+  assert.ok(d.availableAsOf, 'staleness must be visible to the operator');
+});
+
+test('a box with nothing left is refused before a quantity screen appears', () => {
+  const d = decideOutgoingScan(db, {
+    sessionId: SESSION, salesOrder: SO, godown: GODOWN,
+    raw: label(PID, '1124241658336427', 18), symbology: 'CODE128',
+  });
+  assert.equal(d.outcome, 'REJECT');
+  assert.equal(d.beep, 'REJECT');
+  assert.equal(d.available, 0);
+});
+
+test('an item not on the selected order is refused -- the point of the whole check', () => {
+  const d = decideOutgoingScan(db, {
+    sessionId: SESSION, salesOrder: SO, godown: GODOWN,
+    raw: label('4090-9001', '0701240099887766', 24), symbology: 'CODE128',
+  });
+  assert.equal(d.outcome, 'REJECT');
+  assert.equal(d.beep, 'REJECT');
+  assert.ok(d.message.includes('not on order'));
+});
+
+test('an unmapped product cannot be despatched', () => {
+  const d = decideOutgoingScan(db, {
+    sessionId: SESSION, salesOrder: SO, godown: GODOWN,
+    raw: label('9999-0000', '1124249900000003', 5), symbology: 'CODE128',
+  });
+  assert.equal(d.outcome, 'REJECT');
+  assert.ok(d.message.includes('not mapped'));
+});
+
+test('rescanning a box on the same despatch re-opens its line instead of adding another', () => {
+  addLine(SESSION, PID, BOX_A, 5);
+  const d = decideOutgoingScan(db, {
+    sessionId: SESSION, salesOrder: SO, godown: GODOWN,
+    raw: label(PID, BOX_A, 18), symbology: 'CODE128',
+  });
+  assert.equal(d.outcome, 'ACCEPT');
+  assert.ok(d.editLineId, 'should point at the existing line');
+  assert.equal(d.available, 8, '13 on hand minus 5 already entered');
+});
+
+// --- outgoing: typed quantity -----------------------------------------------
+
+test('quantity above what the box holds is a hard error', () => {
+  const v = validateOutgoingQty(db, {
+    sessionId: SESSION, salesOrder: SO, godown: GODOWN,
+    pid: PID, boxSerial: BOX_A, stockItemName: ITEM, qty: 18,
+  });
+  assert.equal(v.ok, false);
+  assert.equal(v.available, 13);
+  assert.ok(v.error?.includes('Only 13 left'));
+});
+
+test('quantity equal to what remains is accepted', () => {
+  const v = validateOutgoingQty(db, {
+    sessionId: SESSION, salesOrder: SO, godown: GODOWN,
+    pid: PID, boxSerial: BOX_A, stockItemName: ITEM, qty: 13,
+  });
+  assert.equal(v.ok, true);
+  assert.equal(v.error, undefined);
+});
+
+test('zero or negative is refused', () => {
+  for (const qty of [0, -1]) {
+    const v = validateOutgoingQty(db, {
+      sessionId: SESSION, salesOrder: SO, godown: GODOWN,
+      pid: PID, boxSerial: BOX_A, stockItemName: ITEM, qty,
+    });
+    assert.equal(v.ok, false, `qty ${qty} must be refused`);
+  }
+});
+
+test('quantities across several lines of one box cannot exceed the box', () => {
+  addLine(SESSION, PID, BOX_A, 10);
+  const v = validateOutgoingQty(db, {
+    sessionId: SESSION, salesOrder: SO, godown: GODOWN,
+    pid: PID, boxSerial: BOX_A, stockItemName: ITEM, qty: 5,
+  });
+  assert.equal(v.ok, false, '10 + 5 exceeds the 13 on hand');
+  assert.equal(v.available, 3);
+});
+
+test('exceeding the order warns but does not block', () => {
+  // Order is for 30; the box only holds 13, so raise the order shortfall by
+  // pre-committing most of it on this session.
+  addLine(SESSION, PID, BOX_B, 18);
+  db.prepare(`UPDATE sales_order_lines SET ordered_qty = 20 WHERE voucher_number = ?`).run(SO);
+
+  const v = validateOutgoingQty(db, {
+    sessionId: SESSION, salesOrder: SO, godown: GODOWN,
+    pid: PID, boxSerial: BOX_A, stockItemName: ITEM, qty: 5,
+  });
+  assert.equal(v.ok, true, 'over-shipping within tolerance is a business decision, not an error');
+  assert.ok(v.warning?.includes('outstanding'));
+});
+
+test('editing an existing line does not count that line against itself', () => {
+  addLine(SESSION, PID, BOX_A, 13);
+  const lineId = (db.prepare(
+    `SELECT id FROM session_lines WHERE session_id = ? AND box_serial = ?`,
+  ).get(SESSION, BOX_A) as { id: number }).id;
+
+  const v = validateOutgoingQty(db, {
+    sessionId: SESSION, salesOrder: SO, godown: GODOWN,
+    pid: PID, boxSerial: BOX_A, stockItemName: ITEM, qty: 13, excludeLineId: lineId,
+  });
+  assert.equal(v.ok, true, 'changing 13 to 13 must not report the box as full');
+  assert.equal(v.available, 13);
+});

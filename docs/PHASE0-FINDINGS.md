@@ -62,3 +62,31 @@ is a `VERIFY` comment still standing in `internal/tally`:
 - whether the company allows negative stock
 
 These need data in the company. See the note at the end of `PHASE0.md`.
+
+## Tally crashes on malformed master XML
+
+Sending `<UNIT ACTION="Create">` with no `NAME` attribute did not produce an
+error response. It crashed TallyPrime outright:
+
+```
+Internal Error. Contact Tally Solutions.
+Software Exception c0000005 (Memory Access Violation)
+```
+
+This matters well beyond the seeding script.
+
+**Tally cannot be treated as a system that validates its input.** A malformed
+request may be rejected with a `LINEERROR`, or it may take the process down and
+with it the whole warehouse's connection. The connector must therefore only ever
+send shapes that are known to work, which is what it does -- it builds every
+voucher from typed structures and never passes through XML it did not construct.
+
+It also vindicates keeping the diagnostic channel **read-only**. Had the
+speculative write path been in place when this happened, the crash would have
+arrived over the network from the relay rather than from someone standing at
+the machine.
+
+**Do not brute-force XML shapes against a live Tally.** The earlier seeding
+script did exactly that and is withdrawn (`docs/withdrawn/`). Learn the schema
+the way PHASE0.md already prescribed: create the record in Tally's UI, export
+it, and read what Tally wrote.

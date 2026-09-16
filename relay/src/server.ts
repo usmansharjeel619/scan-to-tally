@@ -730,6 +730,10 @@ if (DOWNLOAD_PATH) {
       : 'application/octet-stream';
     reply.header('Content-Type', type);
     reply.header('Content-Disposition', `attachment; filename="${file}"`);
+    // Without this Cloudflare caches the binary for hours and hands out a
+    // stale connector.exe long after a fix has shipped -- which it did.
+    reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    reply.header('Pragma', 'no-cache');
     return reply.send(createReadStream(full));
   });
   app.log.info(`installer download path enabled at /dl/${DOWNLOAD_PATH}/`);

@@ -10,6 +10,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -192,7 +193,12 @@ func loadConfig(path string) (Config, error) {
 		}
 		return cfg, err
 	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	// Strip a UTF-8 BOM. Windows PowerShell's Set-Content -Encoding UTF8 writes
+	// one, and so does Notepad, and Go's JSON parser rejects it outright with a
+	// message that gives no hint what is wrong.
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+
+	if err := json.Unmarshal(bytes.TrimSpace(data), &cfg); err != nil {
 		return cfg, fmt.Errorf("%s is not valid JSON: %w", path, err)
 	}
 	if cfg.Relay.Secret == "" || cfg.Relay.Secret == "CHANGE-ME" {

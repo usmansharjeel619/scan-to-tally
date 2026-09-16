@@ -159,7 +159,10 @@ $config = [ordered]@{
     statusAddr = "127.0.0.1:9787"
     logLevel   = "info"
 }
-$config | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath -Encoding UTF8
+# Set-Content -Encoding UTF8 writes a byte-order mark on Windows PowerShell 5,
+# and Go's JSON parser rejects a leading BOM. Write plain UTF-8 instead.
+$json = $config | ConvertTo-Json -Depth 5
+[System.IO.File]::WriteAllText($configPath, $json, (New-Object System.Text.UTF8Encoding($false)))
 Write-Host "   connector.json written" -ForegroundColor Green
 
 # The config holds the relay secret, so keep it to Administrators and SYSTEM.

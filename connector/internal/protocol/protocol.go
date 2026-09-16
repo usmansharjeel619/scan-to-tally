@@ -27,7 +27,33 @@ const (
 	MsgHeartbeat  MsgType = "heartbeat"   // connector -> relay, carries health
 	MsgSyncPush   MsgType = "sync_push"   // connector -> relay, master data
 	MsgSyncReq    MsgType = "sync_req"    // relay -> connector, "resync now"
+
+	// Phase 0 only. Lets the relay run a READ-ONLY Tally query so the XML
+	// templates can be reconciled against a real installation. Refused unless
+	// diagnostics are explicitly enabled in the connector's config, and refused
+	// for anything that is not an Export.
+	MsgDiagReq MsgType = "diag_req"
+	MsgDiagRes MsgType = "diag_res"
 )
+
+// DiagRequest carries a raw Tally envelope for a read-only query.
+type DiagRequest struct {
+	ID  string `json:"id"`
+	XML string `json:"xml"`
+	// Label is what shows in the connector's log, so whoever owns the Tally
+	// machine can see exactly what was asked and why.
+	Label string `json:"label,omitempty"`
+}
+
+// DiagResponse is Tally's raw answer, unparsed.
+type DiagResponse struct {
+	ID       string `json:"id"`
+	OK       bool   `json:"ok"`
+	XML      string `json:"xml,omitempty"`
+	Error    string `json:"error,omitempty"`
+	Bytes    int    `json:"bytes,omitempty"`
+	Millis   int64  `json:"millis,omitempty"`
+}
 
 // Frame wraps every message. Payload is the type-specific body.
 type Frame struct {

@@ -27,6 +27,11 @@ param(
     [string] $TallyUrl   = "http://127.0.0.1:9000",
     [string] $InstallDir = "C:\ScanToTally",
     [string] $ServiceName = "ScanToTallyConnector",
+    # Phase 0 only. Lets the relay run READ-ONLY Tally queries so the XML
+    # templates can be reconciled against this installation. Imports are refused
+    # by the connector regardless. Turn it off once Phase 0 is signed off:
+    #   .\install-connector.ps1 ... (without -Diagnostics)
+    [switch] $Diagnostics,
     [switch] $Uninstall
 )
 
@@ -130,6 +135,10 @@ $config = [ordered]@{
         connectorId = "connector-$env:COMPUTERNAME"
         syncSeconds = 120
     }
+    diagnostics = [ordered]@{
+        enabled  = [bool]$Diagnostics
+        maxBytes = 8000000
+    }
     dbPath = (Join-Path $InstallDir "connector.db")
     # Loopback only. The status page shows stock figures and must never be
     # bound to a routable address.
@@ -185,6 +194,14 @@ powercfg /change monitor-timeout-ac 15
 Write-Host "   sleep and hibernate disabled on mains power" -ForegroundColor Green
 
 Write-Host ""
+if ($Diagnostics) {
+    Write-Host ""
+    Write-Host "DIAGNOSTICS ARE ON." -ForegroundColor Yellow
+    Write-Host "  The relay can run read-only Tally queries against this machine."
+    Write-Host "  Imports are refused; only Export requests are allowed through."
+    Write-Host "  Re-run this script WITHOUT -Diagnostics when Phase 0 is finished."
+}
+
 Write-Host "Done." -ForegroundColor Cyan
 Write-Host "  Status page : http://127.0.0.1:9787  (this machine only)"
 Write-Host "  Logs        : Get-EventLog -LogName Application -Source $ServiceName"

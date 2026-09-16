@@ -15,6 +15,8 @@
 import Fastify from 'fastify';
 import websocket from '@fastify/websocket';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createReadStream, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { openDb, applySync, audit, nowIso, resolvePid, type DB } from './db.ts';
 import { decideIncomingScan, decideOutgoingScan, validateOutgoingQty } from './validation.ts';
 import { decideStockCheckScan, computeVariance, varianceToLines, type CountScope } from './stockcheck.ts';
@@ -24,6 +26,9 @@ const PORT = Number(process.env.STT_PORT ?? 8787);
 const HOST = process.env.STT_HOST ?? '0.0.0.0';
 const DB_PATH = process.env.STT_DB ?? './data/relay.db';
 const CONNECTOR_SECRET = process.env.STT_CONNECTOR_SECRET ?? '';
+/** Random path segment guarding the installer download. Empty disables it. */
+const DOWNLOAD_PATH = process.env.STT_DOWNLOAD_PATH ?? '';
+const DIST_DIR = process.env.STT_DIST_DIR ?? '/opt/scan-to-tally/dist';
 
 const db: DB = openDb(DB_PATH);
 
@@ -670,6 +675,65 @@ app.get('/api/v1/items', async (req, reply) => {
      WHERE name LIKE ? OR part_no LIKE ? OR alias LIKE ?
      ORDER BY name LIMIT 100`).all(`%${q}%`, `%${q}%`, `%${q}%`);
 });
+
+/**
+ * Phase 0: run a read-only Tally query through the connector.
+ *
+ * This exists to reconcile the XML templates in the connector against a real
+ * Tally that nobody can reach inbound. The connector refuses anything that is
+ * not an Export, so this endpoint cannot modify data.
+ */
+app.post('/api/v1/diag', async (req, reply) => {
+  const d = requireDevice(req, reply);
+  if (!d) return;
+  const b = (req.body ?? {}) as any;
+
+  const xml = String(b.xml ?? '');
+  if (!xml.trim()) return reply.code(400).send({ error: 'xml is required' });
+
+  const res = await hub.diag(d.company, xml, String(b.label ?? ''));
+  audit(db, `device:${d.id}`, 'DIAG_QUERY', String(b.label ?? ''),
+    res.ok ? `${res.bytes} bytes in ${res.millis}ms` : (res.error ?? 'failed'));
+  return res;
+});
+
+/** Connector state, for checking whether the Tally machine has come online. */
+app.get('/api/v1/connectors', async (req, reply) => {
+  const d = requireDevice(req, reply);
+  if (!d) return;
+  return { connectors: hub.all() };
+});
+
+/**
+ * Serves the connector installer to the Tally machine.
+ *
+ * Getting a binary onto a warehouse PC on a different network is a recurring
+ * problem: it has outbound internet and little else. The path carries a random
+ * segment from the server's env rather than a login, because whoever is
+ * standing at that machine has no account here -- it is a capability URL, and
+ * it is rotated by changing STT_DOWNLOAD_PATH.
+ */
+if (DOWNLOAD_PATH) {
+  app.get(`/dl/${DOWNLOAD_PATH}/:file`, async (req, reply) => {
+    const { file } = req.params as { file: string };
+    // No path traversal: the name must be one plain filename.
+    if (!/^[A-Za-z0-9._-]+$/.test(file) || file.includes('..')) {
+      return reply.code(400).send({ error: 'bad filename' });
+    }
+    const full = join(DIST_DIR, file);
+    if (!existsSync(full)) return reply.code(404).send({ error: 'not found' });
+
+    audit(db, 'download', 'CONNECTOR_DOWNLOAD', file, String(req.ip));
+    const type = file.endsWith('.exe') ? 'application/octet-stream'
+      : file.endsWith('.ps1') ? 'text/plain; charset=utf-8'
+      : file.endsWith('.json') ? 'application/json'
+      : 'application/octet-stream';
+    reply.header('Content-Type', type);
+    reply.header('Content-Disposition', `attachment; filename="${file}"`);
+    return reply.send(createReadStream(full));
+  });
+  app.log.info(`installer download path enabled at /dl/${DOWNLOAD_PATH}/`);
+}
 
 // --- connector socket -------------------------------------------------------
 

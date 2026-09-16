@@ -65,11 +65,16 @@ func (c Config) withDefaults() Config {
 // Syncer produces the master-data snapshot pushed to the relay.
 type Syncer func(ctx context.Context) (*protocol.SyncPush, error)
 
+// Querier runs a vetted read-only Tally query. Nil disables diagnostics
+// entirely, which is the default.
+type Querier func(ctx context.Context, label, xml string) (string, time.Duration, error)
+
 type Client struct {
 	cfg    Config
 	st     *store.Store
 	health HealthSource
 	sync   Syncer
+	query  Querier
 	log    *slog.Logger
 
 	mu   sync.Mutex
@@ -82,6 +87,10 @@ func New(cfg Config, st *store.Store, health HealthSource, sync Syncer, log *slo
 	}
 	return &Client{cfg: cfg.withDefaults(), st: st, health: health, sync: sync, log: log}
 }
+
+// SetQuerier enables the Phase 0 read-only diagnostic channel. Leaving it unset
+// means a diag request is refused outright.
+func (c *Client) SetQuerier(q Querier) { c.query = q }
 
 // Run keeps a connection up until ctx is cancelled, reconnecting with backoff.
 //
@@ -175,6 +184,8 @@ func (c *Client) session(ctx context.Context) error {
 			// nothing to do
 		case protocol.MsgSyncReq:
 			c.pushSync(sessCtx)
+		case protocol.MsgDiagReq:
+			go c.handleDiag(sessCtx, frame.Payload)
 		}
 	}
 }
@@ -200,6 +211,41 @@ func (c *Client) acceptJob(ctx context.Context, jobID string, payload json.RawMe
 		return
 	}
 	c.log.Info("job accepted", "job", jobID, "session", pj.SessionID, "lines", len(pj.Lines))
+}
+
+// handleDiag answers a read-only Tally query from the relay.
+//
+// Runs in its own goroutine so a slow query does not stall the read loop and
+// make the relay think the connector has gone away. The Tally client serialises
+// internally, so this still cannot collide with a voucher being posted.
+func (c *Client) handleDiag(ctx context.Context, payload json.RawMessage) {
+	var req protocol.DiagRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		c.log.Warn("unreadable diag request", "err", err)
+		return
+	}
+
+	res := protocol.DiagResponse{ID: req.ID}
+	if c.query == nil {
+		res.Error = "diagnostics are disabled on this connector"
+		c.log.Warn("diag request refused: diagnostics disabled", "label", req.Label)
+	} else {
+		qctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+		xml, elapsed, err := c.query(qctx, req.Label, req.XML)
+		cancel()
+		if err != nil {
+			res.Error = err.Error()
+		} else {
+			res.OK = true
+			res.XML = xml
+			res.Bytes = len(xml)
+			res.Millis = elapsed.Milliseconds()
+		}
+	}
+
+	if err := c.send(ctx, protocol.Frame{Type: protocol.MsgDiagRes, Payload: res}); err != nil {
+		c.log.Warn("could not return diag result", "id", req.ID, "err", err)
+	}
 }
 
 // Report implements runner.Reporter.

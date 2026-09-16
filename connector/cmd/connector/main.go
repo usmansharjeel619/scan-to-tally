@@ -50,6 +50,16 @@ type Config struct {
 		SyncSeconds int    `json:"syncSeconds"`
 	} `json:"relay"`
 
+	// Diagnostics enables the Phase 0 read-only query channel. OFF by default.
+	// It lets a remote operator run Export requests against this Tally so the
+	// XML templates can be reconciled against a real installation. Imports are
+	// refused; vouchers go through the normal job path. Turn it off when
+	// Phase 0 is finished.
+	Diagnostics struct {
+		Enabled  bool `json:"enabled"`
+		MaxBytes int  `json:"maxBytes"`
+	} `json:"diagnostics"`
+
 	DBPath string `json:"dbPath"`
 	// StatusAddr exposes a local status page. Loopback only: it reveals stock
 	// figures and should never be bound to a routable address.
@@ -122,6 +132,15 @@ func main() {
 		Version:      version,
 		SyncInterval: time.Duration(cfg.Relay.SyncSeconds) * time.Second,
 	}, st, healthAdapter{tc}, makeSyncer(tc), log)
+
+	if cfg.Diagnostics.Enabled {
+		diag := tally.Diagnostics{Enabled: true, MaxBytes: cfg.Diagnostics.MaxBytes}
+		rc.SetQuerier(func(ctx context.Context, label, xmlPayload string) (string, time.Duration, error) {
+			return tc.Query(ctx, diag, label, xmlPayload)
+		})
+		log.Warn("DIAGNOSTICS ENABLED -- the relay can run read-only Tally queries. " +
+			"Turn this off in the config file when Phase 0 is finished.")
+	}
 
 	run := runner.New(st, tc, rc, log, runner.Options{})
 

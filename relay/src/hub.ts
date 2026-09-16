@@ -44,11 +44,30 @@ export interface JobResult {
   attempts?: number;
 }
 
+export interface DiagResponse {
+  id: string;
+  ok: boolean;
+  xml?: string;
+  error?: string;
+  bytes?: number;
+  millis?: number;
+}
+
 type ResultHandler = (r: JobResult) => void;
 type SyncHandler = (company: string, payload: unknown) => void;
 
 export class ConnectorHub {
   private conns = new Map<string, Conn>();
+  /**
+   * Phase 0 diagnostic queries awaiting an answer from the connector.
+   *
+   * Every entry carries its own timeout so a connector that goes away
+   * mid-query cannot leave a request hanging forever.
+   */
+  private pendingDiag = new Map<string, {
+    resolve: (r: DiagResponse) => void;
+    timer: NodeJS.Timeout;
+  }>();
   private onResult: ResultHandler;
   private onSync: SyncHandler;
   private db: DB;
@@ -115,6 +134,17 @@ export class ConnectorHub {
           this.onResult(frame.payload as JobResult);
           break;
 
+        case 'diag_res': {
+          const res = frame.payload as DiagResponse;
+          const waiting = this.pendingDiag.get(res.id);
+          if (waiting) {
+            clearTimeout(waiting.timer);
+            this.pendingDiag.delete(res.id);
+            waiting.resolve(res);
+          }
+          break;
+        }
+
         case 'sync_push': {
           const c = this.conns.get(id);
           this.onSync(c?.state.company ?? '', frame.payload);
@@ -128,6 +158,11 @@ export class ConnectorHub {
         this.conns.delete(id);
         audit(this.db, `connector:${id}`, 'DISCONNECTED');
       }
+      for (const [qid, waiting] of this.pendingDiag) {
+        clearTimeout(waiting.timer);
+        waiting.resolve({ id: qid, ok: false, error: 'The connector disconnected mid-query.' });
+      }
+      this.pendingDiag.clear();
     };
     socket.on('close', drop);
     socket.on('error', drop);
@@ -143,6 +178,40 @@ export class ConnectorHub {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Runs a READ-ONLY Tally query on the connector. Phase 0 only.
+   *
+   * The connector refuses anything that is not an Export, and refuses
+   * everything unless diagnostics are explicitly enabled in its config -- so
+   * this cannot modify data even if the relay is compromised.
+   */
+  diag(company: string, xml: string, label = '', timeoutMs = 130_000): Promise<DiagResponse> {
+    const conn = this.forCompany(company);
+    const id = `diag-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    if (!conn) {
+      return Promise.resolve({ id, ok: false, error: 'No connector is connected to the relay.' });
+    }
+
+    return new Promise<DiagResponse>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingDiag.delete(id);
+        resolve({ id, ok: false, error: `Timed out after ${timeoutMs}ms waiting for the connector.` });
+      }, timeoutMs);
+
+      this.pendingDiag.set(id, { resolve, timer });
+      try {
+        conn.socket.send(JSON.stringify({
+          type: 'diag_req', payload: { id, xml, label },
+        }));
+      } catch (e) {
+        clearTimeout(timer);
+        this.pendingDiag.delete(id);
+        resolve({ id, ok: false, error: `Could not reach the connector: ${String(e)}` });
+      }
+    });
   }
 
   private forCompany(company: string): Conn | undefined {

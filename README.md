@@ -43,6 +43,7 @@ Nothing above needs access to a real Tally.
 
 | | |
 |---|---|
+| [`docs/RESUME-HERE.md`](docs/RESUME-HERE.md) | **Picking this back up? Start here.** |
 | [`docs/PHASE0.md`](docs/PHASE0.md) | **Start here.** Proving the Tally round-trip. |
 | [`docs/TALLY-ACCESS.md`](docs/TALLY-ACCESS.md) | How to get at a real Tally, safely. |
 | [`docs/DEPLOY.md`](docs/DEPLOY.md) | Shipping all three components. |

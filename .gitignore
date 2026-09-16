@@ -11,3 +11,7 @@ local.properties
 /connector/bin/
 /relay/data/
 /relay/dist/
+/android/.gradle/
+/android/build/
+/android/app/build/
+/android/local.properties

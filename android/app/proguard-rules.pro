@@ -1,0 +1,4 @@
+-keepclassmembers class kotlinx.serialization.json.** { *; }
+-keep,includedescriptorclasses class com.acme.scantotally.**$$serializer { *; }
+-keepclassmembers class com.acme.scantotally.** { *** Companion; }
+-keepclasseswithmembers class com.acme.scantotally.** { kotlinx.serialization.KSerializer serializer(...); }

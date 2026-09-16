@@ -62,8 +62,23 @@ type Heartbeat struct {
 type JobKind string
 
 const (
-	KindIncoming JobKind = "INCOMING"
-	KindOutgoing JobKind = "OUTGOING"
+	KindIncoming   JobKind = "INCOMING"
+	KindOutgoing   JobKind = "OUTGOING"
+	KindStockCheck JobKind = "STOCKCHECK"
+)
+
+// CountScope decides what an inventory check is allowed to write.
+//
+// PARTIAL is the default and only ever touches boxes that were counted. FULL
+// additionally zeroes boxes the book shows in the godown but nobody scanned,
+// which is correct for a complete wall-to-wall count and catastrophic for a
+// count somebody abandoned halfway. FULL therefore requires an explicit
+// operator confirmation upstream.
+type CountScope string
+
+const (
+	ScopePartial CountScope = "PARTIAL"
+	ScopeFull    CountScope = "FULL"
 )
 
 // Box is one physical carton on a job line.
@@ -123,6 +138,9 @@ type PostVoucherJob struct {
 
 	// SalesOrder links an outgoing Delivery Note back to its Sales Order.
 	SalesOrder string `json:"salesOrder,omitempty"`
+
+	// Scope applies to STOCKCHECK only. Empty means PARTIAL.
+	Scope CountScope `json:"scope,omitempty"`
 
 	// VoucherType overrides the default for the kind, for companies that have
 	// renamed their voucher types or prefer Purchase over Receipt Note.

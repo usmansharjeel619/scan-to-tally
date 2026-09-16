@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.ScanToTally" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">#0E5A6B</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

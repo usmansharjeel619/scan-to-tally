@@ -56,9 +56,9 @@ export interface ScanDecision {
   parse: ParseResult;
 }
 
-const EPS = 1e-4;
+export const EPS = 1e-4;
 
-function fmt(n: number): string {
+export function fmt(n: number): string {
   return Number.isInteger(n) ? String(n) : String(Number(n.toFixed(3)));
 }
 
@@ -373,7 +373,7 @@ export function validateOutgoingQty(
 
 // --- operator-facing copy ---------------------------------------------------
 
-function wrongBarcodeMessage(hint?: string): string {
+export function wrongBarcodeMessage(hint?: string): string {
   switch (hint) {
     case 'PID':
       return 'That is the product barcode. Scan the long serial barcode at the bottom.';
@@ -388,7 +388,7 @@ function wrongBarcodeMessage(hint?: string): string {
   }
 }
 
-function rejectMessage(reason?: string): string {
+export function rejectMessage(reason?: string): string {
   switch (reason) {
     case 'QTY_NOT_A_POSITIVE_INTEGER':
     case 'QTY_OUT_OF_RANGE':
@@ -406,7 +406,7 @@ function rejectMessage(reason?: string): string {
 }
 
 /** Box serials are 16 digits; operators read and say the last few. */
-function tail(serial: string): string {
+export function tail(serial: string): string {
   return serial.length > 7 ? `…${serial.slice(-7)}` : serial;
 }
 

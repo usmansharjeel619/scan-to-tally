@@ -17,6 +17,7 @@ import websocket from '@fastify/websocket';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { openDb, applySync, audit, nowIso, resolvePid, type DB } from './db.ts';
 import { decideIncomingScan, decideOutgoingScan, validateOutgoingQty } from './validation.ts';
+import { decideStockCheckScan, computeVariance, varianceToLines, type CountScope } from './stockcheck.ts';
 import { ConnectorHub, type JobResult } from './hub.ts';
 
 const PORT = Number(process.env.STT_PORT ?? 8787);
@@ -106,6 +107,8 @@ function recordBoxHistory(sessionId: string, kind: string): void {
     `SELECT pid, box_serial, qty FROM session_lines WHERE session_id = ?`,
   ).all(sessionId) as Array<{ pid: string; box_serial: string; qty: number }>;
 
+  if (kind === 'STOCKCHECK') return; // a count moves nothing in or out
+
   const tx = db.transaction(() => {
     for (const l of lines) {
       if (kind === 'INCOMING') {
@@ -146,9 +149,26 @@ function resendOutstanding(company: string): void {
  * splitting an item across entries is accepted by Tally and quietly ruins its
  * stock reports.
  */
-function buildJob(sessionId: string): Record<string, unknown> | null {
+function buildJob(sessionId: string, scope: CountScope = 'PARTIAL'): Record<string, unknown> | null {
   const s = db.prepare(`SELECT * FROM sessions WHERE id = ?`).get(sessionId) as any;
   if (!s) return null;
+
+  // A stock check posts the VARIANCE, never the raw count: writing back
+  // figures Tally already holds is noise in the stock report for no gain.
+  if (s.kind === 'STOCKCHECK') {
+    const report = computeVariance(db, sessionId, s.godown, scope);
+    const lines = varianceToLines(report);
+    if (!lines.length) return null;
+    return {
+      sessionId: s.id, kind: 'STOCKCHECK', company: s.company, godown: s.godown,
+      scope, date: new Date().toISOString(), operator: s.operator, deviceId: s.device_id,
+      narration: s.narration || `Stock check (${scope.toLowerCase()}) | ${s.godown} | ${report.counted} boxes counted`,
+      lines: lines.map((l) => ({
+        stockItemName: l.stockItemName, unit: l.unit,
+        boxes: l.boxes.map((x) => ({ boxSerial: x.boxSerial, qty: x.qty })),
+      })),
+    };
+  }
 
   const lines = db.prepare(
     `SELECT * FROM session_lines WHERE session_id = ? ORDER BY id`,
@@ -280,7 +300,8 @@ app.post('/api/v1/sessions', async (req, reply) => {
   const b = (req.body ?? {}) as any;
 
   const id = String(b.sessionId ?? randomUUID());
-  const kind = b.kind === 'OUTGOING' ? 'OUTGOING' : 'INCOMING';
+  const kind = b.kind === 'OUTGOING' ? 'OUTGOING'
+    : b.kind === 'STOCKCHECK' ? 'STOCKCHECK' : 'INCOMING';
 
   const existing = db.prepare(`SELECT id, state FROM sessions WHERE id = ?`).get(id);
   if (existing) return { sessionId: id, resumed: true, ...(existing as object) };
@@ -312,19 +333,28 @@ app.post('/api/v1/sessions/:id/scan', async (req, reply) => {
   const raw = String(b.raw ?? '');
   const symbology = String(b.symbology ?? 'UNKNOWN');
 
-  const decision = s.kind === 'OUTGOING'
-    ? decideOutgoingScan(db, {
+  let decision;
+  if (s.kind === 'OUTGOING') {
+    decision = decideOutgoingScan(db, {
       sessionId: id, salesOrder: s.sales_order, godown: s.godown,
       raw, symbology, manual: !!b.manual,
-    })
-    : decideIncomingScan(db, {
+    });
+  } else if (s.kind === 'STOCKCHECK') {
+    decision = decideStockCheckScan(db, {
+      sessionId: id, godown: s.godown, raw, symbology,
+      manual: !!b.manual, blind: b.blind,
+    });
+  } else {
+    decision = decideIncomingScan(db, {
       sessionId: id, raw, symbology,
       manual: !!b.manual, overrideDuplicate: !!b.overrideDuplicate,
     });
+  }
 
   // Incoming commits the line immediately -- quantity comes from the label, so
   // one scan is one complete line. Outgoing waits for the typed quantity.
-  if (s.kind === 'INCOMING' && (decision.outcome === 'ACCEPT' || decision.outcome === 'FLAGGED')) {
+  if ((s.kind === 'INCOMING' || s.kind === 'STOCKCHECK')
+      && (decision.outcome === 'ACCEPT' || decision.outcome === 'FLAGGED')) {
     const box = decision.box!;
     const info = db.prepare(`
       INSERT INTO session_lines (session_id, pid, box_serial, qty, unit, stock_item_name,
@@ -448,6 +478,10 @@ app.post('/api/v1/sessions/:id/submit', async (req, reply) => {
   const d = requireDevice(req, reply);
   if (!d) return;
   const { id } = req.params as { id: string };
+  const body = (req.body ?? {}) as any;
+  // FULL scope writes zeroes onto uncounted stock, so it is never the default
+  // and the device must ask for it explicitly after showing the warning.
+  const scope: CountScope = body.scope === 'FULL' ? 'FULL' : 'PARTIAL';
 
   const s = db.prepare(`SELECT * FROM sessions WHERE id=?`).get(id) as any;
   if (!s) return reply.code(404).send({ error: 'no_such_session' });
@@ -462,8 +496,16 @@ app.post('/api/v1/sessions/:id/submit', async (req, reply) => {
     `SELECT COUNT(*) AS n FROM session_lines WHERE session_id=? AND stock_item_name=''`,
   ).get(id) as { n: number };
 
-  const job = buildJob(id);
+  const job = buildJob(id, scope);
   if (!job) {
+    if (s.kind === 'STOCKCHECK') {
+      // Nothing to write is a good outcome for a count, not an error.
+      db.prepare(`UPDATE sessions SET state='POSTED', completed_at=? WHERE id=?`)
+        .run(nowIso(), id);
+      audit(db, `device:${d.id}`, 'STOCK_CHECK_NO_VARIANCE', id);
+      return { sessionId: id, state: 'POSTED', noVariance: true,
+        message: 'Count matches the book exactly. Nothing to adjust.' };
+    }
     return reply.code(400).send({
       error: 'nothing_to_post',
       message: unresolved.n > 0
@@ -488,6 +530,27 @@ app.post('/api/v1/sessions/:id/submit', async (req, reply) => {
     dispatched: sent,
     unresolvedLines: unresolved.n,
   };
+});
+
+/**
+ * The variance report, shown before a count is adopted.
+ *
+ * Always returns the NOT_COUNTED rows so the operator can see what they missed,
+ * under either scope. `willZeroUncounted` is the warning the UI must act on:
+ * under FULL scope those rows become zeroes in Tally.
+ */
+app.get('/api/v1/sessions/:id/variance', async (req, reply) => {
+  const d = requireDevice(req, reply);
+  if (!d) return;
+  const { id } = req.params as { id: string };
+  const scope = ((req.query as any)?.scope === 'FULL' ? 'FULL' : 'PARTIAL') as CountScope;
+
+  const s = db.prepare(`SELECT * FROM sessions WHERE id=?`).get(id) as any;
+  if (!s) return reply.code(404).send({ error: 'no_such_session' });
+  if (s.kind !== 'STOCKCHECK') {
+    return reply.code(400).send({ error: 'not_a_stock_check', kind: s.kind });
+  }
+  return computeVariance(db, id, s.godown, scope);
 });
 
 // --- supervisor API ---------------------------------------------------------

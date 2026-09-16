@@ -116,7 +116,7 @@ func BuildImport(company string, v Voucher) ([]byte, error) {
 	// hand-keyed export -- a flipped sign posts the movement backwards and is
 	// not obvious in the response, only in the stock report a week later.
 	deemedPositive := "No"
-	if v.Type == ReceiptNote || v.Type == Purchase {
+	if v.Type == ReceiptNote || v.Type == Purchase || v.Type == PhysicalStock {
 		deemedPositive = "Yes"
 	}
 
@@ -209,6 +209,23 @@ func NewReceiptNote(ref, narration, party string, date time.Time, entries []Inve
 		Narration:       narration,
 		PartyLedgerName: party,
 		Entries:         entries,
+	}
+}
+
+// NewPhysicalStock assembles an inventory-check adjustment.
+//
+// A Physical Stock voucher sets the ABSOLUTE quantity of each batch, it does
+// not add or subtract. That is why a stock check must only ever carry the
+// boxes that were actually counted: a batch omitted from a full-godown count is
+// a batch nobody looked at, and writing it as zero would destroy real stock.
+// Scope is enforced upstream, in the relay.
+func NewPhysicalStock(ref, narration string, date time.Time, entries []InventoryEntry) Voucher {
+	return Voucher{
+		Type:      PhysicalStock,
+		Date:      date,
+		Reference: ref,
+		Narration: narration,
+		Entries:   entries,
 	}
 }
 

@@ -307,6 +307,12 @@ func buildVoucher(pj protocol.PostVoucherJob) (tally.Voucher, error) {
 			v.Type = tally.VoucherType(pj.VoucherType)
 		}
 		return v, v.Validate()
+	case protocol.KindStockCheck:
+		v := tally.NewPhysicalStock(pj.SessionID, narration, pj.Date, entries)
+		if pj.VoucherType != "" {
+			v.Type = tally.VoucherType(pj.VoucherType)
+		}
+		return v, v.Validate()
 	default:
 		return tally.Voucher{}, fmt.Errorf("unknown job kind %q", pj.Kind)
 	}

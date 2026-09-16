@@ -1,0 +1,785 @@
+package com.acme.scantotally.ui.screens
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.navigation.NavController
+import com.acme.scantotally.ScanToTallyApp
+import com.acme.scantotally.data.Outcome2
+import com.acme.scantotally.data.Repository
+import com.acme.scantotally.data.ScanDecision
+import com.acme.scantotally.data.SessionLineEntity
+import com.acme.scantotally.scan.ManualScanSource
+import com.acme.scantotally.scan.RawScan
+import com.acme.scantotally.ui.theme.AcceptGreen
+import com.acme.scantotally.ui.theme.FlagAmber
+import com.acme.scantotally.ui.theme.RejectRed
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+
+@Composable
+private fun rememberApp(): ScanToTallyApp =
+    LocalContext.current.applicationContext as ScanToTallyApp
+
+// --- incoming ---------------------------------------------------------------
+
+/**
+ * Incoming: scan, scan, scan, Done.
+ *
+ * Quantity comes from the barcode, so one scan is one complete line and the
+ * operator never stops to type. Nothing here is modal -- a dialog is a stopped
+ * operator holding a box.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun IncomingScreen(nav: NavController, scans: Flow<RawScan>) {
+    val app = rememberApp()
+    val scope = rememberCoroutineScope()
+
+    var repo by remember { mutableStateOf<Repository?>(null) }
+    var sessionId by remember { mutableStateOf<String?>(null) }
+    var last by remember { mutableStateOf<ScanDecision?>(null) }
+    var pendingOverride by remember { mutableStateOf<RawScan?>(null) }
+    var submitting by remember { mutableStateOf(false) }
+    var result by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        val r = app.repository()
+        repo = r
+        sessionId = r.openSession("INCOMING", app.config.godown.first())
+    }
+
+    val lines by (sessionId?.let { repo?.linesFlow(it) }?.collectAsState(emptyList())
+        ?: remember { mutableStateOf(emptyList<SessionLineEntity>()) })
+
+    LaunchedEffect(repo, sessionId) {
+        val r = repo ?: return@LaunchedEffect
+        val sid = sessionId ?: return@LaunchedEffect
+        scans.collect { scan ->
+            val d = r.scanIncoming(sid, scan)
+            last = d
+            app.feedback.play(d.beep)
+            if (d.outcome == Outcome2.ACCEPT || d.outcome == Outcome2.FLAGGED) {
+                r.commitLine(sid, d)
+            } else if (d.overridable) {
+                // The only place the operator is asked anything mid-flow, and
+                // only because receiving a returned box really does happen.
+                pendingOverride = scan
+            }
+        }
+    }
+
+    ScanScaffold(
+        title = "Incoming",
+        subtitle = "${lines.size} ${if (lines.size == 1) "box" else "boxes"}",
+        nav = nav,
+        sessionId = sessionId,
+        last = last,
+        lines = lines,
+        submitting = submitting,
+        result = result,
+        submitLabel = "Done · post receipt",
+        onSubmit = {
+            scope.launch {
+                val r = repo ?: return@launch
+                val sid = sessionId ?: return@launch
+                submitting = true
+                val resp = r.submit(sid)
+                submitting = false
+                app.feedback.playSessionPosted()
+                result = when {
+                    resp == null -> "Saved. It will post to Tally when the connection returns."
+                    resp.unresolvedLines > 0 ->
+                        "Saved, but ${resp.unresolvedLines} line(s) need a supervisor to map the product."
+                    resp.dispatched -> "Sent to Tally."
+                    else -> "Saved. Waiting for Tally to come back."
+                }
+            }
+        },
+    )
+
+    pendingOverride?.let { scan ->
+        AlertDialog(
+            onDismissRequest = { pendingOverride = null },
+            title = { Text("Box already received") },
+            text = { Text(last?.message ?: "") },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch {
+                        val r = repo ?: return@launch
+                        val sid = sessionId ?: return@launch
+                        val d = r.scanIncoming(sid, scan, overrideDuplicate = true)
+                        last = d
+                        app.feedback.play(d.beep)
+                        r.commitLine(sid, d)
+                        pendingOverride = null
+                    }
+                }) { Text("Accept as a return") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingOverride = null }) { Text("Set it aside") }
+            },
+        )
+    }
+}
+
+// --- stock check ------------------------------------------------------------
+
+/**
+ * Inventory check.
+ *
+ * Counting is blind by default: showing the operator what Tally expects anchors
+ * the count to it, and a count that only ever confirms the book is worth
+ * nothing. The variance is revealed at the end, before anything is written.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun StockCheckScreen(nav: NavController, scans: Flow<RawScan>) {
+    val app = rememberApp()
+    val scope = rememberCoroutineScope()
+
+    var repo by remember { mutableStateOf<Repository?>(null) }
+    var sessionId by remember { mutableStateOf<String?>(null) }
+    var godown by remember { mutableStateOf("") }
+    var last by remember { mutableStateOf<ScanDecision?>(null) }
+    var submitting by remember { mutableStateOf(false) }
+    var result by remember { mutableStateOf<String?>(null) }
+    var showVariance by remember { mutableStateOf(false) }
+    var variance by remember { mutableStateOf<com.acme.scantotally.data.VarianceReport?>(null) }
+    var scope2 by remember { mutableStateOf("PARTIAL") }
+
+    LaunchedEffect(Unit) {
+        val r = app.repository()
+        repo = r
+        godown = app.config.godown.first()
+        sessionId = r.openSession("STOCKCHECK", godown)
+    }
+
+    val lines by (sessionId?.let { repo?.linesFlow(it) }?.collectAsState(emptyList())
+        ?: remember { mutableStateOf(emptyList<SessionLineEntity>()) })
+
+    LaunchedEffect(repo, sessionId) {
+        val r = repo ?: return@LaunchedEffect
+        val sid = sessionId ?: return@LaunchedEffect
+        scans.collect { scan ->
+            val d = r.scanStockCheck(sid, godown, scan, blind = true)
+            last = d
+            app.feedback.play(d.beep)
+            if (d.outcome == Outcome2.ACCEPT || d.outcome == Outcome2.FLAGGED) {
+                r.commitLine(sid, d)
+            }
+        }
+    }
+
+    ScanScaffold(
+        title = "Inventory check",
+        subtitle = "$godown · ${lines.size} counted",
+        nav = nav,
+        sessionId = sessionId,
+        last = last,
+        lines = lines,
+        submitting = submitting,
+        result = result,
+        submitLabel = "Done · show variance",
+        onSubmit = {
+            scope.launch {
+                val sid = sessionId ?: return@launch
+                submitting = true
+                variance = runCatching {
+                    app.repository().let { _ ->
+                        val api = com.acme.scantotally.data.RelayApi(
+                            app.config.relayUrl.first(), app.config.token.first(),
+                        )
+                        api.variance(sid, scope2)
+                    }
+                }.getOrNull()
+                submitting = false
+                showVariance = true
+            }
+        },
+    )
+
+    if (showVariance) {
+        VarianceDialog(
+            report = variance,
+            scope = scope2,
+            onScopeChange = { scope2 = it },
+            onDismiss = { showVariance = false },
+            onAdopt = {
+                scope.launch {
+                    val r = repo ?: return@launch
+                    val sid = sessionId ?: return@launch
+                    submitting = true
+                    val resp = r.submit(sid, scope2)
+                    submitting = false
+                    showVariance = false
+                    app.feedback.playSessionPosted()
+                    result = when {
+                        resp == null -> "Saved. It will post when the connection returns."
+                        resp.noVariance -> "Count matches the book exactly. Nothing to adjust."
+                        else -> "Adjustment sent to Tally."
+                    }
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun VarianceDialog(
+    report: com.acme.scantotally.data.VarianceReport?,
+    scope: String,
+    onScopeChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onAdopt: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Variance") },
+        text = {
+            Column {
+                if (report == null) {
+                    Text("Could not reach the relay to work out the variance. Try again when online.")
+                    return@Column
+                }
+                Text(
+                    "${report.counted} counted · ${report.matched} match · " +
+                        "${report.discrepancies} differ · ${report.notCounted} not counted",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(Modifier.height(12.dp))
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("PARTIAL" to "Only what I counted", "FULL" to "Whole godown").forEach { (v, label) ->
+                        OutlinedButton(
+                            onClick = { onScopeChange(v) },
+                            colors = if (scope == v) {
+                                ButtonDefaults.outlinedButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                )
+                            } else ButtonDefaults.outlinedButtonColors(),
+                        ) { Text(label, fontSize = 13.sp) }
+                    }
+                }
+
+                // The dangerous case, stated plainly rather than buried.
+                if (report.willZeroUncounted) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "This will set ${report.notCounted} uncounted box(es) to zero in Tally. " +
+                            "Only do that if you counted the entire godown.",
+                        color = RejectRed,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+
+                Spacer(Modifier.height(12.dp))
+                LazyColumn(Modifier.heightIn(max = 260.dp)) {
+                    items(report.rows.filter { it.kind != "MATCH" }) { row ->
+                        val c = when (row.kind) {
+                            "SHORT" -> RejectRed
+                            "OVER" -> FlagAmber
+                            "NOT_IN_BOOK" -> FlagAmber
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                        Column(Modifier.padding(vertical = 5.dp)) {
+                            Text(
+                                row.stockItemName.ifEmpty { "Unknown (${row.pid})" },
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Text(
+                                "${tail(row.boxSerial)} · book ${fmtQty(row.bookQty)} · " +
+                                    "counted ${fmtQty(row.countedQty)} · ${row.kind}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontFamily = FontFamily.Monospace,
+                                color = c,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onAdopt, enabled = report != null) { Text("Adopt the count") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Keep counting") } },
+    )
+}
+
+// --- outgoing ---------------------------------------------------------------
+
+/**
+ * Outgoing: scan, type the quantity, confirm.
+ *
+ * More ceremony than incoming, deliberately. Outgoing is where a mistake
+ * reaches a customer, and the quantity is entered by the employee rather than
+ * defaulted from a label that may no longer be true.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun OutgoingScreen(nav: NavController, scans: Flow<RawScan>, salesOrder: String) {
+    val app = rememberApp()
+    val scope = rememberCoroutineScope()
+
+    var repo by remember { mutableStateOf<Repository?>(null) }
+    var sessionId by remember { mutableStateOf<String?>(null) }
+    var godown by remember { mutableStateOf("") }
+    var last by remember { mutableStateOf<ScanDecision?>(null) }
+    var qtyFor by remember { mutableStateOf<ScanDecision?>(null) }
+    var submitting by remember { mutableStateOf(false) }
+    var result by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        val r = app.repository()
+        repo = r
+        godown = app.config.godown.first()
+        sessionId = r.openSession("OUTGOING", godown, salesOrder = salesOrder)
+    }
+
+    val lines by (sessionId?.let { repo?.linesFlow(it) }?.collectAsState(emptyList())
+        ?: remember { mutableStateOf(emptyList<SessionLineEntity>()) })
+
+    LaunchedEffect(repo, sessionId) {
+        val r = repo ?: return@LaunchedEffect
+        val sid = sessionId ?: return@LaunchedEffect
+        scans.collect { scan ->
+            val d = r.scanOutgoing(sid, salesOrder, godown, scan)
+            last = d
+            app.feedback.play(d.beep)
+            // Accepted means "this box is valid" -- the quantity screen opens
+            // next. A rejection is only a sound; nothing to dismiss.
+            if (d.outcome == Outcome2.ACCEPT) qtyFor = d
+        }
+    }
+
+    ScanScaffold(
+        title = "Outgoing",
+        subtitle = "$salesOrder · ${lines.size} ${if (lines.size == 1) "box" else "boxes"}",
+        nav = nav,
+        sessionId = sessionId,
+        last = last,
+        lines = lines,
+        submitting = submitting,
+        result = result,
+        submitLabel = "Done · post delivery note",
+        onSubmit = {
+            scope.launch {
+                val r = repo ?: return@launch
+                val sid = sessionId ?: return@launch
+                submitting = true
+                val resp = r.submit(sid)
+                submitting = false
+                app.feedback.playSessionPosted()
+                result = if (resp?.dispatched == true) "Sent to Tally."
+                else "Saved. It will post when the connection returns."
+            }
+        },
+    )
+
+    qtyFor?.let { d ->
+        QuantityKeypad(
+            decision = d,
+            salesOrder = salesOrder,
+            onCancel = { qtyFor = null },
+            onConfirm = { qty ->
+                scope.launch {
+                    val r = repo ?: return@launch
+                    val sid = sessionId ?: return@launch
+                    if (d.editLineId != null) {
+                        r.updateLineQty(d.editLineId, qty, "QTY_EDITED")
+                    } else {
+                        r.commitLine(sid, d, qty)
+                    }
+                    qtyFor = null
+                }
+            },
+            check = { qty ->
+                val r = repo ?: return@QuantityKeypad null
+                val sid = sessionId ?: return@QuantityKeypad null
+                r.checkOutgoingQty(
+                    sid, salesOrder, godown, d.pid, d.boxSerial, d.stockItemName,
+                    qty, d.editLineId ?: -1,
+                )
+            },
+        )
+    }
+}
+
+/**
+ * The quantity screen.
+ *
+ * The field starts EMPTY -- the employee enters the number, it is never
+ * pre-filled. The "all" button is still their deliberate action; it only saves
+ * typing on the common full-box case. Validation runs as they type so Confirm
+ * simply cannot be pressed on an invalid number.
+ */
+@Composable
+private fun QuantityKeypad(
+    decision: ScanDecision,
+    salesOrder: String,
+    onCancel: () -> Unit,
+    onConfirm: (Double) -> Unit,
+    check: suspend (Double) -> com.acme.scantotally.data.QtyCheck?,
+) {
+    var entry by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var warning by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    val available = decision.available ?: 0.0
+    val qty = entry.toDoubleOrNull() ?: 0.0
+    val valid = entry.isNotEmpty() && error == null && qty > 0
+
+    LaunchedEffect(entry) {
+        if (entry.isEmpty()) { error = null; warning = null; return@LaunchedEffect }
+        val c = check(entry.toDoubleOrNull() ?: 0.0)
+        error = c?.error
+        warning = c?.warning
+    }
+
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = {
+            Column {
+                Text(decision.description.ifEmpty { decision.stockItemName })
+                Text(
+                    "${decision.pid} · box ${tail(decision.boxSerial)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        text = {
+            Column {
+                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Text(
+                        "Label qty ${fmtQty(decision.labelQty)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    // The ceiling and its age. A stale figure the operator
+                    // could see is stale makes a later rejection sensible
+                    // rather than baffling.
+                    Text(
+                        "Available ${fmtQty(available)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = FlagAmber,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                decision.availableAsOf?.let {
+                    val mins = ((System.currentTimeMillis() - it) / 60000).coerceAtLeast(0)
+                    Text(
+                        "as of ${if (mins < 1) "just now" else "$mins min ago"}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                Spacer(Modifier.height(12.dp))
+                Box(
+                    Modifier.fillMaxWidth().heightIn(min = 60.dp)
+                        .background(
+                            MaterialTheme.colorScheme.surfaceVariant,
+                            RoundedCornerShape(8.dp),
+                        )
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    Text(
+                        entry.ifEmpty { "—" },
+                        fontSize = 30.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        color = if (error != null) RejectRed else MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+
+                error?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(it, color = RejectRed, style = MaterialTheme.typography.bodyMedium)
+                }
+                warning?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(it, color = FlagAmber, style = MaterialTheme.typography.bodyMedium)
+                }
+
+                Spacer(Modifier.height(12.dp))
+                // A custom keypad, not the system one: the device is operated
+                // in gloves and the soft keyboard is far too small.
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(listOf("7", "8", "9"), listOf("4", "5", "6"), listOf("1", "2", "3")).forEach { row ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            row.forEach { k -> Key(k, Modifier.weight(1f)) { entry += k } }
+                            when (row[0]) {
+                                "7" -> Key("All ${fmtQty(available)}", Modifier.weight(1.4f), accent = true) {
+                                    entry = fmtQty(available)
+                                }
+                                "4" -> Key("⌫", Modifier.weight(1.4f)) { entry = entry.dropLast(1) }
+                                else -> Key("C", Modifier.weight(1.4f)) { entry = "" }
+                            }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Key("0", Modifier.weight(2f)) { entry += "0" }
+                        Key(".", Modifier.weight(1f)) { if (!entry.contains('.')) entry += "." }
+                        Spacer(Modifier.weight(1.4f))
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onConfirm(qty) }, enabled = valid) { Text("Confirm") }
+        },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun Key(label: String, modifier: Modifier = Modifier, accent: Boolean = false, onClick: () -> Unit) {
+    Box(
+        modifier
+            .heightIn(min = 52.dp)
+            .background(
+                if (accent) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surfaceVariant,
+                RoundedCornerShape(8.dp),
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            fontSize = if (label.length > 3) 13.sp else 20.sp,
+            fontFamily = if (label.length <= 3) FontFamily.Monospace else FontFamily.Default,
+            fontWeight = FontWeight.SemiBold,
+            color = if (accent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+// --- shared scaffold --------------------------------------------------------
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ScanScaffold(
+    title: String,
+    subtitle: String,
+    nav: NavController,
+    sessionId: String?,
+    last: ScanDecision?,
+    lines: List<SessionLineEntity>,
+    submitting: Boolean,
+    result: String?,
+    submitLabel: String,
+    onSubmit: () -> Unit,
+) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(title)
+                        Text(
+                            subtitle,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = { nav.popBackStack() }) {
+                        Icon(Icons.Default.ArrowBack, "Back")
+                    }
+                },
+                actions = {
+                    // Manual entry is one tap away and always present: the
+                    // labels sit under packing tape, and torn ones happen.
+                    IconButton(onClick = { sessionId?.let { nav.navigate("manual/$it") } }) {
+                        Icon(Icons.Default.Keyboard, "Manual entry")
+                    }
+                },
+            )
+        },
+    ) { pad ->
+        Column(Modifier.padding(pad).fillMaxSize().padding(16.dp)) {
+            ScanResultCard(last)
+
+            result?.let {
+                Spacer(Modifier.height(10.dp))
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+                    Text(it, Modifier.padding(14.dp), style = MaterialTheme.typography.titleMedium)
+                }
+            }
+
+            SectionLabel("This session")
+            Box(Modifier.weight(1f)) {
+                if (lines.isEmpty()) {
+                    Text(
+                        "Nothing scanned yet.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    LazyColumn {
+                        items(groupLines(lines)) { group -> GroupRow(group) }
+                    }
+                }
+            }
+
+            Button(
+                onClick = onSubmit,
+                enabled = lines.isNotEmpty() && !submitting && result == null,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 60.dp),
+            ) {
+                Text(if (submitting) "Sending…" else submitLabel, fontSize = 18.sp)
+            }
+            if (result != null) {
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { nav.popBackStack("home", inclusive = false) },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                ) { Text("Back to start") }
+            }
+        }
+    }
+}
+
+// --- manual entry -----------------------------------------------------------
+
+/**
+ * Manual entry: a first-class tab, not a hidden escape hatch.
+ *
+ * It runs through the IDENTICAL parser and validation path as a scan. It is a
+ * substitute for the scanner, never a bypass for the checks -- otherwise it
+ * quietly becomes the route people take when validation is inconvenient, and
+ * stock accuracy dies.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ManualEntryScreen(nav: NavController, sessionId: String) {
+    val app = rememberApp()
+    val scope = rememberCoroutineScope()
+
+    var repo by remember { mutableStateOf<Repository?>(null) }
+    var pid by remember { mutableStateOf("") }
+    var serial by remember { mutableStateOf("") }
+    var qty by remember { mutableStateOf("") }
+    var last by remember { mutableStateOf<ScanDecision?>(null) }
+
+    LaunchedEffect(Unit) { repo = app.repository() }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Manual entry") },
+                navigationIcon = {
+                    IconButton(onClick = { nav.popBackStack() }) {
+                        Icon(Icons.Default.ArrowBack, "Back")
+                    }
+                },
+            )
+        },
+    ) { pad ->
+        Column(
+            Modifier.padding(pad).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                "Use this when a label is torn or unreadable. Every check that applies to a scan applies here too.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            OutlinedTextField(
+                value = pid, onValueChange = { pid = it },
+                label = { Text("Product code (PID)") },
+                placeholder = { Text("4098-9792") },
+                singleLine = true, modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = serial, onValueChange = { serial = it.filter { c -> !c.isWhitespace() } },
+                label = { Text("Box number") },
+                placeholder = { Text("1124241658336425") },
+                singleLine = true, modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = qty, onValueChange = { qty = it.filter { c -> c.isDigit() } },
+                label = { Text("Quantity") },
+                singleLine = true, modifier = Modifier.fillMaxWidth(),
+            )
+
+            Button(
+                onClick = {
+                    scope.launch {
+                        val r = repo ?: return@launch
+                        // Rebuilt into the label's own format so it goes
+                        // through exactly the same parser as a real scan.
+                        val payload = "$pid|$serial|$qty|"
+                        val d = r.scanIncoming(sessionId, ManualScanSource.scan(payload))
+                        last = d
+                        app.feedback.play(d.beep)
+                        if (d.outcome == Outcome2.ACCEPT || d.outcome == Outcome2.FLAGGED) {
+                            r.commitLine(sessionId, d)
+                            pid = ""; serial = ""; qty = ""
+                        }
+                    }
+                },
+                enabled = pid.isNotBlank() && serial.isNotBlank() && qty.isNotBlank(),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+            ) { Text("Add box") }
+
+            ScanResultCard(last)
+        }
+    }
+}

@@ -58,40 +58,94 @@ foreach ($f in @("connector.exe", "install-connector.ps1", "tally-probe.ps1")) {
 Write-Host ""
 Write-Host "2. Asking Tally which company is open" -ForegroundColor White
 
-if (-not $Company) {
-    $query = @'
+function Get-TallyCompanies {
+    <#
+        Tries several shapes, because which one works depends on the Tally
+        version and how the company is configured. The first that returns
+        names wins; the raw reply from the last attempt is kept so a total
+        failure can still be diagnosed rather than guessed at.
+    #>
+    param([ref] $RawOut)
+
+    $attempts = @(
+        @{ name = "collection/Company"; body = @'
 <ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST>
 <TYPE>Collection</TYPE><ID>STT_Co</ID></HEADER><BODY><DESC>
 <STATICVARIABLES><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT></STATICVARIABLES>
 <TDL><TDLMESSAGE><COLLECTION NAME="STT_Co" ISMODIFY="No"><TYPE>Company</TYPE>
 <NATIVEMETHOD>NAME</NATIVEMETHOD></COLLECTION></TDLMESSAGE></TDL>
 </DESC></BODY></ENVELOPE>
-'@
-    try {
-        $resp = Invoke-WebRequest -Uri "http://127.0.0.1:9000" -Method Post -Body $query `
-                    -ContentType "text/xml" -TimeoutSec 15 -UseBasicParsing
-        # Take the company names in the order Tally lists them.
-        $names = [regex]::Matches($resp.Content, '<NAME>(.*?)</NAME>') |
-                 ForEach-Object { $_.Groups[1].Value } |
-                 Where-Object { $_ -and $_.Trim() -ne "" }
+'@ },
+        @{ name = "report/List of Companies"; body = @'
+<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST>
+<TYPE>Data</TYPE><ID>List of Companies</ID></HEADER><BODY><DESC>
+<STATICVARIABLES><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT></STATICVARIABLES>
+</DESC></BODY></ENVELOPE>
+'@ },
+        @{ name = "collection/fetch NAME"; body = @'
+<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST>
+<TYPE>Collection</TYPE><ID>STT_Co2</ID></HEADER><BODY><DESC>
+<STATICVARIABLES><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT></STATICVARIABLES>
+<TDL><TDLMESSAGE><COLLECTION NAME="STT_Co2" ISMODIFY="No"><TYPE>Company</TYPE>
+<FETCH>NAME</FETCH></COLLECTION></TDLMESSAGE></TDL>
+</DESC></BODY></ENVELOPE>
+'@ }
+    )
 
-        if ($names.Count -eq 1) {
-            $Company = $names[0]
-            Write-Host "   Found: $Company" -ForegroundColor Green
-        }
-        elseif ($names.Count -gt 1) {
-            Write-Host "   More than one company is open:" -ForegroundColor Yellow
-            for ($i = 0; $i -lt $names.Count; $i++) {
-                Write-Host ("     [{0}] {1}" -f $i, $names[$i])
+    foreach ($a in $attempts) {
+        try {
+            $resp = Invoke-WebRequest -Uri "http://127.0.0.1:9000" -Method Post `
+                        -Body $a.body -ContentType "text/xml" -TimeoutSec 20 -UseBasicParsing
+            $RawOut.Value = "[" + $a.name + "]`r`n" + $resp.Content
+
+            $names = @()
+            foreach ($pat in @('<NAME>(.*?)</NAME>', 'NAME="([^"]+)"')) {
+                $names = [regex]::Matches($resp.Content, $pat) |
+                         ForEach-Object { $_.Groups[1].Value.Trim() } |
+                         Where-Object { $_ -ne "" } |
+                         Select-Object -Unique
+                if ($names.Count -gt 0) { break }
             }
-            $pick = Read-Host "   Which one should the warehouse post into? (number)"
-            $Company = $names[[int]$pick]
-            Write-Host "   Using: $Company" -ForegroundColor Green
+            if ($names.Count -gt 0) {
+                Write-Host ("   (matched via " + $a.name + ")") -ForegroundColor DarkGray
+                return @($names)
+            }
+        }
+        catch {
+            $RawOut.Value = "[" + $a.name + "] EXCEPTION: " + $_.Exception.Message
         }
     }
-    catch {
-        Write-Host "   Could not reach Tally on port 9000." -ForegroundColor Yellow
-        Write-Host ("   " + $_.Exception.Message)
+    return @()
+}
+
+if (-not $Company) {
+    $raw = ""
+    $names = Get-TallyCompanies ([ref] $raw)
+
+    if ($names.Count -eq 1) {
+        $Company = $names[0]
+        Write-Host "   Found: $Company" -ForegroundColor Green
+    }
+    elseif ($names.Count -gt 1) {
+        Write-Host "   More than one company is open:" -ForegroundColor Yellow
+        for ($i = 0; $i -lt $names.Count; $i++) {
+            Write-Host ("     [{0}] {1}" -f $i, $names[$i])
+        }
+        $pick = Read-Host "   Which one should the warehouse post into? (number)"
+        $Company = $names[[int]$pick]
+        Write-Host "   Using: $Company" -ForegroundColor Green
+    }
+    else {
+        # Not fatal. Tally is clearly answering, so the query shape is what is
+        # wrong -- which is a Phase 0 finding, not a reason to stop installing.
+        Write-Host "   Tally answered but returned no company names." -ForegroundColor Yellow
+        $dump = Join-Path $dir "company-probe.txt"
+        Set-Content -Path $dump -Value $raw -Encoding UTF8
+        Write-Host "   Saved its reply to $dump" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "   Type the company name EXACTLY as Tally spells it." -ForegroundColor Cyan
+        Write-Host "   (Top-left of the Tally window, or Alt+F3 > Select Company.)"
+        $Company = (Read-Host "   Company name").Trim()
     }
 }
 else {
@@ -100,14 +154,8 @@ else {
 
 if (-not $Company) {
     Write-Host ""
-    Write-Host "Could not work out the company name." -ForegroundColor Red
-    Write-Host "Check all of these, then run again:"
-    Write-Host "  - TallyPrime is running and the TEST company is OPEN"
-    Write-Host "  - F1 Help > Settings > Connectivity > Client/Server configuration:"
-    Write-Host "      TallyPrime acts as = Both,  Port = 9000"
-    Write-Host ""
-    Write-Host "Or pass it yourself:"
-    Write-Host "  & `"$dir\install-connector.ps1`" -RelayUrl '__RELAY_URL__' -Secret '<ask>' -Company 'EXACT NAME' -Diagnostics"
+    Write-Host "No company name, so there is nothing to configure." -ForegroundColor Red
+    Write-Host "Run this again and type the name when asked, or pass -Company 'EXACT NAME'."
     exit 1
 }
 

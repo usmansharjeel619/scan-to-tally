@@ -80,6 +80,13 @@ foreach ($p in @(
     }
 }
 
+if ($Secret -match '^<.*>$' -or $Secret -eq "CHANGE-ME") {
+    Write-Host "That secret is a placeholder, not the real one." -ForegroundColor Red
+    Write-Host "Run bootstrap.ps1 instead -- it carries the real secret:" -ForegroundColor Yellow
+    Write-Host "  irm <download-url>/bootstrap.ps1 -OutFile `$env:TEMP\stt.ps1; & `$env:TEMP\stt.ps1"
+    exit 1
+}
+
 Write-Host ""
 Write-Host "Scan to Tally connector" -ForegroundColor Cyan
 Write-Host "  Install dir : $InstallDir"
@@ -115,8 +122,14 @@ if (-not (Test-Path $exeSource)) {
     Write-Host "   connector.exe was not found next to this script." -ForegroundColor Red
     exit 1
 }
-Copy-Item $exeSource (Join-Path $InstallDir "connector.exe") -Force
-Write-Host "   connector.exe -> $InstallDir" -ForegroundColor Green
+$exeDest = Join-Path $InstallDir "connector.exe"
+if ((Resolve-Path $exeSource).Path -ne $exeDest) {
+    Copy-Item $exeSource $exeDest -Force
+    Write-Host "   connector.exe -> $InstallDir" -ForegroundColor Green
+} else {
+    # bootstrap.ps1 already downloaded it straight into the install directory.
+    Write-Host "   connector.exe already in place" -ForegroundColor Green
+}
 
 $configPath = Join-Path $InstallDir "connector.json"
 $config = [ordered]@{

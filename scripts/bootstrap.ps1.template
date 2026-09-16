@@ -120,10 +120,12 @@ function Get-TallyCompanies {
 
 if (-not $Company) {
     $raw = ""
-    $names = Get-TallyCompanies ([ref] $raw)
+    # @() is load-bearing: PowerShell unrolls a one-element array on return
+    # from a function, and indexing the resulting string yields a character.
+    $names = @(Get-TallyCompanies ([ref] $raw))
 
     if ($names.Count -eq 1) {
-        $Company = $names[0]
+        $Company = [string]$names[0]
         Write-Host "   Found: $Company" -ForegroundColor Green
     }
     elseif ($names.Count -gt 1) {
@@ -150,6 +152,14 @@ if (-not $Company) {
 }
 else {
     Write-Host "   Using the name given: $Company" -ForegroundColor Green
+}
+
+# A one-character name is almost certainly a string that got indexed rather
+# than a real company; confirm rather than silently configuring nonsense.
+if ($Company.Length -le 2) {
+    Write-Host ("   '{0}' does not look like a company name." -f $Company) -ForegroundColor Yellow
+    $typed = (Read-Host "   Type it exactly as Tally spells it").Trim()
+    if ($typed) { $Company = $typed }
 }
 
 if (-not $Company) {

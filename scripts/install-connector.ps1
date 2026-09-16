@@ -152,7 +152,8 @@ $config = [ordered]@{
         enabled  = [bool]$Diagnostics
         maxBytes = 8000000
     }
-    dbPath = (Join-Path $InstallDir "connector.db")
+    dbPath  = (Join-Path $InstallDir "connector.db")
+    logFile = (Join-Path $InstallDir "connector.log")
     # Loopback only. The status page shows stock figures and must never be
     # bound to a routable address.
     statusAddr = "127.0.0.1:9787"
@@ -190,10 +191,41 @@ sc.exe description $ServiceName "Bridges the warehouse scanning app to TallyPrim
 # until somebody notices.
 sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
 
-Start-Service -Name $ServiceName
-Start-Sleep -Seconds 3
-$svc = Get-Service -Name $ServiceName
-Write-Host "   service is $($svc.Status)" -ForegroundColor Green
+$logPath = Join-Path $InstallDir "connector.log"
+Remove-Item $logPath -ErrorAction SilentlyContinue
+
+try {
+    Start-Service -Name $ServiceName -ErrorAction Stop
+    Start-Sleep -Seconds 4
+    $svc = Get-Service -Name $ServiceName
+    Write-Host "   service is $($svc.Status)" -ForegroundColor Green
+}
+catch {
+    # "The service did not respond" tells you nothing on its own. Run the same
+    # binary in the foreground to get the actual error out of it.
+    Write-Host "   The service would not start." -ForegroundColor Red
+    Write-Host ""
+    Write-Host "   Running it directly to see why:" -ForegroundColor Yellow
+    $p = Start-Process -FilePath (Join-Path $InstallDir "connector.exe") `
+            -ArgumentList @("-config", "`"$configPath`"") `
+            -NoNewWindow -PassThru `
+            -RedirectStandardOutput (Join-Path $InstallDir "console-out.txt") `
+            -RedirectStandardError  (Join-Path $InstallDir "console-err.txt")
+    Start-Sleep -Seconds 6
+    if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+
+    foreach ($f in @("console-err.txt", "console-out.txt", "connector.log")) {
+        $path = Join-Path $InstallDir $f
+        if ((Test-Path $path) -and (Get-Item $path).Length -gt 0) {
+            Write-Host ""
+            Write-Host "   --- $f ---" -ForegroundColor DarkGray
+            Get-Content $path -Tail 20 | ForEach-Object { Write-Host "   $_" }
+        }
+    }
+    Write-Host ""
+    Write-Host "   Send the above back and it can be fixed." -ForegroundColor Yellow
+    exit 1
+}
 
 # --- 4. keep the machine awake ----------------------------------------------
 

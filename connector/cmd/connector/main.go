@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -61,6 +62,8 @@ type Config struct {
 	} `json:"diagnostics"`
 
 	DBPath string `json:"dbPath"`
+	// LogFile is where a service writes its log, since it has no console.
+	LogFile string `json:"logFile"`
 	// StatusAddr exposes a local status page. Loopback only: it reveals stock
 	// figures and should never be bound to a routable address.
 	StatusAddr string `json:"statusAddr"`
@@ -77,6 +80,7 @@ func defaultConfig() Config {
 	c.Relay.Secret = "CHANGE-ME"
 	c.Relay.SyncSeconds = 120
 	c.DBPath = "connector.db"
+	c.LogFile = "connector.log"
 	c.StatusAddr = "127.0.0.1:9787"
 	c.LogLevel = "info"
 	return c
@@ -105,7 +109,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	log := newLogger(cfg.LogLevel)
+	log := newLogger(cfg.LogLevel, cfg.LogFile)
 	slog.SetDefault(log)
 	log.Info("starting", "version", version, "company", cfg.Tally.Company, "db", cfg.DBPath)
 
@@ -144,24 +148,39 @@ func main() {
 
 	run := runner.New(st, tc, rc, log, runner.Options{})
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	// The body of the program, independent of how it was started.
+	work := func(ctx context.Context) {
+		go tc.Run(ctx)  // health heartbeat
+		go rc.Run(ctx)  // relay socket, reconnecting
+		go run.Run(ctx) // the single Tally worker
 
-	go tc.Run(ctx)  // health heartbeat
-	go rc.Run(ctx)  // relay socket, reconnecting
-	go run.Run(ctx) // the single Tally worker
+		if cfg.StatusAddr != "" {
+			go serveStatus(ctx, cfg.StatusAddr, st, tc, log)
+		}
 
-	if cfg.StatusAddr != "" {
-		go serveStatus(ctx, cfg.StatusAddr, st, tc, log)
+		<-ctx.Done()
+		log.Info("shutting down")
+		// Jobs are durable in SQLite, so stopping mid-queue is safe: anything
+		// left 'running' is requeued on the next start and recognised by the
+		// idempotency check rather than posted twice.
+		time.Sleep(500 * time.Millisecond)
 	}
 
-	log.Info("running; press ctrl-c to stop")
-	<-ctx.Done()
-	log.Info("shutting down")
-	// Jobs are durable in SQLite, so stopping mid-queue is safe: anything left
-	// 'running' is requeued on the next start and recognised by the
-	// idempotency check rather than posted twice.
-	time.Sleep(500 * time.Millisecond)
+	// Under the Windows Service Control Manager this must speak the service
+	// protocol; SCM kills a process that does not report Running.
+	handled, err := runUnderServiceManager(work)
+	if err != nil {
+		log.Error("service dispatcher failed", "err", err)
+		os.Exit(1)
+	}
+	if handled {
+		return
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	log.Info("running as a console program; press ctrl-c to stop")
+	work(ctx)
 }
 
 func loadConfig(path string) (Config, error) {
@@ -185,7 +204,12 @@ func loadConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
-func newLogger(level string) *slog.Logger {
+// newLogger writes to stdout and, when configured, to a file.
+//
+// A Windows service has no console at all, so without a log file the only
+// evidence of what went wrong is the Event Log -- which is markedly harder to
+// read over someone's shoulder on a warehouse PC.
+func newLogger(level, file string) *slog.Logger {
 	lvl := slog.LevelInfo
 	switch level {
 	case "debug":
@@ -195,7 +219,13 @@ func newLogger(level string) *slog.Logger {
 	case "error":
 		lvl = slog.LevelError
 	}
-	return slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
+	var out io.Writer = os.Stdout
+	if file != "" {
+		if f, err := os.OpenFile(file, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
+			out = io.MultiWriter(os.Stdout, f)
+		}
+	}
+	return slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: lvl}))
 }
 
 // healthAdapter narrows the Tally client to what the heartbeat needs.

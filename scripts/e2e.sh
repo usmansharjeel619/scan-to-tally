@@ -91,12 +91,28 @@ CONN_PID=$!
 say "waiting for master data to sync from Tally"
 for _ in $(seq 1 60); do
   n=$(curl -fsS -H "Authorization: Bearer $DEVICE_TOKEN" \
-      "http://127.0.0.1:$RELAY_PORT/api/v1/sync" 2>/dev/null | node -e \
-      'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).items.length)}catch{console.log(0)}})')
+      "http://127.0.0.1:$RELAY_PORT/api/v1/sync" 2>/dev/null | NO_COLOR=1 node -e \
+      'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+         let n=0; try{ n=JSON.parse(s).items.length }catch{}
+         process.stdout.write(String(n)+"\n");
+       })')
   [ "${n:-0}" -gt 0 ] && break
   sleep 0.5
 done
-[ "${n:-0}" -gt 0 ] || fail "master data never arrived (see $WORK/connector.log)"
+if [ "${n:-0}" -le 0 ]; then
+  printf '\n--- what /api/v1/sync actually returned ---\n'
+  curl -sS -o "$WORK/sync.out" -w 'HTTP %{http_code}\n' \
+    -H "Authorization: Bearer $DEVICE_TOKEN" \
+    "http://127.0.0.1:$RELAY_PORT/api/v1/sync" || true
+  head -c 400 "$WORK/sync.out"; printf '\n'
+  printf -- '--- devices table ---\n'
+  ( cd "$ROOT/relay" && node -e "
+    const D=require('better-sqlite3');const db=new D('$WORK/relay.db');
+    console.log(JSON.stringify(db.prepare('SELECT id,company,godown,substr(token_hash,1,12) h FROM devices').all()));
+    console.log('stock_items rows:', db.prepare('SELECT COUNT(*) c FROM stock_items').get().c);
+    db.close();" ) || true
+  fail "master data never arrived (see $WORK/connector.log)"
+fi
 echo "   synced $n stock items from Tally"
 
 api() {
@@ -108,7 +124,13 @@ api() {
     curl -fsS -X "$method" -H "Authorization: Bearer $DEVICE_TOKEN" "http://127.0.0.1:$RELAY_PORT$path"
   fi
 }
-jqf() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const o=JSON.parse(s);console.log(eval("o."+process.argv[1]))})' "$1"; }
+jqf() {
+  NO_COLOR=1 node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+    const o=JSON.parse(s);
+    const v=process.argv[1].split(".").reduce((a,k)=>(a==null?a:a[k]),o);
+    process.stdout.write(String(v ?? "")+"\n");
+  })' "$1"
+}
 
 # --- 4. an incoming session ---------------------------------------------------
 say "INCOMING: three boxes of one part number"

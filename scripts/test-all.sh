@@ -13,4 +13,6 @@ SIM=$!
 trap 'kill $SIM 2>/dev/null || true' EXIT
 for _ in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:$PORT/_sim/state" && break; sleep 0.1; done
 cd "$ROOT/connector"
-STT_TALLY_URL="http://127.0.0.1:$PORT" go test -p 4 ./...
+# -p 1: the tally and runner suites share one simulator and assert on its
+# voucher count, so they must not run concurrently.
+STT_TALLY_URL="http://127.0.0.1:$PORT" go test -p 1 "$@" ./...

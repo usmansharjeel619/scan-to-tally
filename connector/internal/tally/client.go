@@ -1,0 +1,249 @@
+package tally
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+// Health is what the device's status bar shows. Operators tolerate delay; they
+// do not tolerate not knowing, so this is surfaced honestly all the way to the
+// top of the app rather than hidden behind a spinner.
+type Health string
+
+const (
+	HealthOnline        Health = "ONLINE"
+	HealthBusy          Health = "BUSY"           // responding, but slowly
+	HealthCompanyClosed Health = "COMPANY_CLOSED" // running, company not loaded
+	HealthOffline       Health = "OFFLINE"        // not running / unreachable
+	HealthUnknown       Health = "UNKNOWN"        // no probe yet
+)
+
+// Config describes the Tally instance on this machine.
+type Config struct {
+	// BaseURL is always a loopback address. The gateway has no authentication
+	// whatsoever, so binding it to anything routable would publish the whole
+	// book to the network.
+	BaseURL string
+	// Company is the exact company name as Tally spells it.
+	Company string
+	// Timeout bounds a single request. Tally blocks while a modal dialog is
+	// open in its UI, so this must be generous but finite.
+	Timeout time.Duration
+	// ProbeInterval is how often the health heartbeat runs.
+	ProbeInterval time.Duration
+	// TDL overrides the built-in collection definitions. Tally's TDL surface
+	// varies by version and company configuration, so a site must be able to
+	// correct a query from its config file rather than waiting on a rebuild of
+	// the Windows service.
+	TDL TDLOverrides
+}
+
+func (c Config) withDefaults() Config {
+	if c.BaseURL == "" {
+		c.BaseURL = "http://127.0.0.1:9000"
+	}
+	if c.Timeout == 0 {
+		c.Timeout = 30 * time.Second
+	}
+	if c.ProbeInterval == 0 {
+		c.ProbeInterval = 15 * time.Second
+	}
+	return c
+}
+
+// Client is the only thing in the system that talks to Tally.
+//
+// Every request goes through a single mutex. Tally's gateway processes requests
+// serially, and firing concurrent imports at it produces timeouts and, worse,
+// partially applied vouchers.
+type Client struct {
+	cfg  Config
+	http *http.Client
+	log  *slog.Logger
+
+	// mu serialises ALL traffic to Tally. Do not remove it for throughput;
+	// there is none to gain.
+	mu sync.Mutex
+
+	health   atomic.Value // Health
+	lastSeen atomic.Value // time.Time
+	lastErr  atomic.Value // string
+}
+
+// NewClient builds a client. It does not contact Tally; call Probe or Run.
+func NewClient(cfg Config, log *slog.Logger) *Client {
+	cfg = cfg.withDefaults()
+	if log == nil {
+		log = slog.Default()
+	}
+	c := &Client{
+		cfg:  cfg,
+		log:  log,
+		http: &http.Client{Timeout: cfg.Timeout},
+	}
+	c.health.Store(HealthUnknown)
+	c.lastSeen.Store(time.Time{})
+	c.lastErr.Store("")
+	return c
+}
+
+// Company returns the configured company name.
+func (c *Client) Company() string { return c.cfg.Company }
+
+// Health reports the last observed state.
+func (c *Client) Health() Health { return c.health.Load().(Health) }
+
+// LastSeen reports when Tally last answered successfully. The device shows this
+// next to cached balances so a stale figure is visibly stale.
+func (c *Client) LastSeen() time.Time { return c.lastSeen.Load().(time.Time) }
+
+// LastError reports the most recent probe failure, for the status screen.
+func (c *Client) LastError() string { return c.lastErr.Load().(string) }
+
+// post sends one XML envelope. Callers never reach the network concurrently.
+func (c *Client) post(ctx context.Context, payload []byte) ([]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.postLocked(ctx, payload)
+}
+
+func (c *Client) postLocked(ctx context.Context, payload []byte) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.BaseURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, transient("BAD_REQUEST", err.Error(), err)
+	}
+	// Tally is content-type agnostic but some builds are fussy about charset.
+	req.Header.Set("Content-Type", "text/xml; charset=utf-8")
+
+	start := time.Now()
+	resp, err := c.http.Do(req)
+	if err != nil {
+		e := classifyTransport(err)
+		c.noteFailure(e)
+		return nil, e
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if err != nil {
+		e := transient("READ_FAILED", err.Error(), err)
+		c.noteFailure(e)
+		return nil, e
+	}
+
+	elapsed := time.Since(start)
+	if resp.StatusCode != http.StatusOK {
+		e := transient("HTTP_"+fmt.Sprint(resp.StatusCode),
+			fmt.Sprintf("Tally returned HTTP %d", resp.StatusCode), nil)
+		c.noteFailure(e)
+		return nil, e
+	}
+
+	c.noteSuccess(elapsed)
+	c.log.Debug("tally request ok", "bytes", len(body), "ms", elapsed.Milliseconds())
+	return body, nil
+}
+
+func (c *Client) noteSuccess(elapsed time.Duration) {
+	c.lastSeen.Store(time.Now())
+	c.lastErr.Store("")
+	// A response that takes most of the timeout usually means somebody is
+	// sitting in a Tally dialog. Report it rather than pretending all is well.
+	if elapsed > c.cfg.Timeout/2 {
+		c.health.Store(HealthBusy)
+	} else {
+		c.health.Store(HealthOnline)
+	}
+}
+
+func (c *Client) noteFailure(e *Error) {
+	c.lastErr.Store(e.Message)
+	switch e.Code {
+	case "COMPANY_NOT_OPEN":
+		c.health.Store(HealthCompanyClosed)
+	case "TALLY_BUSY", "TIMEOUT":
+		c.health.Store(HealthBusy)
+	case "TALLY_NOT_RUNNING", "TRANSPORT", "EMPTY_RESPONSE":
+		c.health.Store(HealthOffline)
+	}
+}
+
+// noteAppError updates health from an application-level error that arrived
+// inside a *successful* HTTP response.
+//
+// Tally answers 200 OK with a <LINEERROR> body when the company is not open, so
+// the transport layer sees a perfectly healthy exchange while the warehouse is
+// in fact cut off. Without this the status bar would read ONLINE while every
+// job failed.
+func (c *Client) noteAppError(err error) error {
+	var e *Error
+	if errors.As(err, &e) {
+		c.noteFailure(e)
+	}
+	return err
+}
+
+// Import posts a voucher and returns Tally's accounting of what it did.
+//
+// This does NOT implement idempotency. Retry safety lives one layer up in the
+// job runner, which checks the local uuid -> voucher map before ever calling
+// here. A blind retry of this method creates a second voucher.
+func (c *Client) Import(ctx context.Context, v Voucher) (*ImportResult, error) {
+	payload, err := BuildImport(c.cfg.Company, v)
+	if err != nil {
+		// A malformed voucher is our bug, not Tally's; retrying cannot help.
+		return nil, business("INVALID_VOUCHER", err.Error())
+	}
+	c.log.Info("importing voucher",
+		"type", v.Type, "ref", v.Reference, "entries", len(v.Entries))
+
+	body, err := c.post(ctx, payload)
+	if err != nil {
+		return nil, err
+	}
+	res, err := ParseImportResponse(body)
+	if err != nil {
+		return res, c.noteAppError(err)
+	}
+	return res, nil
+}
+
+// Probe asks Tally for something cheap to establish whether it is alive and has
+// the company open.
+func (c *Client) Probe(ctx context.Context) error {
+	_, err := c.ListCompanies(ctx)
+	return err
+}
+
+// Run drives the health heartbeat until ctx is cancelled.
+func (c *Client) Run(ctx context.Context) {
+	t := time.NewTicker(c.cfg.ProbeInterval)
+	defer t.Stop()
+
+	probe := func() {
+		pctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
+		defer cancel()
+		if err := c.Probe(pctx); err != nil {
+			c.log.Warn("tally probe failed", "err", err, "health", c.Health())
+			return
+		}
+	}
+
+	probe()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			probe()
+		}
+	}
+}

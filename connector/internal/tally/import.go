@@ -1,0 +1,233 @@
+package tally
+
+import (
+	"bytes"
+	"encoding/xml"
+	"fmt"
+	"time"
+)
+
+// dateFmt is Tally's wire format for dates.
+const dateFmt = "20060102"
+
+// --- wire structs -----------------------------------------------------------
+//
+// These are marshalled rather than string-templated so that item names,
+// narrations and party names containing &, < or ' are escaped correctly.
+// Tally rejects the whole envelope on a single malformed character, and an
+// apostrophe in a party name is not a hypothetical.
+
+type importEnvelope struct {
+	XMLName xml.Name     `xml:"ENVELOPE"`
+	Header  importHeader `xml:"HEADER"`
+	Body    importBody   `xml:"BODY"`
+}
+
+type importHeader struct {
+	TallyRequest string `xml:"TALLYREQUEST"`
+}
+
+type importBody struct {
+	ImportData importData `xml:"IMPORTDATA"`
+}
+
+type importData struct {
+	RequestDesc requestDesc `xml:"REQUESTDESC"`
+	RequestData requestData `xml:"REQUESTDATA"`
+}
+
+type requestDesc struct {
+	ReportName      string          `xml:"REPORTNAME"`
+	StaticVariables staticVariables `xml:"STATICVARIABLES"`
+}
+
+type staticVariables struct {
+	CurrentCompany string `xml:"SVCURRENTCOMPANY,omitempty"`
+	ExportFormat   string `xml:"SVEXPORTFORMAT,omitempty"`
+	FromDate       string `xml:"SVFROMDATE,omitempty"`
+	ToDate         string `xml:"SVTODATE,omitempty"`
+}
+
+type requestData struct {
+	TallyMessage tallyMessage `xml:"TALLYMESSAGE"`
+}
+
+type tallyMessage struct {
+	UDFNamespace string      `xml:"xmlns:UDF,attr"`
+	Voucher      *wireVoucher `xml:"VOUCHER,omitempty"`
+}
+
+type wireVoucher struct {
+	VchType string `xml:"VCHTYPE,attr"`
+	Action  string `xml:"ACTION,attr"`
+
+	Date            string `xml:"DATE"`
+	EffectiveDate   string `xml:"EFFECTIVEDATE,omitempty"`
+	VoucherTypeName string `xml:"VOUCHERTYPENAME"`
+	VoucherNumber   string `xml:"VOUCHERNUMBER,omitempty"`
+	Reference       string `xml:"REFERENCE,omitempty"`
+	ReferenceDate   string `xml:"REFERENCEDATE,omitempty"`
+	Narration       string `xml:"NARRATION,omitempty"`
+	PartyLedgerName string `xml:"PARTYLEDGERNAME,omitempty"`
+
+	// PersistedView tells Tally which entry screen the voucher belongs to.
+	// Omitting it on an inventory voucher can make Tally interpret the lines
+	// as accounting entries.
+	PersistedView string `xml:"PERSISTEDVIEW,omitempty"`
+
+	Entries []wireInventoryEntry `xml:"ALLINVENTORYENTRIES.LIST"`
+}
+
+type wireInventoryEntry struct {
+	StockItemName    string   `xml:"STOCKITEMNAME"`
+	IsDeemedPositive string   `xml:"ISDEEMEDPOSITIVE"`
+	Description      string   `xml:"BASICUSERDESCRIPTION,omitempty"`
+	Rate             string   `xml:"RATE,omitempty"`
+	Amount           string   `xml:"AMOUNT,omitempty"`
+	ActualQty        string   `xml:"ACTUALQTY"`
+	BilledQty        string   `xml:"BILLEDQTY"`
+	Batches          []wireBatch `xml:"BATCHALLOCATIONS.LIST"`
+}
+
+type wireBatch struct {
+	GodownName     string `xml:"GODOWNNAME,omitempty"`
+	BatchName      string `xml:"BATCHNAME"`
+	MfdOn          string `xml:"MFDON,omitempty"`
+	OrderNo        string `xml:"ORDERNO,omitempty"`
+	TrackingNumber string `xml:"TRACKINGNUMBER,omitempty"`
+	ActualQty      string `xml:"ACTUALQTY"`
+	BilledQty      string `xml:"BILLEDQTY"`
+	Amount         string `xml:"AMOUNT,omitempty"`
+}
+
+// --- builder ----------------------------------------------------------------
+
+// BuildImport renders a voucher as a Tally "Import Data" envelope.
+//
+// company must be spelled exactly as Tally has it; it is passed through
+// SVCURRENTCOMPANY, which is how a single connector serves several companies
+// from one running Tally.
+func BuildImport(company string, v Voucher) ([]byte, error) {
+	if err := v.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid voucher: %w", err)
+	}
+
+	// Incoming adds stock, outgoing removes it. VERIFY this polarity against a
+	// hand-keyed export -- a flipped sign posts the movement backwards and is
+	// not obvious in the response, only in the stock report a week later.
+	deemedPositive := "No"
+	if v.Type == ReceiptNote || v.Type == Purchase {
+		deemedPositive = "Yes"
+	}
+
+	entries := make([]wireInventoryEntry, 0, len(v.Entries))
+	for _, e := range v.Entries {
+		batches := make([]wireBatch, 0, len(e.Batches))
+		for _, b := range e.Batches {
+			wb := wireBatch{
+				GodownName:     b.GodownName,
+				BatchName:      b.BatchName,
+				OrderNo:        b.OrderNo,
+				TrackingNumber: b.TrackingNumber,
+				ActualQty:      b.Qty.String(),
+				BilledQty:      b.Qty.String(),
+			}
+			if b.MfgDate != nil {
+				wb.MfdOn = b.MfgDate.Format(dateFmt)
+			}
+			batches = append(batches, wb)
+		}
+
+		we := wireInventoryEntry{
+			StockItemName:    e.StockItemName,
+			IsDeemedPositive: deemedPositive,
+			Description:      e.Description,
+			ActualQty:        e.Qty.String(),
+			BilledQty:        e.Qty.String(),
+			Batches:          batches,
+		}
+		if e.Rate != nil {
+			we.Rate = fmt.Sprintf("%g/%s", *e.Rate, e.Qty.Unit)
+		}
+		if e.Amount != nil {
+			we.Amount = fmt.Sprintf("%g", *e.Amount)
+		}
+		entries = append(entries, we)
+	}
+
+	env := importEnvelope{
+		Header: importHeader{TallyRequest: "Import Data"},
+		Body: importBody{
+			ImportData: importData{
+				RequestDesc: requestDesc{
+					ReportName:      "Vouchers",
+					StaticVariables: staticVariables{CurrentCompany: company},
+				},
+				RequestData: requestData{
+					TallyMessage: tallyMessage{
+						UDFNamespace: "TallyUDF",
+						Voucher: &wireVoucher{
+							VchType:         string(v.Type),
+							Action:          "Create",
+							Date:            v.Date.Format(dateFmt),
+							EffectiveDate:   v.Date.Format(dateFmt),
+							VoucherTypeName: string(v.Type),
+							VoucherNumber:   v.VoucherNumber,
+							Reference:       v.Reference,
+							ReferenceDate:   v.Date.Format(dateFmt),
+							Narration:       v.Narration,
+							PartyLedgerName: v.PartyLedgerName,
+							PersistedView:   "Invoice Voucher View",
+							Entries:         entries,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	enc := xml.NewEncoder(&buf)
+	enc.Indent("", " ")
+	if err := enc.Encode(env); err != nil {
+		return nil, fmt.Errorf("encode envelope: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// NewReceiptNote assembles an incoming voucher from scanned boxes already
+// grouped by stock item.
+//
+// ref is the session UUID and becomes the voucher's REFERENCE: the idempotency
+// key, written into Tally itself so a retry can be recognised even if the
+// connector's local map is lost.
+func NewReceiptNote(ref, narration, party string, date time.Time, entries []InventoryEntry) Voucher {
+	return Voucher{
+		Type:            ReceiptNote,
+		Date:            date,
+		Reference:       ref,
+		Narration:       narration,
+		PartyLedgerName: party,
+		Entries:         entries,
+	}
+}
+
+// NewDeliveryNote assembles an outgoing voucher against a sales order.
+//
+// orderNo is stamped onto every batch allocation, which is what links the
+// Delivery Note back to its Sales Order in Tally.
+func NewDeliveryNote(ref, narration, party, orderNo string, date time.Time, entries []InventoryEntry) Voucher {
+	for i := range entries {
+		for j := range entries[i].Batches {
+			entries[i].Batches[j].OrderNo = orderNo
+		}
+	}
+	return Voucher{
+		Type:            DeliveryNote,
+		Date:            date,
+		Reference:       ref,
+		Narration:       narration,
+		PartyLedgerName: party,
+		Entries:         entries,
+	}
+}

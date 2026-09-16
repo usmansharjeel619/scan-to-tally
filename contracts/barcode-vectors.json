@@ -1,0 +1,266 @@
+{
+  "$comment": [
+    "Shared golden vectors for the barcode parser. EVERY implementation",
+    "(connector/Go, relay/TypeScript, android/Kotlin) must run these and agree.",
+    "If you change this file you must re-run all three test suites.",
+    "",
+    "outcome values:",
+    "  ACCEPT        - parsed into a usable box",
+    "  WRONG_BARCODE - recognised, but it is one of the other codes on the label;",
+    "                  the operator must be told to scan the long SERIAL# code",
+    "  REJECT        - structurally a serial-style payload but invalid; loud failure",
+    "  UNKNOWN       - no parser recognised it at all"
+  ],
+  "version": 1,
+  "vectors": [
+    {
+      "name": "canonical label from photographed carton",
+      "raw": "4098-9792|1124241658336425|18|",
+      "symbology": "CODE128",
+      "outcome": "ACCEPT",
+      "expect": {
+        "pid": "4098-9792",
+        "boxSerial": "1124241658336425",
+        "qty": 18,
+        "firmware": null,
+        "mfgDate": "2024-11-24"
+      }
+    },
+    {
+      "name": "four fields with a populated firmware value",
+      "raw": "4100-1234|0315251122334455|6|3.02",
+      "symbology": "CODE128",
+      "outcome": "ACCEPT",
+      "expect": {
+        "pid": "4100-1234",
+        "boxSerial": "0315251122334455",
+        "qty": 6,
+        "firmware": "3.02",
+        "mfgDate": "2025-03-15"
+      }
+    },
+    {
+      "name": "three fields, no trailing delimiter",
+      "raw": "4090-9001|0701240099887766|24",
+      "symbology": "CODE128",
+      "outcome": "ACCEPT",
+      "expect": {
+        "pid": "4090-9001",
+        "boxSerial": "0701240099887766",
+        "qty": 24,
+        "firmware": null,
+        "mfgDate": "2024-07-01"
+      }
+    },
+    {
+      "name": "scanner appended CR LF",
+      "raw": "4098-9792|1124241658336425|18|\r\n",
+      "symbology": "CODE128",
+      "outcome": "ACCEPT",
+      "expect": {
+        "pid": "4098-9792",
+        "boxSerial": "1124241658336425",
+        "qty": 18,
+        "firmware": null,
+        "mfgDate": "2024-11-24"
+      }
+    },
+    {
+      "name": "surrounding whitespace from manual entry",
+      "raw": "  4098-9792 | 1124241658336425 | 18 |  ",
+      "symbology": "MANUAL",
+      "outcome": "ACCEPT",
+      "expect": {
+        "pid": "4098-9792",
+        "boxSerial": "1124241658336425",
+        "qty": 18,
+        "firmware": null,
+        "mfgDate": "2024-11-24"
+      }
+    },
+    {
+      "name": "non-hyphenated PID must not be rejected (other JCI product lines)",
+      "raw": "IDNAC4X5A|1224240011223344|2|",
+      "symbology": "CODE128",
+      "outcome": "ACCEPT",
+      "expect": {
+        "pid": "IDNAC4X5A",
+        "boxSerial": "1224240011223344",
+        "qty": 2,
+        "firmware": null,
+        "mfgDate": "2024-12-24"
+      }
+    },
+    {
+      "name": "serial with no usable date prefix still parses, date is null",
+      "raw": "4098-9792|ZX55TQ9910023344|18|",
+      "symbology": "CODE128",
+      "outcome": "ACCEPT",
+      "expect": {
+        "pid": "4098-9792",
+        "boxSerial": "ZX55TQ9910023344",
+        "qty": 18,
+        "firmware": null,
+        "mfgDate": null
+      }
+    },
+    {
+      "name": "impossible month in date prefix yields null date, not a bad date",
+      "raw": "4098-9792|9931241658336425|18|",
+      "symbology": "CODE128",
+      "outcome": "ACCEPT",
+      "expect": {
+        "pid": "4098-9792",
+        "boxSerial": "9931241658336425",
+        "qty": 18,
+        "firmware": null,
+        "mfgDate": null
+      }
+    },
+    {
+      "name": "31 February is not a date",
+      "raw": "4098-9792|0231241658336425|18|",
+      "symbology": "CODE128",
+      "outcome": "ACCEPT",
+      "expect": {
+        "pid": "4098-9792",
+        "boxSerial": "0231241658336425",
+        "qty": 18,
+        "firmware": null,
+        "mfgDate": null
+      }
+    },
+    {
+      "name": "29 February on a leap year is a date",
+      "raw": "4098-9792|0229241658336425|18|",
+      "symbology": "CODE128",
+      "outcome": "ACCEPT",
+      "expect": {
+        "pid": "4098-9792",
+        "boxSerial": "0229241658336425",
+        "qty": 18,
+        "firmware": null,
+        "mfgDate": "2024-02-29"
+      }
+    },
+    {
+      "name": "bare PID barcode from the same label",
+      "raw": "4098-9792",
+      "symbology": "CODE128",
+      "outcome": "WRONG_BARCODE",
+      "expect": { "hint": "PID" }
+    },
+    {
+      "name": "bare part-number barcode from the same label",
+      "raw": "0677197CN",
+      "symbology": "CODE128",
+      "outcome": "WRONG_BARCODE",
+      "expect": { "hint": "PART_NO" }
+    },
+    {
+      "name": "bare country-of-origin barcode",
+      "raw": "MX",
+      "symbology": "CODE39",
+      "outcome": "WRONG_BARCODE",
+      "expect": { "hint": "COO" }
+    },
+    {
+      "name": "bare quantity barcode",
+      "raw": "18",
+      "symbology": "CODE128",
+      "outcome": "WRONG_BARCODE",
+      "expect": { "hint": "QTY" }
+    },
+    {
+      "name": "non-numeric quantity",
+      "raw": "4098-9792|1124241658336425|abc|",
+      "symbology": "CODE128",
+      "outcome": "REJECT",
+      "expect": { "reason": "QTY_NOT_A_POSITIVE_INTEGER" }
+    },
+    {
+      "name": "zero quantity",
+      "raw": "4098-9792|1124241658336425|0|",
+      "symbology": "CODE128",
+      "outcome": "REJECT",
+      "expect": { "reason": "QTY_NOT_A_POSITIVE_INTEGER" }
+    },
+    {
+      "name": "negative quantity",
+      "raw": "4098-9792|1124241658336425|-5|",
+      "symbology": "CODE128",
+      "outcome": "REJECT",
+      "expect": { "reason": "QTY_NOT_A_POSITIVE_INTEGER" }
+    },
+    {
+      "name": "fractional quantity is not a box count",
+      "raw": "4098-9792|1124241658336425|1.5|",
+      "symbology": "CODE128",
+      "outcome": "REJECT",
+      "expect": { "reason": "QTY_NOT_A_POSITIVE_INTEGER" }
+    },
+    {
+      "name": "absurd quantity is a misread, not a real box",
+      "raw": "4098-9792|1124241658336425|999999|",
+      "symbology": "CODE128",
+      "outcome": "REJECT",
+      "expect": { "reason": "QTY_OUT_OF_RANGE" }
+    },
+    {
+      "name": "empty serial",
+      "raw": "4098-9792||18|",
+      "symbology": "CODE128",
+      "outcome": "REJECT",
+      "expect": { "reason": "EMPTY_SERIAL" }
+    },
+    {
+      "name": "empty pid",
+      "raw": "|1124241658336425|18|",
+      "symbology": "CODE128",
+      "outcome": "REJECT",
+      "expect": { "reason": "EMPTY_PID" }
+    },
+    {
+      "name": "serial too short to be a box id",
+      "raw": "4098-9792|1124|18|",
+      "symbology": "CODE128",
+      "outcome": "REJECT",
+      "expect": { "reason": "SERIAL_LENGTH" }
+    },
+    {
+      "name": "five fields is an unknown dialect, not a guess",
+      "raw": "4098-9792|1124241658336425|18|1.0|EXTRA",
+      "symbology": "CODE128",
+      "outcome": "REJECT",
+      "expect": { "reason": "FIELD_COUNT" }
+    },
+    {
+      "name": "two fields is an unknown dialect",
+      "raw": "4098-9792|1124241658336425",
+      "symbology": "CODE128",
+      "outcome": "REJECT",
+      "expect": { "reason": "FIELD_COUNT" }
+    },
+    {
+      "name": "completely unrelated label, e.g. a courier barcode",
+      "raw": "JD0002198765432109",
+      "symbology": "CODE128",
+      "outcome": "UNKNOWN",
+      "expect": {}
+    },
+    {
+      "name": "empty scan",
+      "raw": "",
+      "symbology": "CODE128",
+      "outcome": "UNKNOWN",
+      "expect": {}
+    },
+    {
+      "name": "EAN retail barcode is not our label",
+      "raw": "5012345678900",
+      "symbology": "EAN13",
+      "outcome": "UNKNOWN",
+      "expect": {}
+    }
+  ]
+}

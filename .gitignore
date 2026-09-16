@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+.gradle/
+local.properties
+*.exe
+*.db
+*.db-journal
+.env
+.env.local
+/connector/bin/

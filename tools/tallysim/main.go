@@ -220,8 +220,13 @@ func (s *sim) export(w http.ResponseWriter, id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Shape confirmed against a real TallyPrime in Phase 0: a CMPINFO preamble
+	// inside DESC, then the rows under BODY > DATA > COLLECTION. Entity names
+	// arrive in the NAME attribute; the <NAME> element is often buried under
+	// LANGUAGENAME.LIST and a flat struct tag will not reach it.
 	var b strings.Builder
-	b.WriteString("<ENVELOPE>\n")
+	b.WriteString("<ENVELOPE>\n <HEADER>\n  <VERSION>1</VERSION>\n  <STATUS>1</STATUS>\n </HEADER>\n")
+	b.WriteString(" <BODY>\n  <DESC>\n   <CMPINFO>\n    <COMPANY>0</COMPANY>\n    <STOCKITEM>0</STOCKITEM>\n   </CMPINFO>\n  </DESC>\n  <DATA>\n   <COLLECTION>\n")
 
 	switch id {
 	case "STT_Companies":
@@ -271,7 +276,7 @@ func (s *sim) export(w http.ResponseWriter, id string) {
 		return
 	}
 
-	b.WriteString("</ENVELOPE>\n")
+	b.WriteString("   </COLLECTION>\n  </DATA>\n </BODY>\n</ENVELOPE>\n")
 	w.Header().Set("Content-Type", "text/xml")
 	io.WriteString(w, b.String())
 }

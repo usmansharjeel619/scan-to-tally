@@ -242,9 +242,9 @@ func (c *Client) ListCompanies(ctx context.Context) ([]Company, error) {
 		if err := d.DecodeElement(&row, &se); err != nil {
 			return nil // skip an unreadable row rather than losing the batch
 		}
-		name := strings.TrimSpace(row.Name)
+		name := strings.TrimSpace(attr(se, "NAME"))
 		if name == "" {
-			name = strings.TrimSpace(attr(se, "NAME"))
+			name = strings.TrimSpace(row.Name)
 		}
 		if name == "" {
 			return nil
@@ -299,9 +299,9 @@ func (c *Client) ListStockItems(ctx context.Context) ([]StockItem, error) {
 		if err := d.DecodeElement(&row, &se); err != nil {
 			return nil
 		}
-		name := strings.TrimSpace(row.Name)
+		name := strings.TrimSpace(attr(se, "NAME"))
 		if name == "" {
-			name = strings.TrimSpace(attr(se, "NAME"))
+			name = strings.TrimSpace(row.Name)
 		}
 		if name == "" {
 			return nil
@@ -358,9 +358,9 @@ func (c *Client) ListBatchBalances(ctx context.Context) ([]BatchBalance, error) 
 		if err := d.DecodeElement(&row, &se); err != nil {
 			return nil
 		}
-		item := strings.TrimSpace(row.Name)
+		item := strings.TrimSpace(attr(se, "NAME"))
 		if item == "" {
-			item = strings.TrimSpace(attr(se, "NAME"))
+			item = strings.TrimSpace(row.Name)
 		}
 		for _, b := range row.Batches {
 			name := strings.TrimSpace(b.BatchName)

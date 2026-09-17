@@ -342,6 +342,8 @@ fun HomeScreen(nav: NavController) {
     val pending by (repo?.pendingCountFlow()?.collectAsState(0) ?: remember { mutableStateOf(0) })
     val failed by (repo?.failedCountFlow()?.collectAsState(0) ?: remember { mutableStateOf(0) })
     var godown by remember { mutableStateOf("") }
+    var syncing by remember { mutableStateOf(false) }
+    var syncNote by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) { godown = app.config.godown.first() }
 
@@ -421,10 +423,28 @@ fun HomeScreen(nav: NavController) {
                 }
                 OutlinedButton(
                     onClick = {
-                        scope.launch { app.repository().syncMasters() }
+                        scope.launch {
+                            syncing = true
+                            // Said out loud either way: a sync that quietly
+                            // fails leaves the handset working from stale
+                            // figures with no sign that it is.
+                            val ok = app.repository().syncMasters()
+                            syncing = false
+                            syncNote = if (ok) "Up to date with Tally."
+                            else "Could not reach the relay. Still using the figures already here."
+                        }
                     },
+                    enabled = !syncing,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
-                ) { Text("Sync now") }
+                ) { Text(if (syncing) "Syncing…" else "Sync now") }
+
+                syncNote?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
 
                 // Proof the trigger is reaching the app at all. Pull it here
                 // and the count moves even if nothing else does.

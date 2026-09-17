@@ -220,7 +220,15 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                     // Closed first. Leaving it up while this writes makes the
                     // Save button look dead, and the operator taps it again.
                     newProduct = null
-                    r.proposeNewItem(sid, d.pid, description, unit, d.raw, operator)
+                    val res = r.proposeNewItem(sid, d.pid, description, unit, d.raw, operator)
+                    // A product Tally will not create has to be said out loud.
+                    // Silently failing here is what left receipts that could
+                    // never save with nothing on screen to explain them.
+                    if (!res.ok && !res.queued) {
+                        result = res.message.ifEmpty { "Tally would not add ${d.pid}." }
+                        app.feedback.play(Beep.REJECT)
+                        asked -= d.pid
+                    }
                 }
             },
         )

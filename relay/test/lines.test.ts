@@ -246,6 +246,32 @@ test('a receipt that reached Tally cannot be discarded', async () => {
   assert.equal(db.prepare(`SELECT COUNT(*) n FROM sessions WHERE id=?`).get(id).n, 1);
 });
 
+test('a stock take with nothing counted is refused, not called a match', async () => {
+  // It used to answer "Count matches the book exactly", which is a false
+  // statement about stock and a reassuring one, which is worse.
+  const id = await openSession('STOCKCHECK');
+  const r = await app.inject({
+    method: 'POST', url: `/api/v1/sessions/${id}/submit`, headers: auth, payload: {},
+  });
+  assert.equal(r.statusCode, 400, r.body);
+  assert.equal(r.json().error, 'nothing_counted');
+  assert.equal(db.prepare(`SELECT state FROM sessions WHERE id=?`).get(id).state, 'DRAFT');
+});
+
+test('a stock take of only unknown products is refused, not called a match', async () => {
+  // The case that actually happened: one counted box, product not in Tally,
+  // reported back as "Count matches the book exactly".
+  const id = await openSession('STOCKCHECK');
+  await line(id, { pid: NEW_PID, boxSerial: 'BOX-1', qty: 1, raw: 'x' });
+
+  const r = await app.inject({
+    method: 'POST', url: `/api/v1/sessions/${id}/submit`, headers: auth, payload: {},
+  });
+  assert.equal(r.statusCode, 400, r.body);
+  assert.equal(r.json().error, 'nothing_comparable');
+  assert.equal(db.prepare(`SELECT state FROM sessions WHERE id=?`).get(id).state, 'DRAFT');
+});
+
 test('outgoing still refuses a part number Tally does not have', async () => {
   const id = await openSession('OUTGOING');
   const r = await line(id, { pid: NEW_PID, boxSerial: 'BOX-9', qty: 1, raw: 'x' });

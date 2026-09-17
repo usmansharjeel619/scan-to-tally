@@ -739,8 +739,31 @@ app.post('/api/v1/sessions/:id/submit', async (req, reply) => {
     `SELECT COUNT(*) AS n FROM session_lines WHERE session_id=? AND stock_item_name=''`,
   ).get(id) as { n: number };
 
+  const counted = db.prepare(
+    `SELECT COUNT(*) AS n FROM session_lines WHERE session_id=?`,
+  ).get(id) as { n: number };
+
   const job = buildJob(id, scope);
   if (!job) {
+    // A count with nothing on it has not matched anything -- it has not
+    // happened. Reporting "matches the book exactly" for an empty stock take
+    // is a false statement about stock, and the worst kind: reassuring.
+    if (s.kind === 'STOCKCHECK' && counted.n === 0) {
+      return reply.code(400).send({
+        error: 'nothing_counted',
+        message: 'Nothing was counted, so there is nothing to compare.',
+      });
+    }
+    // Counted, but nothing that could be compared: every line is a product
+    // Tally does not have yet. "Matches the book" is exactly as false here as
+    // it is for an empty count, and this is the case that actually happened.
+    if (s.kind === 'STOCKCHECK' && unresolved.n > 0) {
+      return reply.code(400).send({
+        error: 'nothing_comparable',
+        message: `${unresolved.n} counted ${unresolved.n === 1 ? 'box is' : 'boxes are'} ` +
+          'waiting for Tally to create the product, so the count cannot be compared yet.',
+      });
+    }
     if (s.kind === 'STOCKCHECK') {
       // Nothing to write is a good outcome for a count, not an error.
       db.prepare(`UPDATE sessions SET state='POSTED', completed_at=? WHERE id=?`)

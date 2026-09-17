@@ -324,8 +324,11 @@ class RelayApi(
         }
     }
 
-    suspend fun retry(sessionId: String) {
-        client.post("$baseUrl/api/v1/sessions/$sessionId/retry") { setBody(SubmitRequest()) }
+    suspend fun retry(sessionId: String): Boolean {
+        val resp = client.post("$baseUrl/api/v1/sessions/$sessionId/retry") {
+            setBody(SubmitRequest())
+        }
+        return resp.status.isSuccess()
     }
 
     /**
@@ -335,6 +338,18 @@ class RelayApi(
      * hand and the description printed on the label -- by the end of a session
      * the box is on a shelf and they are recalling, not reading.
      */
-    suspend fun proposeItem(req: ProposeItemRequest): ProposeItemResponse =
-        client.post("$baseUrl/api/v1/proposed-items") { setBody(req) }.body()
+    suspend fun proposeItem(req: ProposeItemRequest): ProposeItemResponse {
+        val resp = client.post("$baseUrl/api/v1/proposed-items") { setBody(req) }
+        if (resp.status.isSuccess()) return resp.body<ProposeItemResponse>().copy(ok = true)
+        // Same trap as submit: a refusal deserialised into the success shape
+        // reads as a success with empty fields, and the operator walks away
+        // believing a product was created that never was.
+        val err = runCatching { resp.body<ApiError>() }.getOrNull()
+        return ProposeItemResponse(
+            ok = false, pid = req.pid,
+            error = err?.error?.ifEmpty { null } ?: "http_${resp.status.value}",
+            message = err?.message?.ifEmpty { null }
+                ?: "Could not add this product (${resp.status.value}).",
+        )
+    }
 }

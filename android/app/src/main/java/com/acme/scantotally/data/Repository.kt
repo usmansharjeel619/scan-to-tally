@@ -58,6 +58,13 @@ data class QtyCheck(
     val orderPending: Double = 0.0,
 )
 
+/** What happened when a new product was sent to Tally. */
+data class ProposeResult(
+    val ok: Boolean = false,
+    val queued: Boolean = false,
+    val message: String = "",
+)
+
 /** The answer to "how much of this do I have". */
 data class StockLookup(
     val found: Boolean = false,
@@ -516,21 +523,33 @@ class Repository(context: Context, private val api: RelayApi?) {
     suspend fun proposeNewItem(
         sessionId: String, pid: String, description: String,
         unit: String, raw: String, operator: String,
-    ): Boolean {
+    ): ProposeResult {
         val name = "$pid $description"
         dao.upsertBindings(listOf(PidBindingEntity(pid, name, description, provisional = true)))
         dao.upsertItems(listOf(StockItemEntity(name = name, baseUnits = unit, hasBatches = true)))
         // Fill in the cartons already scanned for this product, so they stop
         // reading as undescribed the moment the operator has described them.
         dao.fillInProduct(pid, name, unit, description)
-        return runCatching {
+        val resp = runCatching {
             api?.proposeItem(
                 ProposeItemRequest(
                     pid = pid, description = description, baseUnits = unit,
                     sessionId = sessionId, raw = raw, proposedBy = operator,
                 ),
-            )?.ok ?: false
-        }.getOrDefault(false)
+            )
+        }.getOrNull()
+
+        // No answer at all is not a failure: the relay will be told when there
+        // is signal again, and the carton is already counted either way.
+        if (resp == null) return ProposeResult(queued = true)
+        if (!resp.ok) {
+            // It will not be created, so the guess must not survive -- or the
+            // rest of the pallet scans against a product that does not exist.
+            dao.deleteBinding(pid)
+            dao.unfillProduct(pid)
+            return ProposeResult(ok = false, message = resp.message.orEmpty())
+        }
+        return ProposeResult(ok = true, message = resp.message.orEmpty())
     }
 
     /** The receipt itself, for callers that need to know which flow it is. */
@@ -622,7 +641,7 @@ class Repository(context: Context, private val api: RelayApi?) {
      */
     suspend fun retry(sessionId: String): Boolean {
         if (!pushPendingLines(sessionId)) return false
-        val ok = runCatching { api?.retry(sessionId); true }.getOrDefault(false)
+        val ok = runCatching { api?.retry(sessionId) == true }.getOrDefault(false)
         if (ok) dao.setSessionState(sessionId, "QUEUED")
         return ok
     }

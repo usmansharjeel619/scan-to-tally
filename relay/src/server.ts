@@ -1061,12 +1061,26 @@ if (DOWNLOAD_PATH) {
       // so two APKs on a phone can be told apart without installing them.
       reply.header('Content-Disposition', `attachment; filename="${downloadName(file)}"`);
     }
-    // Without this Cloudflare caches the binary for hours and hands out a
-    // stale connector.exe long after a fix has shipped -- which it did.
-    reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
-    reply.header('Pragma', 'no-cache');
+    // Cloudflare must not hand out a stale binary -- it once served a
+    // connector.exe for hours after a fix had shipped.
+    //
+    // But no-store is too blunt for a phone: Android's download manager treats
+    // it as "this may not be written to storage" and can sit on a completed
+    // download without ever finalising it. no-cache with a validator gets the
+    // same freshness -- every request is revalidated -- without telling the
+    // client it may not keep what it just downloaded.
+    const stamp = statSync(full);
+    // "private" is the part that matters: it bars SHARED caches, which is
+    // Cloudflare, while saying nothing about whether the client may keep the
+    // file. Plain no-cache was rewritten upstream into max-age=14400 -- the
+    // four-hour stale binary all over again -- and no-store stopped the phone
+    // finalising the download. This says exactly what is meant: nobody in the
+    // middle may hold it, the client may.
+    reply.header('Cache-Control', 'private, no-cache, must-revalidate, max-age=0');
+    reply.header('ETag', `"${stamp.size}-${Math.floor(stamp.mtimeMs)}"`);
+    reply.header('Last-Modified', stamp.mtime.toUTCString());
 
-    const size = statSync(full).size;
+    const size = stamp.size;
 
     // Ranges, actually honoured.
     //

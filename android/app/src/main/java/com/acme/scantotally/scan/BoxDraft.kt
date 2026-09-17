@@ -62,18 +62,35 @@ data class BoxDraft(
 }
 
 /**
- * What to tell an operator who scanned a barcode that is on the label but is
- * not one of ours.
+ * What to tell an operator who scanned a barcode that is none of our fields.
  *
- * These exist because the labels are crowded: a part no, a date code, a week
- * number and an issue number all sit next to the ones that matter, and someone
- * will point at them. Saying which is far better than a bare refusal.
+ * Says what to do, not why. The reasoning behind refusing a bare number --
+ * that a week number and a quantity are the same shape -- is true but useless
+ * to someone holding a carton, and on a label with no week number it reads as
+ * nonsense.
  */
 fun fragmentRefusal(fragment: Fragment): String = when (fragment.hint) {
-    FragmentHint.QTY ->
-        "That is a plain number, so it could be the quantity, the week number " +
-            "or the issue number. Type the quantity instead."
     FragmentHint.PART_NO ->
-        "That looks like the part no or a date code, not the product barcode."
+        "That is not the product or the box barcode."
     else -> "That barcode is not the product or the box number."
 }
+
+/**
+ * A scanned number offered as the quantity, for the operator to confirm.
+ *
+ * Refusing it outright was obstructive: with the quantity the only thing
+ * missing, someone pointing a scanner at a number is plainly pointing at the
+ * quantity. But it still cannot be taken on trust, because on a Tyco label the
+ * week number and the issue number are the same shape and sit beside it.
+ *
+ * So it is offered rather than accepted or refused: the figure lands in the
+ * box already filled in, and a human checks it against the carton before it
+ * becomes stock. That is the same guarantee as typing, with almost none of the
+ * work.
+ */
+fun BoxDraft.offeredQuantity(fragment: Fragment): Int? =
+    if (fragment.hint == FragmentHint.QTY && qty == null) {
+        fragment.raw.trim().toIntOrNull()?.takeIf { it > 0 }
+    } else {
+        null
+    }

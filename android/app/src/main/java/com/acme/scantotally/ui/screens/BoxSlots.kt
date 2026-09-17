@@ -178,13 +178,16 @@ fun SlotEntryDialog(
     draft: BoxDraft,
     onCancel: () -> Unit,
     onConfirm: (String) -> Unit,
+    /** A figure read off a barcode, filled in for the operator to check. */
+    offered: Int? = null,
 ) {
     SuspendScanCapture()
 
     val initial = when (slot) {
         BoxDraft.Slot.PRODUCT -> draft.pid
         BoxDraft.Slot.BOX -> draft.boxSerial
-        BoxDraft.Slot.QUANTITY -> draft.qty?.takeIf { it > 0 }?.toString().orEmpty()
+        BoxDraft.Slot.QUANTITY ->
+            offered?.toString() ?: draft.qty?.takeIf { it > 0 }?.toString().orEmpty()
     }
     var value by remember(slot) { mutableStateOf(initial) }
 
@@ -201,7 +204,8 @@ fun SlotEntryDialog(
                 when (slot) {
                     BoxDraft.Slot.PRODUCT -> "Product code"
                     BoxDraft.Slot.BOX -> "Box number"
-                    BoxDraft.Slot.QUANTITY -> "Quantity in this box"
+                    BoxDraft.Slot.QUANTITY ->
+                        if (offered != null) "Is this the quantity?" else "Quantity in this box"
                 },
             )
         },
@@ -214,10 +218,9 @@ fun SlotEntryDialog(
                         BoxDraft.Slot.BOX ->
                             "If the carton has no box number, write one on it and " +
                                 "type the same here."
-                        BoxDraft.Slot.QUANTITY ->
-                            "Read it off the carton. It is typed rather than scanned " +
-                                "because a quantity barcode and a week number look " +
-                                "exactly alike."
+                        BoxDraft.Slot.QUANTITY -> if (offered != null)
+                            "Scanned " + offered + ". Check it matches the quantity printed on the carton, then tap Done."
+                        else "Read it off the carton."
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

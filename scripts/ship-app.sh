@@ -37,10 +37,21 @@ sshpass -e rsync -az --delete -e "ssh $SSH_OPTS" \
   android/app/src android/app/build.gradle.kts "$BUILD_HOST:/opt/stt-build/src/android/app/"
 sshpass -e rsync -az -e "ssh $SSH_OPTS" VERSION contracts "$BUILD_HOST:/opt/stt-build/src/"
 
-sshpass -e ssh $SSH_OPTS "$BUILD_HOST" \
+# The remote build's exit status, not the exit status of the grep that reads
+# its output. Piping through grep hid a failed build once and published the
+# previous APK under the new version number -- a stale binary wearing a fresh
+# label, which is worse than no release at all.
+if ! sshpass -e ssh $SSH_OPTS "$BUILD_HOST" \
   '. /opt/stt-build/env.sh && cd /opt/stt-build/src/android &&
+   set -o pipefail &&
    nice -n 19 ./gradlew --no-daemon --console=plain assembleDebug testDebugUnitTest 2>&1 |
      grep -E "^(e:|BUILD|FAILURE)" | head -10'
+then
+  echo
+  echo "BUILD FAILED -- nothing published, version left at ${current}." >&2
+  echo "$current" > VERSION
+  exit 1
+fi
 
 # The version file the relay serves the APK under. Written with the binary, so
 # the two can never disagree about what was published.

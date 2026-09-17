@@ -65,6 +65,7 @@ import com.acme.scantotally.scan.FragmentKind
 import com.acme.scantotally.scan.ManualScanSource
 import com.acme.scantotally.scan.classifyFragment
 import com.acme.scantotally.scan.fragmentRefusal
+import com.acme.scantotally.scan.offeredQuantity
 import com.acme.scantotally.scan.RawScan
 import com.acme.scantotally.scan.SuspendScanCapture
 import com.acme.scantotally.ui.theme.AcceptGreen
@@ -101,6 +102,8 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
     var newProduct by remember { mutableStateOf<ScanDecision?>(null) }
     var draft by remember { mutableStateOf(BoxDraft()) }
     var typing by remember { mutableStateOf<BoxDraft.Slot?>(null) }
+    /** A quantity read off a barcode, waiting to be confirmed against the carton. */
+    var offeredQty by remember { mutableStateOf<Int?>(null) }
     var operator by remember { mutableStateOf("") }
     var submitting by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<String?>(null) }
@@ -197,8 +200,18 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
 
             val fragment = classifyFragment(scan.data)
             if (fragment.kind == FragmentKind.NOT_MINE) {
-                // Refused, never guessed into a slot. The labels are crowded
-                // with part nos, date codes, week numbers and issue numbers.
+                // A number scanned while the quantity is the only thing missing
+                // is plainly meant as the quantity. It still cannot be taken on
+                // trust -- a Tyco week number is the same shape -- so it is
+                // offered for confirmation rather than refused or accepted.
+                val offered = draft.offeredQuantity(fragment)
+                if (offered != null) {
+                    offeredQty = offered
+                    typing = BoxDraft.Slot.QUANTITY
+                    app.feedback.play(Beep.ACCEPT)
+                    return@collect
+                }
+
                 last = ScanDecision(
                     outcome = Outcome2.WRONG_BARCODE, beep = Beep.REJECT,
                     message = fragmentRefusal(fragment),
@@ -268,7 +281,8 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
         SlotEntryDialog(
             slot = slot,
             draft = draft,
-            onCancel = { typing = null },
+            offered = offeredQty,
+            onCancel = { typing = null; offeredQty = null },
             onConfirm = { value ->
                 draft = when (slot) {
                     BoxDraft.Slot.PRODUCT -> draft.withTypedProduct(value)
@@ -277,6 +291,7 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                         draft.withTypedQty(value.toIntOrNull() ?: 0)
                 }
                 typing = null
+                offeredQty = null
 
                 val d = draft
                 if (d.isComplete) {

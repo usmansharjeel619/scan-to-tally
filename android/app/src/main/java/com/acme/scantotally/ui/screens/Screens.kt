@@ -408,6 +408,20 @@ fun HomeScreen(nav: NavController) {
                     },
                     modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
                 ) { Text("Sync now") }
+
+                // Proof the trigger is reaching the app at all. Pull it here
+                // and the count moves even if nothing else does.
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (com.acme.scantotally.MainActivity.rawSeen == 0)
+                        "Scanner: nothing received yet — pull the trigger to test"
+                    else
+                        "Scanner: ${com.acme.scantotally.MainActivity.rawSeen} read · " +
+                            com.acme.scantotally.MainActivity.lastRaw.take(40),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
         }
     }

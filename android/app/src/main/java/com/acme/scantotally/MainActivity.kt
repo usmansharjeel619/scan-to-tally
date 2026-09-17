@@ -18,6 +18,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.acme.scantotally.scan.DataWedgeScanSource
+import com.acme.scantotally.scan.KeystrokeScanner
 import com.acme.scantotally.scan.RawScan
 import com.acme.scantotally.ui.screens.HomeScreen
 import com.acme.scantotally.ui.screens.IncomingScreen
@@ -52,6 +53,16 @@ class MainActivity : ComponentActivity() {
         replay = 0, extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
 
+    /**
+     * What the scanner has actually delivered, regardless of what the app made
+     * of it. Shown on the home screen so "nothing happens" can be told apart
+     * from "it arrived and the parser rejected it" without a round trip.
+     */
+    companion object {
+        var rawSeen by mutableStateOf(0)
+        var lastRaw by mutableStateOf("")
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -74,6 +85,14 @@ class MainActivity : ComponentActivity() {
                 // activity received as an intent while backgrounded.
                 LaunchedEffect(Unit) {
                     DataWedgeScanSource.scans(this@MainActivity).collect { scans.emit(it) }
+                }
+
+                // Rugged scanners default to typing the barcode into whatever
+                // has focus. This catches that, alongside the intent path.
+                KeystrokeScanner { payload ->
+                    rawSeen++
+                    lastRaw = payload
+                    scans.tryEmit(RawScan(payload, "KEYSTROKE", RawScan.Source.HARDWARE))
                 }
 
                 Scaffold { inner ->

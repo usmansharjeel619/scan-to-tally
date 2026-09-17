@@ -23,7 +23,7 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="portrait"
-            android:windowSoftInputMode="adjustResize"
+            android:windowSoftInputMode="adjustResize|stateAlwaysHidden"
             android:theme="@style/Theme.ScanToTally">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

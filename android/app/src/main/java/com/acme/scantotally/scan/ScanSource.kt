@@ -147,9 +147,13 @@ object DataWedgeScanSource : ScanSource {
                     android.os.Bundle().apply {
                         putString("PLUGIN_NAME", "KEYSTROKE")
                         putBundle("PARAM_LIST", android.os.Bundle().apply {
-                            // Intent output is the whole point; keystroke output
-                            // would also type the payload into whatever has focus.
-                            putString("keystroke_output_enabled", "false")
+                            // Deliberately LEFT ON. If the intent profile fails
+                            // to apply -- which it silently can -- disabling
+                            // keystrokes too would leave the scanner with no
+                            // working path at all, which is exactly what
+                            // happened on the first real device. The app reads
+                            // both; a duplicate is refused anyway.
+                            putString("keystroke_output_enabled", "true")
                         })
                     },
                 ))

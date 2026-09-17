@@ -482,6 +482,9 @@ class Repository(context: Context, private val api: RelayApi?) {
         }.getOrDefault(false)
     }
 
+    /** The receipt itself, for callers that need to know which flow it is. */
+    suspend fun session(sessionId: String): SessionEntity? = dao.session(sessionId)
+
     /** What the price list calls a part number, if it knows it. */
     suspend fun catalogueDescription(pid: String): String? = dao.catalogue(pid)?.description
 

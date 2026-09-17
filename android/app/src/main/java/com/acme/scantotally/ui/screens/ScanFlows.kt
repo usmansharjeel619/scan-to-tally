@@ -64,6 +64,7 @@ import com.acme.scantotally.scan.RawScan
 import com.acme.scantotally.scan.SuspendScanCapture
 import com.acme.scantotally.ui.theme.AcceptGreen
 import com.acme.scantotally.ui.theme.FlagAmber
+import com.acme.scantotally.ui.theme.LocalSemantics
 import com.acme.scantotally.ui.theme.RejectRed
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -876,10 +877,15 @@ private fun ScanScaffold(
 /**
  * Manual entry: a first-class tab, not a hidden escape hatch.
  *
- * It runs through the IDENTICAL parser and validation path as a scan. It is a
- * substitute for the scanner, never a bypass for the checks -- otherwise it
- * quietly becomes the route people take when validation is inconvenient, and
- * stock accuracy dies.
+ * It runs through the IDENTICAL parser and validation path as a scan, for
+ * whichever flow it was opened from. It is a substitute for the scanner, never
+ * a bypass for the checks -- otherwise it quietly becomes the route people take
+ * when validation is inconvenient, and stock accuracy dies.
+ *
+ * It used to treat every typed box as an incoming receipt whatever screen it
+ * was opened from, which was exactly the bypass this comment promised it was
+ * not: on a despatch it skipped the check that a box cannot give up more than
+ * it holds, and on an inventory check it recorded a count as a receipt.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -889,12 +895,23 @@ fun ManualEntryScreen(nav: NavController, sessionId: String) {
     val scope = rememberCoroutineScope()
 
     var repo by remember { mutableStateOf<Repository?>(null) }
+    var kind by remember { mutableStateOf("") }
+    var salesOrder by remember { mutableStateOf("") }
+    var godown by remember { mutableStateOf("") }
     var pid by remember { mutableStateOf("") }
     var serial by remember { mutableStateOf("") }
     var qty by remember { mutableStateOf("") }
     var last by remember { mutableStateOf<ScanDecision?>(null) }
+    var refusal by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(Unit) { repo = app.repository() }
+    LaunchedEffect(Unit) {
+        val r = app.repository()
+        repo = r
+        godown = app.config.godown.first()
+        val s = r.session(sessionId)
+        kind = s?.kind ?: "INCOMING"
+        salesOrder = s?.salesOrder.orEmpty()
+    }
 
     Scaffold(
         topBar = {
@@ -913,7 +930,17 @@ fun ManualEntryScreen(nav: NavController, sessionId: String) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                "Use this when a label is torn or unreadable. Every check that applies to a scan applies here too.",
+                when (kind) {
+                    "OUTGOING" ->
+                        "Use this when a label is torn or unreadable. The quantity is still " +
+                            "checked against what the box actually holds."
+                    "STOCKCHECK" ->
+                        "Use this when a label is torn or unreadable. Count what is in the " +
+                            "box in front of you."
+                    else ->
+                        "Use this when a label is torn or unreadable. Every check that " +
+                            "applies to a scan applies here too."
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -932,7 +959,15 @@ fun ManualEntryScreen(nav: NavController, sessionId: String) {
             )
             OutlinedTextField(
                 value = qty, onValueChange = { qty = it.filter { c -> c.isDigit() } },
-                label = { Text("Quantity") },
+                label = {
+                    Text(
+                        when (kind) {
+                            "OUTGOING" -> "Quantity to despatch"
+                            "STOCKCHECK" -> "Quantity counted"
+                            else -> "Quantity"
+                        },
+                    )
+                },
                 singleLine = true, modifier = Modifier.fillMaxWidth(),
             )
 
@@ -940,21 +975,66 @@ fun ManualEntryScreen(nav: NavController, sessionId: String) {
                 onClick = {
                     scope.launch {
                         val r = repo ?: return@launch
+                        refusal = null
                         // Rebuilt into the label's own format so it goes
                         // through exactly the same parser as a real scan.
                         val payload = "$pid|$serial|$qty|"
-                        val d = r.scanIncoming(sessionId, ManualScanSource.scan(payload))
+                        val scan = ManualScanSource.scan(payload)
+                        val typed = qty.toDoubleOrNull() ?: 0.0
+
+                        // Whichever flow this was opened from decides the
+                        // checks. Anything else would make this the soft route
+                        // round them.
+                        val d = when (kind) {
+                            "OUTGOING" -> r.scanOutgoing(sessionId, salesOrder, godown, scan)
+                            "STOCKCHECK" -> r.scanStockCheck(sessionId, godown, scan, blind = true)
+                            else -> r.scanIncoming(sessionId, scan)
+                        }
                         last = d
                         app.feedback.play(d.beep)
-                        if (d.outcome == Outcome2.ACCEPT || d.outcome == Outcome2.FLAGGED) {
-                            r.commitLine(sessionId, d)
-                            pid = ""; serial = ""; qty = ""
+
+                        if (d.outcome != Outcome2.ACCEPT && d.outcome != Outcome2.FLAGGED) {
+                            return@launch
                         }
+
+                        // A despatch quantity is the employee's to type, and it
+                        // can never exceed what that box actually holds.
+                        if (kind == "OUTGOING") {
+                            val check = r.checkOutgoingQty(
+                                sessionId, salesOrder, godown,
+                                d.pid, d.boxSerial, d.stockItemName, typed,
+                            )
+                            if (!check.ok) {
+                                refusal = check.error
+                                app.feedback.play(Beep.REJECT)
+                                return@launch
+                            }
+                            r.commitLine(sessionId, d, typed)
+                        } else {
+                            r.commitLine(sessionId, d)
+                        }
+                        pid = ""; serial = ""; qty = ""
                     }
                 },
                 enabled = pid.isNotBlank() && serial.isNotBlank() && qty.isNotBlank(),
                 modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-            ) { Text("Add box") }
+            ) {
+                Text(
+                    when (kind) {
+                        "OUTGOING" -> "Add to despatch"
+                        "STOCKCHECK" -> "Record count"
+                        else -> "Add box"
+                    },
+                )
+            }
+
+            refusal?.let {
+                Text(
+                    it,
+                    color = LocalSemantics.current.reject.fg,
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+            }
 
             ScanResultCard(last)
         }

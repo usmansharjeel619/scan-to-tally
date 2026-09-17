@@ -21,17 +21,23 @@ android {
         // compatibility shims for devices nobody has.
         minSdk = 26
         targetSdk = 36
-        // Bumped every build from the clock.
+        // The release, read from the VERSION file at the repository root so
+        // the app, the APK's filename and the download all say the same thing.
+        val release = File(rootDir, "../VERSION").readText().trim()
+
+        // Bumped every build from the clock, independently of the release.
         //
-        // Two rounds were lost to "is the new build actually on the phone?",
-        // which is unanswerable when every APK claims the same version. The
-        // handset now shows this on its home screen, so it takes one glance.
+        // Android only installs over an APK whose code is higher, and two
+        // rounds were lost to "is the new build actually on the phone?" --
+        // unanswerable when every APK claims the same version. The release
+        // answers "which version", this answers "which build of it".
         versionCode = ((System.currentTimeMillis() / 1000) % 100000000).toInt()
-        versionName = "0.1.0"
+        versionName = release
         val stamp = SimpleDateFormat("d MMM HH:mm").apply {
             timeZone = TimeZone.getTimeZone("Asia/Riyadh")
         }.format(Date())
         buildConfigField("String", "BUILD_STAMP", "\"" + stamp + "\"")
+        buildConfigField("String", "RELEASE", "\"" + release + "\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

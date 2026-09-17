@@ -461,10 +461,12 @@ fun HomeScreen(nav: NavController) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                // Which build is actually on this handset. Settles the question
-                // in one glance instead of a round trip.
+                // The release, and the build of it actually on this handset.
+                // The version says what it is; the stamp settles "did the new
+                // one install" in one glance instead of a round trip.
                 Text(
-                    "Build ${com.acme.scantotally.BuildConfig.BUILD_STAMP}",
+                    "Scan to Tally v${com.acme.scantotally.BuildConfig.RELEASE}" +
+                        "  ·  build ${com.acme.scantotally.BuildConfig.BUILD_STAMP}",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.fillMaxWidth(),

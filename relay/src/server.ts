@@ -15,7 +15,7 @@
 import Fastify from 'fastify';
 import websocket from '@fastify/websocket';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { openDb, applySync, audit, nowIso, resolvePid, type DB } from './db.ts';
 import { decideIncomingScan, decideOutgoingScan, validateOutgoingQty } from './validation.ts';
@@ -965,6 +965,27 @@ app.get('/api/v1/connectors', async (req, reply) => {
  * it is rotated by changing STT_DOWNLOAD_PATH.
  */
 if (DOWNLOAD_PATH) {
+  /**
+   * The name the file arrives under, which is not the name it is served at.
+   *
+   * The link has to stay put: it is written down, pasted into chats and typed
+   * off a screen onto a warehouse PC. But an APK called app.apk tells nobody
+   * which version it is once it is sitting in Downloads next to three others.
+   */
+  const downloadName = (file: string): string => {
+    const version = (() => {
+      try {
+        return readFileSync(join(DIST_DIR, 'app.version'), 'utf8').trim();
+      } catch {
+        return '';
+      }
+    })();
+    if (!version) return file;
+    const dot = file.lastIndexOf('.');
+    if (dot <= 0) return file;
+    return `${file.slice(0, dot)}-${version}${file.slice(dot)}`;
+  };
+
   app.get(`/dl/${DOWNLOAD_PATH}/:file`, async (req, reply) => {
     const { file } = req.params as { file: string };
     // No path traversal: the name must be one plain filename.
@@ -985,7 +1006,10 @@ if (DOWNLOAD_PATH) {
     // Text should open in the browser, not land in Downloads -- someone is
     // reading these off a phone while typing them into the app.
     if (!file.endsWith('.txt') && !file.endsWith('.html')) {
-      reply.header('Content-Disposition', `attachment; filename="${file}"`);
+      // The URL never changes -- it is written down, pasted into chats and
+      // typed off a screen -- but what lands in Downloads carries the version,
+      // so two APKs on a phone can be told apart without installing them.
+      reply.header('Content-Disposition', `attachment; filename="${downloadName(file)}"`);
     }
     // Without this Cloudflare caches the binary for hours and hands out a
     // stale connector.exe long after a fix has shipped -- which it did.

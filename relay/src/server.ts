@@ -863,11 +863,17 @@ if (DOWNLOAD_PATH) {
 
     audit(db, 'download', 'CONNECTOR_DOWNLOAD', file, String(req.ip));
     const type = file.endsWith('.exe') ? 'application/octet-stream'
-      : file.endsWith('.ps1') ? 'text/plain; charset=utf-8'
+      : file.endsWith('.apk') ? 'application/vnd.android.package-archive'
+      : file.endsWith('.html') ? 'text/html; charset=utf-8'
+      : file.endsWith('.ps1') || file.endsWith('.txt') ? 'text/plain; charset=utf-8'
       : file.endsWith('.json') ? 'application/json'
       : 'application/octet-stream';
     reply.header('Content-Type', type);
-    reply.header('Content-Disposition', `attachment; filename="${file}"`);
+    // Text should open in the browser, not land in Downloads -- someone is
+    // reading these off a phone while typing them into the app.
+    if (!file.endsWith('.txt') && !file.endsWith('.html')) {
+      reply.header('Content-Disposition', `attachment; filename="${file}"`);
+    }
     // Without this Cloudflare caches the binary for hours and hands out a
     // stale connector.exe long after a fix has shipped -- which it did.
     reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');

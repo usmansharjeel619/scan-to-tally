@@ -82,7 +82,7 @@ class MainActivity : ComponentActivity() {
                         startDestination = if (provisioned == false) "setup" else "home",
                         modifier = Modifier.padding(inner),
                     ) {
-                        composable("setup") { SetupScreen(nav) }
+                        composable("setup") { SetupScreen(nav, scans) }
                         composable("home") { HomeScreen(nav) }
                         composable("incoming") { IncomingScreen(nav, scans) }
                         composable("orders") { SalesOrderPickerScreen(nav) }

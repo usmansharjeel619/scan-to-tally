@@ -1,5 +1,7 @@
 package com.acme.scantotally.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -54,7 +56,10 @@ import com.acme.scantotally.ScanToTallyApp
 import com.acme.scantotally.data.Repository
 import com.acme.scantotally.data.SalesOrderEntity
 import com.acme.scantotally.data.SessionEntity
+import com.acme.scantotally.scan.RawScan
 import com.acme.scantotally.ui.theme.AcceptGreen
+import com.acme.scantotally.ui.theme.AcceptGreenBg
+import kotlinx.coroutines.flow.Flow
 import com.acme.scantotally.ui.theme.FlagAmber
 import com.acme.scantotally.ui.theme.RejectRed
 import kotlinx.coroutines.delay
@@ -78,9 +83,59 @@ private fun rememberRepo(): Repository? {
  * pick the same godown thirty times a shift is friction that eventually gets
  * one of those picks wrong.
  */
+/**
+ * Decodes a provisioning code.
+ *
+ * Format: STT1:{"u":relay,"t":token,"g":godown,"o":operator}. Prefixed and
+ * versioned so a stray warehouse barcode cannot be mistaken for one, and so a
+ * later format can be told apart from this one.
+ */
+/**
+ * Reads a settings file.
+ *
+ * Accepts the JSON the relay serves, and also the plain-text version, so
+ * whichever file someone happens to have downloaded works. Fewer ways to get
+ * this wrong is worth a few extra lines.
+ */
+private fun parseSetupFile(text: String): Map<String, String> {
+    val out = mutableMapOf<String, String>()
+    // JSON form: {"relayUrl":"...","token":"...","godown":"...","operator":"..."}
+    Regex("\"(relayUrl|token|godown|operator)\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
+        .findAll(text).forEach { m ->
+            out[m.groupValues[1]] = m.groupValues[2].replace("\\/", "/")
+        }
+    if (out.isNotEmpty()) return out
+
+    // Plain-text form: a heading line, then its value on the next line.
+    val lines = text.lines().map { it.trim() }
+    lines.forEachIndexed { i, line ->
+        val next = lines.getOrNull(i + 1)?.trim().orEmpty()
+        if (next.isEmpty() || next.startsWith("-")) return@forEachIndexed
+        when {
+            line.equals("Relay address", true) -> out["relayUrl"] = next
+            line.equals("Device token", true) -> out["token"] = next
+            line.equals("Godown", true) -> out["godown"] = next
+            line.equals("Operator name", true) -> out["operator"] = next
+        }
+    }
+    return out
+}
+
+private fun parseSetupCode(raw: String): Map<String, String>? {
+    val body = raw.trim().removePrefix("STT1:").takeIf { it != raw.trim() } ?: return null
+    return runCatching {
+        val out = mutableMapOf<String, String>()
+        Regex("\"([uUtTgGoO])\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
+            .findAll(body).forEach { m ->
+                out[m.groupValues[1].lowercase()] = m.groupValues[2].replace("\\/", "/")
+            }
+        out.takeIf { it.containsKey("u") && it.containsKey("t") }
+    }.getOrNull()
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SetupScreen(nav: NavController) {
+fun SetupScreen(nav: NavController, scans: Flow<RawScan>? = null) {
     val app = LocalContext.current.applicationContext as ScanToTallyApp
     val scope = rememberCoroutineScope()
 
@@ -91,10 +146,52 @@ fun SetupScreen(nav: NavController) {
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
+    var scanned by remember { mutableStateOf(false) }
+    var loadError by remember { mutableStateOf<String?>(null) }
+    val ctx = LocalContext.current
+
+    // Reading the downloaded settings file is the least effort path: it is
+    // already on the device, and nobody has to retype a 32-character token.
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            ctx.contentResolver.openInputStream(uri)!!.bufferedReader().use { it.readText() }
+        }.onSuccess { text ->
+            val cfg = parseSetupFile(text)
+            if (cfg["relayUrl"].isNullOrBlank() || cfg["token"].isNullOrBlank()) {
+                loadError = "That file does not look like a settings file."
+            } else {
+                url = cfg["relayUrl"] ?: url
+                token = cfg["token"] ?: token
+                godown = cfg["godown"]?.takeIf { it.isNotBlank() } ?: godown
+                operator = cfg["operator"]?.takeIf { it.isNotBlank() } ?: operator
+                scanned = true
+                loadError = null
+            }
+        }.onFailure { loadError = "Could not read that file." }
+    }
+
     LaunchedEffect(Unit) {
         url = app.config.relayUrl.first()
         godown = app.config.godown.first()
         operator = app.config.operator.first()
+    }
+
+    // A whole handset configured by pulling the trigger once, rather than
+    // typing a 32-character token off another screen.
+    LaunchedEffect(scans) {
+        scans?.collect { s ->
+            parseSetupCode(s.data)?.let { cfg ->
+                url = cfg["u"] ?: url
+                token = cfg["t"] ?: token
+                godown = cfg["g"] ?: godown
+                operator = cfg["o"] ?: operator
+                scanned = true
+                app.feedback.play(com.acme.scantotally.feedback.Beep.ACCEPT)
+            }
+        }
     }
 
     Scaffold(topBar = { TopAppBar(title = { Text("Set up this device") }) }) { pad ->
@@ -107,6 +204,40 @@ fun SetupScreen(nav: NavController) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = if (scanned) AcceptGreenBg else MaterialTheme.colorScheme.primaryContainer,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text(
+                        if (scanned) "Settings loaded" else "Fill these in automatically",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = if (scanned) AcceptGreen else MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        if (scanned) "Check them below, then save."
+                        else "Pick the settings file you downloaded, or scan the setup code.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = {
+                            loadError = null
+                            picker.launch(arrayOf("*/*"))
+                        },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                    ) { Text("Choose settings file") }
+                    loadError?.let {
+                        Spacer(Modifier.height(8.dp))
+                        Text(it, color = RejectRed, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
 
             OutlinedTextField(
                 value = url, onValueChange = { url = it },

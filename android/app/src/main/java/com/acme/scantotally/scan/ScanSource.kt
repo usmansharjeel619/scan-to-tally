@@ -129,7 +129,10 @@ object DataWedgeScanSource : ScanSource {
                             putString("decoder_upca", "false")
                             putString("decoder_upce0", "false")
                             putString("decoder_i2of5", "false")
-                            putString("decoder_qrcode", "false")
+                            // Needed for the setup code. A QR is different enough
+                            // from Code 128 that enabling it costs nothing in
+                            // misreads, and the parser rejects anything odd.
+                            putString("decoder_qrcode", "true")
                         })
                     },
                     android.os.Bundle().apply {

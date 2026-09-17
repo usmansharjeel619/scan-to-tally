@@ -109,6 +109,15 @@ const hub = new ConnectorHub(
   },
 );
 
+// Routing falls back to the only connector when a device names a company that
+// is not attached. That convenience once hid a handset registered against the
+// wrong company for a whole day, so it is no longer silent.
+hub.onCompanyMismatch((wanted, got) => {
+  app.log.warn({ deviceCompany: wanted, connectorCompany: got },
+    'device company does not match the attached connector; routing fell back');
+});
+
+
 /**
  * Records what the connector did with a session.
  *
@@ -294,7 +303,48 @@ function recordBoxHistory(sessionId: string, kind: string): void {
 }
 
 /** Redelivers anything the connector may have missed while disconnected. */
+/**
+ * Keeps a handset's company in step with the connector it is actually talking
+ * to.
+ *
+ * A device is registered with a company name, and jobs are routed by matching
+ * it to a connector. The pairing survived a wrong name only because routing
+ * falls back to "there is exactly one connector, use that" -- so a handset
+ * registered against one company was quietly driving another for a whole day.
+ *
+ * Attach a second connector and that fallback disappears: the name suddenly
+ * decides everything, and the wrong one sends work to the wrong warehouse or
+ * nowhere at all. So the name is corrected while it is still unambiguous.
+ *
+ * Only ever with ONE connector attached. With several the company is the only
+ * thing telling them apart, and adopting one over the others would be guessing
+ * at exactly the moment guessing is worst.
+ */
+function reconcileDeviceCompanies(company: string): void {
+  if (!company) return;
+  if (hub.all().length !== 1) return;
+
+  const stale = db.prepare(
+    `SELECT id, company FROM devices WHERE company != ?`,
+  ).all(company) as Array<{ id: string; company: string }>;
+  if (!stale.length) return;
+
+  db.prepare(`UPDATE devices SET company = ? WHERE company != ?`).run(company, company);
+
+  for (const d of stale) {
+    app.log.warn(
+      { device: d.id, was: d.company, now: company },
+      'device company corrected to the attached connector',
+    );
+    audit(db, 'relay', 'DEVICE_COMPANY_CORRECTED', d.id, `${d.company} -> ${company}`);
+  }
+}
+
 function resendOutstanding(company: string): void {
+  // The connector has just said hello, so this is the moment the truth about
+  // which company is open is freshest.
+  reconcileDeviceCompanies(company);
+
   // Products scanned while Tally was unreachable go first: a voucher that
   // names an item which does not exist yet is refused, so the master has to
   // land before the vouchers that depend on it.
@@ -1043,4 +1093,4 @@ if (!CONNECTOR_SECRET) {
 await app.listen({ port: PORT, host: HOST });
 app.log.info(`relay listening on ${HOST}:${PORT}, db ${DB_PATH}`);
 
-export { app, db, hub, buildJob, applyJobResult };
+export { app, db, hub, buildJob, applyJobResult, reconcileDeviceCompanies };

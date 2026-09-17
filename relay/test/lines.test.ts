@@ -532,3 +532,43 @@ test('what Tally reports delivered is not double counted against our own record'
   assert.equal(v.orderPending, 6, 'ten ordered, four gone once -- not twice');
   assert.equal(v.ok, true, v.error ?? '');
 });
+
+test('a handset registered against the wrong company is corrected', async () => {
+  // It survived a wrong company name for a whole day, because routing falls
+  // back to "there is exactly one connector". Attach a second and that
+  // fallback vanishes, and the name suddenly decides where work goes.
+  const { reconcileDeviceCompanies } = await import('../src/server.ts');
+
+  db.prepare(`UPDATE devices SET company = 'Some Other Company' WHERE id = 'dock-1'`).run();
+
+  const realDispatch = hub.all;
+  (hub as any).all = () => [{ company: 'New Test Company' }];
+  try {
+    reconcileDeviceCompanies('New Test Company');
+  } finally {
+    (hub as any).all = realDispatch;
+  }
+
+  const d = db.prepare(`SELECT company FROM devices WHERE id='dock-1'`).get() as any;
+  assert.equal(d.company, 'New Test Company');
+});
+
+test('with two connectors attached, nothing is adopted', async () => {
+  // The company is the ONLY thing telling them apart at that point, so
+  // adopting one over the others would be guessing exactly when guessing is
+  // worst.
+  const { reconcileDeviceCompanies } = await import('../src/server.ts');
+
+  db.prepare(`UPDATE devices SET company = 'Warehouse Co' WHERE id = 'dock-1'`).run();
+
+  const realAll = hub.all;
+  (hub as any).all = () => [{ company: 'A' }, { company: 'B' }];
+  try {
+    reconcileDeviceCompanies('A');
+  } finally {
+    (hub as any).all = realAll;
+  }
+
+  const d = db.prepare(`SELECT company FROM devices WHERE id='dock-1'`).get() as any;
+  assert.equal(d.company, 'Warehouse Co', 'must be left alone to be set deliberately');
+});

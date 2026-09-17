@@ -236,9 +236,27 @@ export class ConnectorHub {
     for (const c of this.conns.values()) {
       if (c.state.company === company) return c;
     }
+
     // Single-site deployments have exactly one connector; don't make them
     // configure a company name just to find it.
-    return this.conns.size === 1 ? [...this.conns.values()][0] : undefined;
+    //
+    // This is a convenience, not a routing rule. It once masked a handset
+    // registered against the wrong company for a whole day -- everything
+    // worked, and would have stopped working the instant a second connector
+    // appeared. The relay corrects the name when it sees this, so reaching
+    // here twice means something is genuinely misconfigured.
+    const only = this.conns.size === 1 ? [...this.conns.values()][0] : undefined;
+    if (only && company && company !== only.state.company) {
+      this.log?.(company, only.state.company);
+    }
+    return only;
+  }
+
+  /** Reports a company mismatch that the fallback papered over. */
+  private log?: (wanted: string, got: string) => void;
+
+  onCompanyMismatch(fn: (wanted: string, got: string) => void): void {
+    this.log = fn;
   }
 
   /**

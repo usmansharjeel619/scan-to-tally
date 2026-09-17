@@ -23,6 +23,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Inventory
 import androidx.compose.material.icons.filled.LocalShipping
 import androidx.compose.material.icons.filled.MoveToInbox
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -35,6 +36,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -541,6 +543,8 @@ fun ReceiptsScreen(nav: NavController) {
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf<String?>(null) }
     var note by remember { mutableStateOf<String?>(null) }
+    var confirmDiscard by remember { mutableStateOf<String?>(null) }
+    var confirmClearAll by remember { mutableStateOf(false) }
 
     LaunchedEffect(repo) {
         while (repo != null) {
@@ -556,6 +560,11 @@ fun ReceiptsScreen(nav: NavController) {
                 navigationIcon = {
                     IconButton(onClick = { nav.popBackStack() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                    }
+                },
+                actions = {
+                    if (sessions.any { it.state != "POSTED" }) {
+                        TextButton(onClick = { confirmClearAll = true }) { Text("Clear") }
                     }
                 },
             )
@@ -701,6 +710,16 @@ fun ReceiptsScreen(nav: NavController) {
                             }
                         }
 
+                        if (s.state != "POSTED") {
+                            Spacer(Modifier.height(6.dp))
+                            TextButton(
+                                onClick = { confirmDiscard = s.id },
+                                modifier = Modifier.align(Alignment.End),
+                            ) {
+                                Text("Discard", color = sem.reject.fg)
+                            }
+                        }
+
                         if (s.state == "FAILED") {
                             Spacer(Modifier.height(12.dp))
                             Button(
@@ -721,5 +740,63 @@ fun ReceiptsScreen(nav: NavController) {
                 }
             }
         }
+    }
+
+    // Discarding throws away real scans, so it is always asked -- but only ever
+    // offered for a receipt Tally never saw.
+    confirmDiscard?.let { id ->
+        val boxes = summaries.firstOrNull { it.sessionId == id }?.boxes ?: 0
+        AlertDialog(
+            onDismissRequest = { confirmDiscard = null },
+            title = { Text("Discard this receipt?") },
+            text = {
+                Text(
+                    if (boxes == 0) "Nothing was scanned on it."
+                    else "$boxes scanned ${if (boxes == 1) "box" else "boxes"} will be thrown " +
+                        "away. Tally never received this, so nothing there changes.",
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    scope.launch {
+                        repo?.discard(id)
+                        confirmDiscard = null
+                        note = "Receipt discarded."
+                    }
+                }) { Text("Discard") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDiscard = null }) { Text("Keep") }
+            },
+        )
+    }
+
+    if (confirmClearAll) {
+        val unsaved = sessions.count { it.state != "POSTED" }
+        val boxes = sessions.filter { it.state != "POSTED" }
+            .sumOf { s -> summaries.firstOrNull { it.sessionId == s.id }?.boxes ?: 0 }
+        AlertDialog(
+            onDismissRequest = { confirmClearAll = false },
+            title = { Text("Clear everything not saved?") },
+            text = {
+                Text(
+                    "$unsaved ${if (unsaved == 1) "receipt" else "receipts"} and $boxes scanned " +
+                        "${if (boxes == 1) "box" else "boxes"} will be thrown away. Receipts " +
+                        "already saved in Tally are kept.",
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    scope.launch {
+                        val n = repo?.discardAllUnsaved() ?: 0
+                        confirmClearAll = false
+                        note = "Cleared $n ${if (n == 1) "receipt" else "receipts"}."
+                    }
+                }) { Text("Clear") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClearAll = false }) { Text("Keep") }
+            },
+        )
     }
 }

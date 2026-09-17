@@ -488,6 +488,31 @@ class Repository(context: Context, private val api: RelayApi?) {
     suspend fun deleteLine(lineId: Long) = dao.deleteLine(lineId)
 
     /**
+     * Discards a receipt that never reached Tally.
+     *
+     * Deliberately impossible for one that did. Everything else is fair game:
+     * a half-scanned pallet someone abandoned, or a receipt left behind by a
+     * version of this app that could not save it, are both just clutter, and
+     * clutter in this list is what stops an operator trusting the list.
+     *
+     * The relay is told too, so the same rubbish does not sit there for ever.
+     */
+    suspend fun discard(sessionId: String) {
+        val s = dao.session(sessionId) ?: return
+        if (s.state == "POSTED") return
+        dao.deleteLinesFor(sessionId)
+        dao.deleteSession(sessionId)
+        runCatching { api?.deleteSession(sessionId) }
+    }
+
+    /** Clears every receipt that never reached Tally. */
+    suspend fun discardAllUnsaved(): Int {
+        val ids = dao.unsavedSessionIds()
+        for (id in ids) discard(id)
+        return ids.size
+    }
+
+    /**
      * Closes the session.
      *
      * Marked QUEUED locally FIRST. Whether the relay is reachable is beside the

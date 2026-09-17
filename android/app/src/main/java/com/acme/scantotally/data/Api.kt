@@ -6,6 +6,7 @@ import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.defaultRequest
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -251,6 +252,10 @@ class RelayApi(
         client.get("$baseUrl/api/v1/sessions/$sessionId/variance?scope=$scope").body()
 
 
+
+    suspend fun deleteSession(sessionId: String) {
+        client.delete("$baseUrl/api/v1/sessions/$sessionId")
+    }
 
     suspend fun retry(sessionId: String) {
         client.post("$baseUrl/api/v1/sessions/$sessionId/retry") { setBody(SubmitRequest()) }

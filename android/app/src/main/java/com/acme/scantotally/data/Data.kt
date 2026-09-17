@@ -333,6 +333,22 @@ interface ScanDao {
     @Query("DELETE FROM session_lines WHERE id = :id")
     suspend fun deleteLine(id: Long)
 
+    /**
+     * Throws a receipt away, scans and all.
+     *
+     * Only ever reachable for one that never reached Tally. A receipt that
+     * posted is a record of stock that moved, and deleting the phone's copy of
+     * it would leave the operator unable to check what Tally was told.
+     */
+    @Query("DELETE FROM session_lines WHERE sessionId = :id")
+    suspend fun deleteLinesFor(id: String)
+
+    @Query("DELETE FROM sessions WHERE id = :id AND state != 'POSTED'")
+    suspend fun deleteSession(id: String)
+
+    @Query("SELECT id FROM sessions WHERE state != 'POSTED'")
+    suspend fun unsavedSessionIds(): List<String>
+
     @Query("UPDATE session_lines SET synced = 1 WHERE sessionId = :sessionId")
     suspend fun markLinesSynced(sessionId: String)
 

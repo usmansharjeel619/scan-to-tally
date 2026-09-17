@@ -604,6 +604,34 @@ function appendFlag(lineId: number, flag: string): string {
   return [...set].join(',');
 }
 
+/**
+ * Throws away a receipt that never reached Tally.
+ *
+ * Refused once it has posted: that row is the record of stock that moved, and
+ * the voucher number on it is the only way back to what Tally was told.
+ */
+app.delete('/api/v1/sessions/:id', async (req, reply) => {
+  const d = requireDevice(req, reply);
+  if (!d) return;
+  const { id } = req.params as { id: string };
+
+  const s = db.prepare(`SELECT state FROM sessions WHERE id=?`).get(id) as
+    { state: string } | undefined;
+  if (!s) return { ok: true, alreadyGone: true };
+  if (s.state === 'POSTED' || s.state === 'POSTING') {
+    return reply.code(409).send({ error: 'already_posted', state: s.state });
+  }
+
+  const tx = db.transaction(() => {
+    db.prepare(`DELETE FROM session_lines WHERE session_id=?`).run(id);
+    db.prepare(`DELETE FROM sessions WHERE id=?`).run(id);
+  });
+  tx();
+
+  audit(db, `device:${d.id}`, 'SESSION_DISCARDED', id, s.state);
+  return { ok: true };
+});
+
 app.delete('/api/v1/sessions/:id/lines/:lineId', async (req, reply) => {
   const d = requireDevice(req, reply);
   if (!d) return;

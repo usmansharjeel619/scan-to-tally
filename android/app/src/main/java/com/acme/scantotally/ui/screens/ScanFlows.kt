@@ -60,7 +60,11 @@ import com.acme.scantotally.data.Repository
 import com.acme.scantotally.data.ScanDecision
 import com.acme.scantotally.data.SessionLineEntity
 import com.acme.scantotally.feedback.Beep
+import com.acme.scantotally.scan.BoxDraft
+import com.acme.scantotally.scan.FragmentKind
 import com.acme.scantotally.scan.ManualScanSource
+import com.acme.scantotally.scan.classifyFragment
+import com.acme.scantotally.scan.fragmentRefusal
 import com.acme.scantotally.scan.RawScan
 import com.acme.scantotally.scan.SuspendScanCapture
 import com.acme.scantotally.ui.theme.AcceptGreen
@@ -95,6 +99,8 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
     var last by remember { mutableStateOf<ScanDecision?>(null) }
     var pendingOverride by remember { mutableStateOf<RawScan?>(null) }
     var newProduct by remember { mutableStateOf<ScanDecision?>(null) }
+    var draft by remember { mutableStateOf(BoxDraft()) }
+    var typing by remember { mutableStateOf<BoxDraft.Slot?>(null) }
     var operator by remember { mutableStateOf("") }
     var submitting by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<String?>(null) }
@@ -143,37 +149,78 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
     suspend fun ensure(r: Repository): String =
         sessionId ?: r.openSession("INCOMING", app.config.godown.first()).also { sessionId = it }
 
+    // Commits a box however it was put together, and clears the draft.
+    //
+    // Assembled boxes and whole-barcode boxes end up here alike: the decision
+    // has already been through the identical checks by this point, so there is
+    // one place that commits and one place that prompts.
+    suspend fun accept(r: Repository, sid: String, d: ScanDecision, from: RawScan?) {
+        last = d
+        app.feedback.play(d.beep)
+
+        if (d.outcome == Outcome2.ACCEPT || d.outcome == Outcome2.FLAGGED) {
+            // The box is counted FIRST. Whatever happens next, the count is
+            // safe -- the prompt below is only ever about the description.
+            r.commitLine(sid, d)
+            draft = BoxDraft()
+
+            // Ask right now, while the carton is still in their hands and the
+            // description is printed on the label in front of them. By the end
+            // of the session the box is on a shelf and they would be recalling
+            // rather than reading.
+            if (d.flags.contains("UNRESOLVED_PID") && d.pid !in asked) {
+                asked += d.pid
+                newProduct = d
+            }
+            return
+        }
+
+        // A refused box stays on screen exactly as assembled, so the operator
+        // can see what it was rather than starting again from nothing.
+        if (d.overridable && from != null) pendingOverride = from
+    }
+
     LaunchedEffect(repo) {
         val r = repo ?: return@LaunchedEffect
         scans.collect { scan ->
             val sid = ensure(r)
-            val d = r.scanIncoming(sid, scan)
-            last = d
-            app.feedback.play(d.beep)
-            if (d.outcome == Outcome2.ACCEPT || d.outcome == Outcome2.FLAGGED) {
-                // The box is counted FIRST. Whatever happens next, the count is
-                // safe -- the prompt below is only ever about the description.
-                r.commitLine(sid, d)
 
-                // Ask right now, while the carton is still in their hands and
-                // the description is printed on the label in front of them. By
-                // the end of the session the box is on a shelf and they would
-                // be recalling rather than reading.
-                if (d.flags.contains("UNRESOLVED_PID") && d.pid !in asked) {
-                    asked += d.pid
-                    newProduct = d
-                }
-            } else if (d.overridable) {
-                // The only place the operator is asked anything mid-flow, and
-                // only because receiving a returned box really does happen.
-                pendingOverride = scan
+            // A combined barcode is a whole box on its own. Unchanged: one
+            // pull, one box, nothing typed. Only cartons without one fall
+            // through to being assembled a field at a time.
+            val whole = r.parseWholeBox(scan)
+            if (whole != null) {
+                draft = BoxDraft()
+                accept(r, sid, r.scanIncoming(sid, scan), scan)
+                return@collect
+            }
+
+            val fragment = classifyFragment(scan.data)
+            if (fragment.kind == FragmentKind.NOT_MINE) {
+                // Refused, never guessed into a slot. The labels are crowded
+                // with part nos, date codes, week numbers and issue numbers.
+                last = ScanDecision(
+                    outcome = Outcome2.WRONG_BARCODE, beep = Beep.REJECT,
+                    message = fragmentRefusal(fragment),
+                    raw = scan.data, symbology = scan.symbology,
+                )
+                app.feedback.play(Beep.REJECT)
+                return@collect
+            }
+
+            draft = draft.withScan(fragment)
+            app.feedback.play(Beep.ACCEPT)
+
+            val d = draft
+            if (d.isComplete) {
+                accept(r, sid, r.receiveAssembled(sid, d.pid, d.boxSerial, d.qty!!, d.rawTrail), null)
             }
         }
     }
 
     ScanScaffold(
         title = "Incoming",
-        subtitle = "${lines.size} ${if (lines.size == 1) "box" else "boxes"}",
+        subtitle = draft.waitingFor(),
         nav = nav,
         sessionId = sessionId,
         last = last,
@@ -207,7 +254,45 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                 nav.navigate("manual/${ensure(r)}")
             }
         },
+        slots = {
+            BoxSlots(
+                draft = draft,
+                onTypeProduct = { typing = BoxDraft.Slot.PRODUCT },
+                onTypeBox = { typing = BoxDraft.Slot.BOX },
+                onTypeQuantity = { typing = BoxDraft.Slot.QUANTITY },
+            )
+        },
     )
+
+    typing?.let { slot ->
+        SlotEntryDialog(
+            slot = slot,
+            draft = draft,
+            onCancel = { typing = null },
+            onConfirm = { value ->
+                draft = when (slot) {
+                    BoxDraft.Slot.PRODUCT -> draft.withTypedProduct(value)
+                    BoxDraft.Slot.BOX -> draft.withTypedBox(value)
+                    BoxDraft.Slot.QUANTITY ->
+                        draft.withTypedQty(value.toIntOrNull() ?: 0)
+                }
+                typing = null
+
+                val d = draft
+                if (d.isComplete) {
+                    scope.launch {
+                        val r = repo ?: return@launch
+                        val sid = ensure(r)
+                        accept(
+                            r, sid,
+                            r.receiveAssembled(sid, d.pid, d.boxSerial, d.qty!!, d.rawTrail),
+                            null,
+                        )
+                    }
+                }
+            },
+        )
+    }
 
     newProduct?.let { d ->
         NewProductDialog(
@@ -474,6 +559,9 @@ private fun VarianceDialog(
 fun OutgoingScreen(
     nav: NavController, scans: Flow<RawScan>, salesOrder: String, resumeId: String? = null,
 ) {
+    // Only product and box: a despatch quantity is typed on the keypad, never
+    // taken from the label.
+    var outDraft by remember { mutableStateOf(BoxDraft()) }
     val app = rememberApp()
     val scope = rememberCoroutineScope()
 
@@ -504,7 +592,46 @@ fun OutgoingScreen(
         if (godown.isEmpty()) return@LaunchedEffect
         scans.collect { scan ->
             val sid = ensure(r)
-            val d = r.scanOutgoing(sid, salesOrder, godown, scan)
+
+            // A carton received as HFE283 has no combined code on the way out
+            // either, so the product and box are assembled here too. The
+            // quantity is not part of the draft: on a despatch the employee
+            // types it on the keypad that follows, against the box's real
+            // remaining stock rather than anything printed on the label.
+            val d = if (r.parseWholeBox(scan) != null) {
+                outDraft = BoxDraft()
+                r.scanOutgoing(sid, salesOrder, godown, scan)
+            } else {
+                val fragment = classifyFragment(scan.data)
+                if (fragment.kind == FragmentKind.NOT_MINE) {
+                    last = ScanDecision(
+                        outcome = Outcome2.WRONG_BARCODE, beep = Beep.REJECT,
+                        message = fragmentRefusal(fragment),
+                        raw = scan.data, symbology = scan.symbology,
+                    )
+                    app.feedback.play(Beep.REJECT)
+                    return@collect
+                }
+
+                outDraft = outDraft.withScan(fragment)
+                if (outDraft.pid.isEmpty() || outDraft.boxSerial.isEmpty()) {
+                    app.feedback.play(Beep.ACCEPT)
+                    last = ScanDecision(
+                        outcome = Outcome2.FLAGGED, beep = Beep.ACCEPT,
+                        message = if (outDraft.pid.isEmpty()) "Now scan the box number"
+                        else "Now scan the product barcode",
+                        pid = outDraft.pid, boxSerial = outDraft.boxSerial,
+                        raw = scan.data, symbology = scan.symbology,
+                    )
+                    return@collect
+                }
+
+                val assembled = r.despatchAssembled(
+                    sid, salesOrder, godown, outDraft.pid, outDraft.boxSerial, outDraft.rawTrail,
+                )
+                outDraft = BoxDraft()
+                assembled
+            }
             last = d
             app.feedback.play(d.beep)
             // Accepted means "this box is valid" -- the quantity screen opens
@@ -886,6 +1013,8 @@ private fun ScanScaffold(
     submitLabel: String,
     onSubmit: () -> Unit,
     onManual: () -> Unit,
+    /** The box being assembled, for the flows that build one field at a time. */
+    slots: (@Composable () -> Unit)? = null,
 ) {
     Scaffold(
         topBar = {
@@ -919,6 +1048,11 @@ private fun ScanScaffold(
         },
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize().padding(16.dp)) {
+            slots?.let {
+                it()
+                Spacer(Modifier.height(10.dp))
+            }
+
             ScanResultCard(last)
 
             result?.let {

@@ -4,6 +4,8 @@ import android.content.Context
 import com.acme.scantotally.feedback.Beep
 import com.acme.scantotally.scan.BarcodeRegistry
 import com.acme.scantotally.scan.Outcome
+import com.acme.scantotally.scan.ParsedBox
+import com.acme.scantotally.scan.mfgDateFromSerial
 import com.acme.scantotally.scan.RawScan
 import com.acme.scantotally.scan.rejectMessage
 import com.acme.scantotally.scan.tailOf
@@ -207,10 +209,58 @@ class Repository(context: Context, private val api: RelayApi?) {
     ): ScanDecision {
         val parsed = registry.parse(scan.symbology, scan.data)
         earlyReject(parsed)?.let { return it }
-        val box = parsed.box!!
+        return decideIncoming(sessionId, parsed.box!!, scan.data, scan.symbology,
+            manual = scan.source == RawScan.Source.MANUAL,
+            overrideDuplicate = overrideDuplicate)
+    }
+
+    /**
+     * Receives a box assembled from separate barcodes.
+     *
+     * The Tyco, KAC and US/UK Simplex cartons have no combined code, so the
+     * product, box id and quantity arrive one at a time -- some scanned, some
+     * typed. Once all three are present the box is exactly as real as one that
+     * came off a single barcode, so it goes through the IDENTICAL checks:
+     * duplicate against this receipt and every other, resolution to a Tally
+     * item, and the new-product prompt.
+     *
+     * It cannot go through the combined parser to get there: that requires a
+     * 16-digit serial, and a Tyco box id is six characters. Sharing everything
+     * after the parse is the point -- the rules must not fork by label type.
+     */
+    suspend fun receiveAssembled(
+        sessionId: String,
+        pid: String,
+        boxSerial: String,
+        qty: Int,
+        raw: String,
+        overrideDuplicate: Boolean = false,
+    ): ScanDecision = decideIncoming(
+        sessionId,
+        ParsedBox(
+            pid = pid.trim(),
+            boxSerial = boxSerial.trim(),
+            qty = qty,
+            mfgDate = mfgDateFromSerial(boxSerial.trim()),
+        ),
+        raw = raw,
+        symbology = "ASSEMBLED",
+        manual = true,
+        overrideDuplicate = overrideDuplicate,
+    )
+
+    private suspend fun decideIncoming(
+        sessionId: String,
+        box: ParsedBox,
+        raw: String,
+        symbology: String,
+        manual: Boolean,
+        overrideDuplicate: Boolean,
+    ): ScanDecision {
+        val scan = RawScan(raw, symbology, RawScan.Source.HARDWARE)
 
         val flags = mutableListOf<String>()
-        if (scan.source == RawScan.Source.MANUAL) flags += "MANUAL"
+        if (manual) flags += "MANUAL"
 
         // 1. Already on this receipt: a hard block, nothing to dismiss.
         dao.lineForBox(sessionId, box.pid, box.boxSerial)?.let { existing ->
@@ -294,7 +344,31 @@ class Repository(context: Context, private val api: RelayApi?) {
     suspend fun scanOutgoing(sessionId: String, salesOrder: String, godown: String, scan: RawScan): ScanDecision {
         val parsed = registry.parse(scan.symbology, scan.data)
         earlyReject(parsed)?.let { return it }
-        val box = parsed.box!!
+        return decideOutgoing(sessionId, salesOrder, godown, parsed.box!!, scan.data, scan.symbology)
+    }
+
+    /**
+     * Despatches a box identified from separate barcodes.
+     *
+     * A carton received as HFE283 has to be sendable again, and its label has
+     * no combined code to scan on the way out either. The checks are the same
+     * ones -- they have to be, or a box could leave under rules it could not
+     * have arrived under.
+     */
+    suspend fun despatchAssembled(
+        sessionId: String, salesOrder: String, godown: String,
+        pid: String, boxSerial: String, raw: String,
+    ): ScanDecision = decideOutgoing(
+        sessionId, salesOrder, godown,
+        ParsedBox(pid = pid.trim(), boxSerial = boxSerial.trim(), qty = 0),
+        raw = raw, symbology = "ASSEMBLED",
+    )
+
+    private suspend fun decideOutgoing(
+        sessionId: String, salesOrder: String, godown: String,
+        box: ParsedBox, raw: String, symbology: String,
+    ): ScanDecision {
+        val scan = RawScan(raw, symbology, RawScan.Source.HARDWARE)
 
         val resolved = resolve(box.pid) ?: return ScanDecision(
             Outcome2.REJECT, Beep.REJECT,
@@ -578,6 +652,19 @@ class Repository(context: Context, private val api: RelayApi?) {
             return ProposeResult(ok = false, message = resp.message.orEmpty())
         }
         return ProposeResult(ok = true, message = resp.message.orEmpty())
+    }
+
+    /**
+     * Whether this payload is a whole box on its own.
+     *
+     * The combined Simplex code carries product, box and quantity in one scan,
+     * so it commits immediately and nothing is typed. Everything else has to be
+     * assembled field by field, and the screen needs to know which it is
+     * holding before it decides what to do with a scan.
+     */
+    fun parseWholeBox(scan: RawScan): ParsedBox? {
+        val parsed = registry.parse(scan.symbology, scan.data)
+        return if (parsed.outcome == Outcome.ACCEPT) parsed.box else null
     }
 
     /** The receipt itself, for callers that need to know which flow it is. */

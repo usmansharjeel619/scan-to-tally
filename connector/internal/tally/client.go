@@ -76,6 +76,10 @@ type Client struct {
 	health   atomic.Value // Health
 	lastSeen atomic.Value // time.Time
 	lastErr  atomic.Value // string
+
+	// breaker widens the gap between probes when Tally is unwell, so an
+	// unhealthy machine is not polled every 15 seconds all night.
+	breaker *Breaker
 }
 
 // NewClient builds a client. It does not contact Tally; call Probe or Run.
@@ -85,9 +89,10 @@ func NewClient(cfg Config, log *slog.Logger) *Client {
 		log = slog.Default()
 	}
 	c := &Client{
-		cfg:  cfg,
-		log:  log,
-		http: &http.Client{Timeout: cfg.Timeout},
+		cfg:     cfg,
+		log:     log,
+		http:    &http.Client{Timeout: cfg.Timeout},
+		breaker: NewBreaker(cfg.ProbeInterval, 15*time.Minute),
 	}
 	c.health.Store(HealthUnknown)
 	c.lastSeen.Store(time.Time{})
@@ -153,6 +158,7 @@ func (c *Client) postLocked(ctx context.Context, payload []byte) ([]byte, error)
 }
 
 func (c *Client) noteSuccess(elapsed time.Duration) {
+	c.breaker.Success()
 	c.lastSeen.Store(time.Now())
 	c.lastErr.Store("")
 	// A response that takes most of the timeout usually means somebody is
@@ -165,6 +171,8 @@ func (c *Client) noteSuccess(elapsed time.Duration) {
 }
 
 func (c *Client) noteFailure(e *Error) {
+	// A closed port is unambiguous and backs off faster than a timeout.
+	c.breaker.Failure(e.Code == "TALLY_NOT_RUNNING")
 	c.lastErr.Store(e.Message)
 	switch e.Code {
 	case "COMPANY_NOT_OPEN":
@@ -224,26 +232,50 @@ func (c *Client) Probe(ctx context.Context) error {
 }
 
 // Run drives the health heartbeat until ctx is cancelled.
+//
+// The interval is adaptive rather than fixed: a healthy Tally is checked every
+// ProbeInterval, and an unhealthy one progressively less often, up to fifteen
+// minutes. Any success snaps straight back to the fast interval, so a Tally
+// that comes back is noticed within one probe rather than after a long wait.
 func (c *Client) Run(ctx context.Context) {
-	t := time.NewTicker(c.cfg.ProbeInterval)
-	defer t.Stop()
-
 	probe := func() {
+		c.breaker.Attempted(time.Now())
 		pctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
 		defer cancel()
+
+		wasQuiescent := c.breaker.Quiescent()
 		if err := c.Probe(pctx); err != nil {
-			c.log.Warn("tally probe failed", "err", err, "health", c.Health())
+			fails, next, quiet := c.breaker.State()
+			if quiet && !wasQuiescent {
+				// Say this once, loudly. It is the line that should send
+				// somebody to look at the machine.
+				c.log.Error("Tally has not answered for a long time; backing right off. "+
+					"Something on that machine needs attention.",
+					"consecutiveFailures", fails, "nextAttemptIn", next)
+			} else if !quiet {
+				c.log.Warn("tally probe failed",
+					"err", err, "health", c.Health(), "failures", fails, "retryIn", next)
+			}
 			return
+		}
+		if wasQuiescent {
+			c.log.Info("Tally is answering again")
 		}
 	}
 
 	probe()
 	for {
+		wait := c.breaker.Interval()
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-time.After(wait):
 			probe()
 		}
 	}
+}
+
+// BreakerState exposes the backoff for the status page and the heartbeat.
+func (c *Client) BreakerState() (failures int, nextIn time.Duration, quiescent bool) {
+	return c.breaker.State()
 }

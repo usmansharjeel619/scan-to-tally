@@ -598,7 +598,7 @@ app.post('/api/v1/sessions/:id/scan', async (req, reply) => {
   } else {
     decision = decideIncomingScan(db, {
       sessionId: id, raw, symbology,
-      manual: !!b.manual, overrideDuplicate: !!b.overrideDuplicate,
+      manual: !!b.manual,
     });
   }
 

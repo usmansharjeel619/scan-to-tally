@@ -98,7 +98,6 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
     var repo by remember { mutableStateOf<Repository?>(null) }
     var sessionId by remember { mutableStateOf<String?>(null) }
     var last by remember { mutableStateOf<ScanDecision?>(null) }
-    var pendingOverride by remember { mutableStateOf<RawScan?>(null) }
     var newProduct by remember { mutableStateOf<ScanDecision?>(null) }
     var draft by remember { mutableStateOf(BoxDraft()) }
     var typing by remember { mutableStateOf<BoxDraft.Slot?>(null) }
@@ -157,7 +156,7 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
     // Assembled boxes and whole-barcode boxes end up here alike: the decision
     // has already been through the identical checks by this point, so there is
     // one place that commits and one place that prompts.
-    suspend fun accept(r: Repository, sid: String, d: ScanDecision, from: RawScan?) {
+    suspend fun accept(r: Repository, sid: String, d: ScanDecision) {
         last = d
         app.feedback.play(d.beep)
 
@@ -180,7 +179,6 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
 
         // A refused box stays on screen exactly as assembled, so the operator
         // can see what it was rather than starting again from nothing.
-        if (d.overridable && from != null) pendingOverride = from
     }
 
     LaunchedEffect(repo) {
@@ -194,7 +192,7 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
             val whole = r.parseWholeBox(scan)
             if (whole != null) {
                 draft = BoxDraft()
-                accept(r, sid, r.scanIncoming(sid, scan), scan)
+                accept(r, sid, r.scanIncoming(sid, scan))
                 return@collect
             }
 
@@ -226,7 +224,7 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
 
             val d = draft
             if (d.isComplete) {
-                accept(r, sid, r.receiveAssembled(sid, d.pid, d.boxSerial, d.qty!!, d.rawTrail), null)
+                accept(r, sid, r.receiveAssembled(sid, d.pid, d.boxSerial, d.qty!!, d.rawTrail))
             }
         }
     }
@@ -301,7 +299,6 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                         accept(
                             r, sid,
                             r.receiveAssembled(sid, d.pid, d.boxSerial, d.qty!!, d.rawTrail),
-                            null,
                         )
                     }
                 }
@@ -334,29 +331,6 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
         )
     }
 
-    pendingOverride?.let { scan ->
-        AlertDialog(
-            onDismissRequest = { pendingOverride = null },
-            title = { Text("Box already received") },
-            text = { Text(last?.message ?: "") },
-            confirmButton = {
-                TextButton(onClick = {
-                    scope.launch {
-                        val r = repo ?: return@launch
-                        val sid = sessionId ?: return@launch
-                        val d = r.scanIncoming(sid, scan, overrideDuplicate = true)
-                        last = d
-                        app.feedback.play(d.beep)
-                        r.commitLine(sid, d)
-                        pendingOverride = null
-                    }
-                }) { Text("Accept as a return") }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingOverride = null }) { Text("Set it aside") }
-            },
-        )
-    }
 }
 
 // --- stock check ------------------------------------------------------------

@@ -52,7 +52,6 @@ export interface ScanDecision {
   editLineId?: number;
   flags: LineFlag[];
   /** Can the operator deliberately override? Only ever for historical dupes. */
-  overridable?: boolean;
   /**
    * What this product is, from the reference catalogue, when Tally has no item
    * for it. The operator confirms rather than types -- they supply only what
@@ -76,7 +75,6 @@ export interface IncomingScanInput {
   symbology: string;
   manual?: boolean;
   /** Set when the operator has deliberately accepted a historical duplicate. */
-  overrideDuplicate?: boolean;
 }
 
 /**
@@ -122,20 +120,26 @@ export function decideIncomingScan(db: DB, input: IncomingScanInput): ScanDecisi
     };
   }
 
-  // 2. Received in an earlier session. Still a duplicate beep, but returns and
-  //    reprinted labels are real, so the operator may deliberately override.
+  // 2. Received in an earlier session. A hard refusal with nothing to dismiss.
+  //
+  //    This used to offer "accept again if this is a return". An override on
+  //    the one rule that keeps stock honest is an override that gets used --
+  //    at the end of a shift, on the box that will not scan, by whoever is in
+  //    a hurry. (part number, box number) identifies one physical carton, so
+  //    receiving it twice is receiving stock that does not exist. A genuine
+  //    return is a different transaction and belongs in Tally, not in a dialog
+  //    at the dock.
   const historical = db.prepare(
     `SELECT session_id, received_at, qty FROM received_boxes WHERE pid = ? AND box_serial = ?`,
   ).get(pid, boxSerial) as { session_id: string; received_at: string; qty: number } | undefined;
 
-  if (historical && !input.overrideDuplicate) {
+  if (historical) {
     return {
-      outcome: 'DUPLICATE', beep: 'DUPLICATE', flags: [], parse, overridable: true,
+      outcome: 'DUPLICATE', beep: 'DUPLICATE', flags: [], parse,
       message: `Box ${tail(boxSerial)} was already received on ${
-        historical.received_at.slice(0, 10)}. Accept again only if this is a return.`,
+        historical.received_at.slice(0, 10)}. It cannot be received twice.`,
     };
   }
-  if (historical && input.overrideDuplicate) flags.push('DUPLICATE_OVERRIDE');
 
   // 3. Resolve the product. Neither an unknown NOR an ambiguous PID stops the
   //    operator -- the count is right either way, only the identity is pending.
@@ -148,7 +152,7 @@ export function decideIncomingScan(db: DB, input: IncomingScanInput): ScanDecisi
   const cat = (!resolved && !ambiguous) ? catalogueLookup(db, pid) : null;
 
   const flagged = flags.some((f) => f === 'UNRESOLVED_PID' || f === 'AMBIGUOUS_PID'
-    || f === 'NO_BATCH_SUPPORT' || f === 'DUPLICATE_OVERRIDE');
+    || f === 'NO_BATCH_SUPPORT');
 
   return {
     outcome: flagged ? 'FLAGGED' : 'ACCEPT',

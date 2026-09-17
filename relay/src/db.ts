@@ -30,7 +30,6 @@ export type SessionState =
 export type LineFlag =
   | 'UNRESOLVED_PID'      // no binding to a Tally stock item yet
   | 'AMBIGUOUS_PID'       // several Tally items share this PID; a human must pick
-  | 'DUPLICATE_OVERRIDE'  // box was received before; operator deliberately accepted
   | 'MANUAL'              // typed, not scanned
   | 'QTY_EDITED'          // operator changed the quantity from the label
   | 'NO_BATCH_SUPPORT';   // resolved item is not batch-wise in Tally

@@ -87,21 +87,31 @@ test('the same box number under a different product is a different box', () => {
   assert.equal(other.outcome, 'ACCEPT');
 });
 
-test('a box received in an earlier session warns but can be overridden', () => {
+test('a box received in an earlier session cannot be received again', () => {
   db.prepare(
     `INSERT INTO received_boxes (pid, box_serial, session_id, qty, received_at) VALUES (?,?,?,?,?)`,
   ).run(PID, BOX_A, 'old-session', 18, '2026-08-01T10:00:00.000Z');
 
-  const dup = decideIncomingScan(db, { sessionId: SESSION, raw: label(PID, BOX_A, 18), symbology: 'CODE128' });
-  assert.equal(dup.outcome, 'DUPLICATE');
-  assert.equal(dup.overridable, true, 'returns and reprinted labels are real');
-  assert.ok(dup.message.includes('2026-08-01'));
-
-  const forced = decideIncomingScan(db, {
-    sessionId: SESSION, raw: label(PID, BOX_A, 18), symbology: 'CODE128', overrideDuplicate: true,
+  const dup = decideIncomingScan(db, {
+    sessionId: SESSION, raw: label(PID, BOX_A, 18), symbology: 'CODE128',
   });
-  assert.equal(forced.outcome, 'FLAGGED');
-  assert.ok(forced.flags.includes('DUPLICATE_OVERRIDE'), 'an override must be traceable');
+
+  assert.equal(dup.outcome, 'DUPLICATE');
+  assert.ok(dup.message.includes('2026-08-01'), 'say when, so it can be checked');
+  assert.ok(dup.message.includes('cannot be received twice'));
+
+  // It used to offer "accept again if this is a return". An override on the one
+  // rule that keeps stock honest is an override that gets used -- at the end of
+  // a shift, on the box that will not scan, by whoever is in a hurry.
+  assert.equal((dup as Record<string, unknown>).overridable, undefined,
+    'there must be nothing to dismiss');
+
+  // And no argument can talk it round.
+  const forced = decideIncomingScan(db, {
+    sessionId: SESSION, raw: label(PID, BOX_A, 18), symbology: 'CODE128',
+    overrideDuplicate: true,
+  } as Record<string, unknown> as never);
+  assert.equal(forced.outcome, 'DUPLICATE', 'no input may turn this into an accept');
 });
 
 // --- incoming: never block the dock -----------------------------------------

@@ -40,7 +40,6 @@ data class ScanDecision(
     val availableAsOf: Long? = null,
     val orderPending: Double? = null,
     val editLineId: Long? = null,
-    val overridable: Boolean = false,
     val flags: List<String> = emptyList(),
     val raw: String = "",
     val symbology: String = "",
@@ -221,13 +220,12 @@ class Repository(context: Context, private val api: RelayApi?) {
      * one complete line, and the operator never stops to type.
      */
     suspend fun scanIncoming(
-        sessionId: String, scan: RawScan, overrideDuplicate: Boolean = false,
+        sessionId: String, scan: RawScan,
     ): ScanDecision {
         val parsed = registry.parse(scan.symbology, scan.data)
         earlyReject(parsed)?.let { return it }
         return decideIncoming(sessionId, parsed.box!!, scan.data, scan.symbology,
-            manual = scan.source == RawScan.Source.MANUAL,
-            overrideDuplicate = overrideDuplicate)
+            manual = scan.source == RawScan.Source.MANUAL)
     }
 
     /**
@@ -250,7 +248,6 @@ class Repository(context: Context, private val api: RelayApi?) {
         boxSerial: String,
         qty: Int,
         raw: String,
-        overrideDuplicate: Boolean = false,
     ): ScanDecision = decideIncoming(
         sessionId,
         ParsedBox(
@@ -262,7 +259,6 @@ class Repository(context: Context, private val api: RelayApi?) {
         raw = raw,
         symbology = "ASSEMBLED",
         manual = true,
-        overrideDuplicate = overrideDuplicate,
     )
 
     private suspend fun decideIncoming(
@@ -271,7 +267,6 @@ class Repository(context: Context, private val api: RelayApi?) {
         raw: String,
         symbology: String,
         manual: Boolean,
-        overrideDuplicate: Boolean,
     ): ScanDecision {
         val scan = RawScan(raw, symbology, RawScan.Source.HARDWARE)
 
@@ -304,23 +299,32 @@ class Repository(context: Context, private val api: RelayApi?) {
         // 3. Received in an earlier session. Returns and reprinted labels are
         //    real, so this one the operator may deliberately override.
         val historical = dao.receivedBox(box.pid, box.boxSerial)
-        if (historical == null && elsewhere != null && !overrideDuplicate) {
+        // Already received, here or anywhere. A hard refusal with nothing to
+        // dismiss.
+        //
+        // This used to offer "accept again if this is a return", and an
+        // override on the one rule that keeps stock honest is an override that
+        // gets used -- at the end of a shift, on the box that will not scan,
+        // by whoever is in a hurry. (part number, box number) identifies one
+        // physical carton: receiving it twice is receiving stock that does not
+        // exist. A genuine return is a different transaction and belongs in
+        // Tally, not in a dialog at the dock.
+        if (historical == null && elsewhere != null) {
             return ScanDecision(
                 Outcome2.DUPLICATE, Beep.DUPLICATE,
-                "Box ${tailOf(box.boxSerial)} was already received on this device. " +
-                    "Accept again only if this is a return.",
-                overridable = true, raw = scan.data, symbology = scan.symbology,
+                "Box ${tailOf(box.boxSerial)} has already been received. " +
+                    "It cannot be received twice.",
+                raw = scan.data, symbology = scan.symbology,
             )
         }
-        if (historical != null && !overrideDuplicate) {
+        if (historical != null) {
             return ScanDecision(
                 Outcome2.DUPLICATE, Beep.DUPLICATE,
                 "Box ${tailOf(box.boxSerial)} was already received on " +
-                    "${historical.receivedAt.take(10)}. Accept again only if this is a return.",
-                overridable = true, raw = scan.data, symbology = scan.symbology,
+                    "${historical.receivedAt.take(10)}. It cannot be received twice.",
+                raw = scan.data, symbology = scan.symbology,
             )
         }
-        if (historical != null || elsewhere != null) flags += "DUPLICATE_OVERRIDE"
 
         // 4. An unknown product does NOT stop the operator. The count is right
         //    the moment it is scanned; the item is created in Tally from what

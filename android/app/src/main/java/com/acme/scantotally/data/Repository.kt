@@ -563,10 +563,27 @@ class Repository(context: Context, private val api: RelayApi?) {
     }
 
     suspend fun refreshSessionState(sessionId: String) {
-        runCatching {
-            val s = api?.sessionState(sessionId)?.session ?: return
-            dao.setSessionResult(sessionId, s.state, s.tallyVoucherId, s.errorClass, s.errorMessage)
+        val local = dao.session(sessionId) ?: return
+        val look = runCatching { api?.sessionStateOrGone(sessionId) }.getOrNull() ?: return
+
+        // The relay has no record of it. If every line had already been
+        // delivered, it certainly did once and the receipt has been thrown away
+        // since, so the copy on this phone is a ghost -- and a list of ghosts is
+        // what stops an operator believing anything in it.
+        //
+        // Only ever when nothing is still waiting to be delivered: a receipt
+        // scanned out of range has not reached the relay yet, and "not there"
+        // means nothing about it.
+        if (look.gone) {
+            if (local.state != "POSTED" && dao.unsyncedCount(sessionId) == 0) {
+                dao.deleteLinesFor(sessionId)
+                dao.deleteSession(sessionId)
+            }
+            return
         }
+
+        val s = look.session ?: return
+        dao.setSessionResult(sessionId, s.state, s.tallyVoucherId, s.errorClass, s.errorMessage)
     }
 
     /**
@@ -616,10 +633,11 @@ class Repository(context: Context, private val api: RelayApi?) {
 
     /** Re-asks the relay about everything still in flight. */
     suspend fun refreshPending() {
-        for (session in dao.sessionsToSync()) {
-            if (session.state == "DRAFT") continue
-            refreshSessionState(session.id)
-        }
+        // Drafts included, deliberately. They were skipped because a draft has
+        // no Tally result worth asking about -- but it is exactly a draft that
+        // gets discarded on the relay, and skipping it is why the discarded
+        // ones stayed on the phone for ever.
+        for (session in dao.sessionsToSync()) refreshSessionState(session.id)
     }
 
     private fun earlyReject(parsed: com.acme.scantotally.scan.ParseResult): ScanDecision? = when {

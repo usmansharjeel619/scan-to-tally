@@ -1,3 +1,7 @@
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.TimeZone
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -17,8 +21,17 @@ android {
         // compatibility shims for devices nobody has.
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
+        // Bumped every build from the clock.
+        //
+        // Two rounds were lost to "is the new build actually on the phone?",
+        // which is unanswerable when every APK claims the same version. The
+        // handset now shows this on its home screen, so it takes one glance.
+        versionCode = ((System.currentTimeMillis() / 1000) % 100000000).toInt()
         versionName = "0.1.0"
+        val stamp = SimpleDateFormat("d MMM HH:mm").apply {
+            timeZone = TimeZone.getTimeZone("Asia/Riyadh")
+        }.format(Date())
+        buildConfigField("String", "BUILD_STAMP", "\"" + stamp + "\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

@@ -431,6 +431,14 @@ fun HomeScreen(nav: NavController) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                // Which build is actually on this handset. Settles the question
+                // in one glance instead of a round trip.
+                Text(
+                    "Build ${com.acme.scantotally.BuildConfig.BUILD_STAMP}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
         }
     }

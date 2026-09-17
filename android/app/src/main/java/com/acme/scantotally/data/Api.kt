@@ -12,6 +12,7 @@ import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
+import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
@@ -152,6 +153,13 @@ data class SubmitResponse(
 @Serializable
 data class SessionStateResponse(val session: ApiSession = ApiSession())
 
+/** Answer, absence, or neither. */
+data class SessionLookup(
+    val session: ApiSession? = null,
+    val found: Boolean = false,
+    val gone: Boolean = false,
+)
+
 @Serializable
 data class ApiSession(
     val id: String = "",
@@ -247,6 +255,21 @@ class RelayApi(
 
     suspend fun sessionState(sessionId: String): SessionStateResponse =
         client.get("$baseUrl/api/v1/sessions/$sessionId").body()
+
+    /**
+     * The relay's view of a receipt, with "no such receipt" told apart from
+     * "could not ask".
+     *
+     * Those two look identical through a thrown exception, and they mean
+     * opposite things: one says the receipt is gone, the other says the phone
+     * has no signal. Acting on the wrong one would delete work.
+     */
+    suspend fun sessionStateOrGone(sessionId: String): SessionLookup {
+        val resp = client.get("$baseUrl/api/v1/sessions/$sessionId")
+        if (resp.status == HttpStatusCode.NotFound) return SessionLookup(gone = true)
+        if (!resp.status.isSuccess()) return SessionLookup()
+        return SessionLookup(session = resp.body<SessionStateResponse>().session, found = true)
+    }
 
     suspend fun variance(sessionId: String, scope: String): VarianceReport =
         client.get("$baseUrl/api/v1/sessions/$sessionId/variance?scope=$scope").body()

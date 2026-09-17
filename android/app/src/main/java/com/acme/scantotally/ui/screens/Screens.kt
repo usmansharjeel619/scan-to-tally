@@ -147,10 +147,23 @@ fun SetupScreen(nav: NavController, scans: Flow<RawScan>? = null) {
 
     var url by remember { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
-    var godown by remember { mutableStateOf("Main Store") }
+    var godown by remember { mutableStateOf("") }
     var operator by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     SuspendScanCapture()
+
+    // Pre-filled with whatever is already set, because this screen is reached
+    // twice: once to provision a new handset, and again to change a setting on
+    // a working one. Moving Tally to another PC changes the godown and nothing
+    // else, and wiping the app to edit one field would lose every unsent scan.
+    var loaded by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        url = app.config.relayUrl.first()
+        token = app.config.token.first()
+        godown = app.config.godown.first()
+        operator = app.config.operator.first()
+        loaded = true
+    }
     var error by remember { mutableStateOf<String?>(null) }
 
     var scanned by remember { mutableStateOf(false) }
@@ -178,12 +191,6 @@ fun SetupScreen(nav: NavController, scans: Flow<RawScan>? = null) {
                 loadError = null
             }
         }.onFailure { loadError = "Could not read that file." }
-    }
-
-    LaunchedEffect(Unit) {
-        url = app.config.relayUrl.first()
-        godown = app.config.godown.first()
-        operator = app.config.operator.first()
     }
 
     // A whole handset configured by pulling the trigger once, rather than
@@ -295,9 +302,12 @@ fun SetupScreen(nav: NavController, scans: Flow<RawScan>? = null) {
             ) { Text(if (busy) "Connecting…" else "Save and sync") }
 
             OutlinedButton(
-                onClick = { nav.navigate("home") { popUpTo("setup") { inclusive = true } } },
+                onClick = {
+                    if (nav.previousBackStackEntry != null) nav.popBackStack()
+                    else nav.navigate("home") { popUpTo("setup") { inclusive = true } }
+                },
                 modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-            ) { Text("Skip for now") }
+            ) { Text(if (loaded && token.isNotBlank()) "Cancel" else "Skip for now") }
         }
     }
 }
@@ -423,6 +433,11 @@ fun HomeScreen(nav: NavController) {
                         },
                     )
                 }
+                OutlinedButton(
+                    onClick = { nav.navigate("setup") },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                ) { Text("Settings") }
+
                 OutlinedButton(
                     onClick = {
                         scope.launch {

@@ -247,6 +247,14 @@ interface ScanDao {
     )
     suspend fun balance(item: String, batch: String, godown: String): BatchBalanceEntity?
 
+    /** Every box of one product on one shelf. Drives the stock lookup. */
+    @Query(
+        """SELECT * FROM batch_balances
+            WHERE stockItemName = :item AND godownName = :godown AND closingQty != 0
+            ORDER BY batchName"""
+    )
+    suspend fun balancesFor(item: String, godown: String): List<BatchBalanceEntity>
+
     @Query("SELECT * FROM sales_orders ORDER BY orderDate DESC")
     fun ordersFlow(): Flow<List<SalesOrderEntity>>
 
@@ -358,6 +366,33 @@ interface ScanDao {
            WHERE sessionId = :sessionId AND stockItemName = :item AND id != :excludeId"""
     )
     suspend fun committedForItem(sessionId: String, item: String, excludeId: Long = -1): Double
+
+    /**
+     * Puts the product on every line waiting for it.
+     *
+     * The backfill used to rewrite the flags and leave stockItemName empty, so
+     * a line the operator had just described still looked undescribed. Anything
+     * asking "is this line still missing its product" -- including the prompt
+     * that reopens for exactly that -- said yes for ever.
+     */
+    @Query(
+        """UPDATE session_lines
+              SET stockItemName = :name,
+                  unit = :unit,
+                  description = CASE WHEN description = '' THEN :description ELSE description END,
+                  flags = TRIM(REPLACE(','||flags||',', ',UNRESOLVED_PID,', ',PROPOSED,'), ',')
+            WHERE pid = :pid AND stockItemName = ''"""
+    )
+    suspend fun fillInProduct(pid: String, name: String, unit: String, description: String)
+
+    /** Undoes that, for a product Tally turned out to refuse. */
+    @Query(
+        """UPDATE session_lines
+              SET stockItemName = '',
+                  flags = TRIM(REPLACE(','||flags||',', ',PROPOSED,', ',UNRESOLVED_PID,'), ',')
+            WHERE pid = :pid AND sessionId IN (SELECT id FROM sessions WHERE state != 'POSTED')"""
+    )
+    suspend fun unfillProduct(pid: String)
 
     @Query("UPDATE session_lines SET qty = :qty, flags = :flags WHERE id = :id")
     suspend fun setLineQty(id: Long, qty: Double, flags: String)

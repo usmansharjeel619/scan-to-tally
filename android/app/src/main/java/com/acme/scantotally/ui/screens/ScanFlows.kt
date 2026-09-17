@@ -40,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -71,7 +72,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 @Composable
-private fun rememberApp(): ScanToTallyApp =
+internal fun rememberApp(): ScanToTallyApp =
     LocalContext.current.applicationContext as ScanToTallyApp
 
 // --- incoming ---------------------------------------------------------------
@@ -115,10 +116,19 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
     // A receipt reopened from the list may be stuck on a product nobody ever
     // described -- that is exactly why it would not save. Ask again, rather
     // than leaving it unsaveable with no way in.
+    //
+    // Only ever once per product per visit. Asking is driven off the lines, so
+    // without this it re-asks the instant the dialog closes: Later answers
+    // nothing, and even Save cannot settle it until the write has landed. The
+    // operator ends up in a prompt they cannot get out of.
+    val asked = remember { mutableStateListOf<String>() }
     LaunchedEffect(lines, newProduct) {
         if (newProduct != null) return@LaunchedEffect
-        val stuck = lines.firstOrNull { it.stockItemName.isEmpty() } ?: return@LaunchedEffect
+        val stuck = lines.firstOrNull {
+            it.stockItemName.isEmpty() && it.pid !in asked
+        } ?: return@LaunchedEffect
         val r = repo ?: return@LaunchedEffect
+        asked += stuck.pid
         newProduct = ScanDecision(
             outcome = Outcome2.FLAGGED, beep = Beep.FLAGGED,
             message = "${stuck.pid} still needs its details",
@@ -144,7 +154,10 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                 // the description is printed on the label in front of them. By
                 // the end of the session the box is on a shelf and they would
                 // be recalling rather than reading.
-                if (d.flags.contains("UNRESOLVED_PID")) newProduct = d
+                if (d.flags.contains("UNRESOLVED_PID") && d.pid !in asked) {
+                    asked += d.pid
+                    newProduct = d
+                }
             } else if (d.overridable) {
                 // The only place the operator is asked anything mid-flow, and
                 // only because receiving a returned box really does happen.
@@ -193,8 +206,10 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                 scope.launch {
                     val r = repo ?: return@launch
                     val sid = sessionId ?: return@launch
-                    r.proposeNewItem(sid, d.pid, description, unit, d.raw, operator)
+                    // Closed first. Leaving it up while this writes makes the
+                    // Save button look dead, and the operator taps it again.
                     newProduct = null
+                    r.proposeNewItem(sid, d.pid, description, unit, d.raw, operator)
                 }
             },
         )
@@ -228,7 +243,11 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
 // --- stock check ------------------------------------------------------------
 
 /**
- * Inventory check.
+ * Stock take: count the shelf, then correct Tally.
+ *
+ * Distinct from Check stock, which only asks what Tally holds. This one writes
+ * a Physical Stock voucher, and because Tally tracks each box as a batch the
+ * count has to be per box -- an adjustment has to name the batch it adjusts.
  *
  * Counting is blind by default: showing the operator what Tally expects anchors
  * the count to it, and a count that only ever confirms the book is worth
@@ -275,7 +294,7 @@ fun StockCheckScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String?
     }
 
     ScanScaffold(
-        title = "Inventory check",
+        title = "Stock take",
         subtitle = "$godown · ${lines.size} counted",
         nav = nav,
         sessionId = sessionId,

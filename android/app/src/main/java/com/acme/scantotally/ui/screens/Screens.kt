@@ -21,6 +21,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Inventory
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.LocalShipping
 import androidx.compose.material.icons.filled.MoveToInbox
 import androidx.compose.material3.AlertDialog
@@ -388,7 +389,10 @@ fun HomeScreen(nav: NavController) {
                 BigAction("Outgoing", "Pick against a sales order", Icons.Default.LocalShipping) {
                     nav.navigate("orders")
                 }
-                BigAction("Inventory check", "Count what is on the shelf", Icons.Default.Inventory) {
+                BigAction("Check stock", "Scan a box, see what Tally has", Icons.Default.Search) {
+                    nav.navigate("lookup")
+                }
+                BigAction("Stock take", "Count the shelf and correct Tally", Icons.Default.Inventory) {
                     nav.navigate("stockcheck")
                 }
 
@@ -523,7 +527,7 @@ fun SalesOrderPickerScreen(nav: NavController) {
  * "This morning's delivery" is how an operator thinks about it, so today shows
  * a time and anything older shows a date.
  */
-private fun whenScanned(millis: Long): String {
+fun whenScanned(millis: Long): String {
     val now = java.util.Calendar.getInstance()
     val then = java.util.Calendar.getInstance().apply { timeInMillis = millis }
     val sameDay = now.get(java.util.Calendar.YEAR) == then.get(java.util.Calendar.YEAR) &&

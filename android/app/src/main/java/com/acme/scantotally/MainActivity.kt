@@ -31,6 +31,7 @@ import com.acme.scantotally.ui.screens.ReceiptsScreen
 import com.acme.scantotally.ui.screens.SalesOrderPickerScreen
 import com.acme.scantotally.ui.screens.SetupScreen
 import com.acme.scantotally.ui.screens.StockCheckScreen
+import com.acme.scantotally.ui.screens.StockLookupScreen
 import com.acme.scantotally.ui.theme.ScanToTallyTheme
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -125,6 +126,9 @@ class MainActivity : ComponentActivity() {
                                 entry.arguments?.getString("session"),
                             )
                         }
+                        // Asks a question and changes nothing, so it takes no
+                        // session id: there is no receipt to resume.
+                        composable("lookup") { StockLookupScreen(nav, scans) }
                         composable(
                             "stockcheck?session={session}",
                             arguments = listOf(resumeArg()),

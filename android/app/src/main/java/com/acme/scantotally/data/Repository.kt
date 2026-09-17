@@ -58,6 +58,22 @@ data class QtyCheck(
     val orderPending: Double = 0.0,
 )
 
+/** The answer to "how much of this do I have". */
+data class StockLookup(
+    val found: Boolean = false,
+    val pid: String = "",
+    val stockItemName: String = "",
+    val description: String = "",
+    val unit: String = "",
+    val total: Double = 0.0,
+    val godown: String = "",
+    val boxes: List<BatchBalanceEntity> = emptyList(),
+    val asOf: Long = 0L,
+    val scannedBox: String = "",
+    val raw: String = "",
+    val message: String = "",
+)
+
 private const val EPS = 1e-4
 
 private fun fmt(v: Double): String =
@@ -132,6 +148,44 @@ class Repository(context: Context, private val api: RelayApi?) {
             return Resolved(it.name, it.baseUnits, "", it.hasBatches)
         }
         return null
+    }
+
+    // --- stock lookup ---
+
+    /**
+     * What Tally holds for the product on this label.
+     *
+     * A different job from a stock take, and deliberately a different screen:
+     * this one asks a question and changes nothing. No session is opened, so it
+     * leaves no receipt behind, and it answers entirely from the synced figures
+     * -- an operator standing in an aisle with no signal still gets an answer,
+     * with the time it was last refreshed shown so they can judge it.
+     */
+    suspend fun lookupStock(godown: String, scan: RawScan): StockLookup {
+        val parsed = registry.parse(scan.symbology, scan.data)
+        val box = parsed.box ?: return StockLookup(
+            message = "Not a product label.", raw = scan.data,
+        )
+
+        val resolved = resolve(box.pid) ?: return StockLookup(
+            pid = box.pid, scannedBox = box.boxSerial, raw = scan.data,
+            message = "${box.pid} is not in Tally yet.",
+        )
+
+        val boxes = dao.balancesFor(resolved.stockItemName, godown)
+        return StockLookup(
+            found = true,
+            pid = box.pid,
+            stockItemName = resolved.stockItemName,
+            description = resolved.description.ifEmpty { resolved.stockItemName },
+            unit = resolved.unit.ifEmpty { boxes.firstOrNull()?.unit.orEmpty() },
+            total = boxes.sumOf { it.closingQty },
+            godown = godown,
+            boxes = boxes,
+            asOf = boxes.maxOfOrNull { it.syncedAt } ?: 0L,
+            scannedBox = box.boxSerial,
+            raw = scan.data,
+        )
     }
 
     // --- incoming ---
@@ -466,12 +520,9 @@ class Repository(context: Context, private val api: RelayApi?) {
         val name = "$pid $description"
         dao.upsertBindings(listOf(PidBindingEntity(pid, name, description, provisional = true)))
         dao.upsertItems(listOf(StockItemEntity(name = name, baseUnits = unit, hasBatches = true)))
-        // Backfill the lines already scanned for this PID in this session.
-        for (l in dao.lines(sessionId)) {
-            if (l.pid == pid && l.stockItemName.isEmpty()) {
-                dao.setLineQty(l.id, l.qty, l.flags.replace("UNRESOLVED_PID", "PROPOSED").trim(','))
-            }
-        }
+        // Fill in the cartons already scanned for this product, so they stop
+        // reading as undescribed the moment the operator has described them.
+        dao.fillInProduct(pid, name, unit, description)
         return runCatching {
             api?.proposeItem(
                 ProposeItemRequest(
@@ -625,7 +676,13 @@ class Repository(context: Context, private val api: RelayApi?) {
                 // Refused by Tally, or refused before it ever got there. Drop
                 // the guess so the next carton asks again instead of building
                 // receipt after receipt on a product that does not exist.
-                "FAILED" -> dao.deleteBinding(p.pid)
+                "FAILED" -> {
+                    dao.deleteBinding(p.pid)
+                    // And take the product back off the cartons, so the next
+                    // look at that receipt asks for it again rather than
+                    // presenting a product Tally has refused as settled.
+                    dao.unfillProduct(p.pid)
+                }
                 // Done: it is a real item now and arrives in the sync proper.
                 "CREATED" -> dao.deleteBinding(p.pid)
                 // Still in flight; leave the guess alone.

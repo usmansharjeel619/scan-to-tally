@@ -56,12 +56,20 @@ fun BoxSlots(
     onTypeBox: () -> Unit,
     onTypeQuantity: () -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * Off for a despatch, where the quantity is typed on the keypad that
+     * follows -- checked against the box's real remaining stock rather than
+     * anything printed on the carton.
+     */
+    showQuantity: Boolean = true,
 ) {
     Card(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(10.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (draft.isComplete) LocalSemantics.current.accept.bg
+            containerColor = if (if (showQuantity) draft.isComplete
+            else draft.pid.isNotEmpty() && draft.boxSerial.isNotEmpty())
+            LocalSemantics.current.accept.bg
             else MaterialTheme.colorScheme.surfaceVariant,
         ),
     ) {
@@ -80,7 +88,7 @@ fun BoxSlots(
                 scanned = BoxDraft.Slot.BOX in draft.scanned,
                 onType = onTypeBox,
             )
-            Slot(
+            if (showQuantity) Slot(
                 // Never scannable on these labels: a quantity barcode and a
                 // week number are the same shape, so this one is always typed.
                 label = "QUANTITY",
@@ -167,9 +175,10 @@ fun BoxDraft.waitingFor(): String = when {
 /**
  * Typing one field of the box.
  *
- * A number pad for the quantity, a keyboard for the other two. The quantity is
- * always typed on these labels, so this is a normal part of receiving rather
- * than a fallback, and it is worth being quick.
+ * A number pad for the quantity, a keyboard for the other two. Deliberately
+ * bare: the operator is holding a carton and reading one figure off it, and a
+ * paragraph of explanation above the box is something to scroll past, not
+ * something anyone reads at a dock.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -205,42 +214,25 @@ fun SlotEntryDialog(
                     BoxDraft.Slot.PRODUCT -> "Product code"
                     BoxDraft.Slot.BOX -> "Box number"
                     BoxDraft.Slot.QUANTITY ->
-                        if (offered != null) "Is this the quantity?" else "Quantity in this box"
+                        if (offered != null) "Is this the quantity?" else "Quantity"
                 },
             )
         },
         text = {
-            Column {
-                Text(
-                    when (slot) {
-                        BoxDraft.Slot.PRODUCT ->
-                            "As printed on the carton, for example 4098-5220."
-                        BoxDraft.Slot.BOX ->
-                            "If the carton has no box number, write one on it and " +
-                                "type the same here."
-                        BoxDraft.Slot.QUANTITY -> if (offered != null)
-                            "Scanned " + offered + ". Check it matches the quantity printed on the carton, then tap Done."
-                        else "Read it off the carton."
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = value,
-                    onValueChange = { v ->
-                        value = if (numeric) v.filter { it.isDigit() }.take(6) else v.trim().take(32)
-                    },
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.headlineSmall,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = if (numeric) KeyboardType.Number else KeyboardType.Text,
-                        capitalization = if (numeric) KeyboardCapitalization.None
-                        else KeyboardCapitalization.Characters,
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
+            OutlinedTextField(
+                value = value,
+                onValueChange = { v ->
+                    value = if (numeric) v.filter { it.isDigit() }.take(6) else v.trim().take(32)
+                },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.headlineMedium,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = if (numeric) KeyboardType.Number else KeyboardType.Text,
+                    capitalization = if (numeric) KeyboardCapitalization.None
+                    else KeyboardCapitalization.Characters,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
         },
         confirmButton = {
             Button(onClick = { onConfirm(value.trim()) }, enabled = valid) { Text("Done") }

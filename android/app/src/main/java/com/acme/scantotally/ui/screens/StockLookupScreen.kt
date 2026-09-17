@@ -102,10 +102,11 @@ fun StockLookupScreen(nav: NavController, scans: Flow<RawScan>) {
                 contentAlignment = Alignment.Center,
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Scan any box", style = MaterialTheme.typography.headlineSmall)
+                    Text("Scan a product", style = MaterialTheme.typography.headlineSmall)
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "It will show how much of that product Tally has here. " +
+                        "The part number barcode, or the long one -- either works. " +
+                            "It shows every box of that product and the total. " +
                             "Nothing is recorded.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

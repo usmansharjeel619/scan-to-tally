@@ -25,7 +25,6 @@ import com.acme.scantotally.scan.KeystrokeScanner
 import com.acme.scantotally.scan.RawScan
 import com.acme.scantotally.ui.screens.HomeScreen
 import com.acme.scantotally.ui.screens.IncomingScreen
-import com.acme.scantotally.ui.screens.ManualEntryScreen
 import com.acme.scantotally.ui.screens.OutgoingScreen
 import com.acme.scantotally.ui.screens.ReceiptsScreen
 import com.acme.scantotally.ui.screens.SalesOrderPickerScreen
@@ -134,9 +133,6 @@ class MainActivity : ComponentActivity() {
                             arguments = listOf(resumeArg()),
                         ) { entry ->
                             StockCheckScreen(nav, scans, entry.arguments?.getString("session"))
-                        }
-                        composable("manual/{sessionId}") { entry ->
-                            ManualEntryScreen(nav, entry.arguments?.getString("sessionId").orEmpty())
                         }
                         composable("receipts") { ReceiptsScreen(nav) }
                     }

@@ -4,6 +4,8 @@ import android.content.Context
 import com.acme.scantotally.DeviceConfig
 import com.acme.scantotally.feedback.Beep
 import com.acme.scantotally.scan.BarcodeRegistry
+import com.acme.scantotally.scan.FragmentKind
+import com.acme.scantotally.scan.classifyFragment
 import com.acme.scantotally.scan.Outcome
 import com.acme.scantotally.scan.ParsedBox
 import com.acme.scantotally.scan.mfgDateFromSerial
@@ -187,20 +189,30 @@ class Repository(context: Context, private val api: RelayApi?) {
      * with the time it was last refreshed shown so they can judge it.
      */
     suspend fun lookupStock(godown: String, scan: RawScan): StockLookup {
+        // Only the part number matters here. The question is "how much of this
+        // product is there", so anything carrying a part number answers it:
+        // the bare nnnn-nnnn barcode, or the long combined code, from which the
+        // part number is simply taken. Requiring the combined code would have
+        // made this unusable on every carton that has no such barcode.
         val parsed = registry.parse(scan.symbology, scan.data)
-        val box = parsed.box ?: return StockLookup(
-            message = "Not a product label.", raw = scan.data,
-        )
+        val fromCombined = parsed.box
+        val fragment = classifyFragment(scan.data)
 
-        val resolved = resolve(box.pid) ?: return StockLookup(
-            pid = box.pid, scannedBox = box.boxSerial, raw = scan.data,
-            message = "${box.pid} is not in Tally yet.",
+        val pid = fromCombined?.pid
+            ?: fragment.value.takeIf { fragment.kind == FragmentKind.PRODUCT }
+            ?: return StockLookup(
+                message = "Scan the product barcode (like 4098-9792).", raw = scan.data,
+            )
+
+        val resolved = resolve(pid) ?: return StockLookup(
+            pid = pid, scannedBox = fromCombined?.boxSerial.orEmpty(), raw = scan.data,
+            message = "$pid is not in Tally yet.",
         )
 
         val boxes = dao.balancesFor(resolved.stockItemName, godown)
         return StockLookup(
             found = true,
-            pid = box.pid,
+            pid = pid,
             stockItemName = resolved.stockItemName,
             description = resolved.description.ifEmpty { resolved.stockItemName },
             unit = resolved.unit.ifEmpty { boxes.firstOrNull()?.unit.orEmpty() },
@@ -208,7 +220,7 @@ class Repository(context: Context, private val api: RelayApi?) {
             godown = godown,
             boxes = boxes,
             asOf = boxes.maxOfOrNull { it.syncedAt } ?: 0L,
-            scannedBox = box.boxSerial,
+            scannedBox = fromCombined?.boxSerial.orEmpty(),
             raw = scan.data,
         )
     }

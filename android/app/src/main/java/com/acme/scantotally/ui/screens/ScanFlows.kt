@@ -62,7 +62,6 @@ import com.acme.scantotally.data.SessionLineEntity
 import com.acme.scantotally.feedback.Beep
 import com.acme.scantotally.scan.BoxDraft
 import com.acme.scantotally.scan.FragmentKind
-import com.acme.scantotally.scan.ManualScanSource
 import com.acme.scantotally.scan.classifyFragment
 import com.acme.scantotally.scan.fragmentRefusal
 import com.acme.scantotally.scan.offeredQuantity
@@ -259,12 +258,6 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                 }
             }
         },
-        onManual = {
-            scope.launch {
-                val r = repo ?: return@launch
-                nav.navigate("manual/${ensure(r)}")
-            }
-        },
         slots = {
             BoxSlots(
                 draft = draft,
@@ -418,12 +411,6 @@ fun StockCheckScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String?
                 showVariance = true
             }
         },
-        onManual = {
-            scope.launch {
-                val r = repo ?: return@launch
-                nav.navigate("manual/${ensure(r)}")
-            }
-        },
     )
 
     if (showVariance) {
@@ -551,6 +538,7 @@ fun OutgoingScreen(
     // Only product and box: a despatch quantity is typed on the keypad, never
     // taken from the label.
     var outDraft by remember { mutableStateOf(BoxDraft()) }
+    var outTyping by remember { mutableStateOf<BoxDraft.Slot?>(null) }
     val app = rememberApp()
     val scope = rememberCoroutineScope()
 
@@ -639,6 +627,15 @@ fun OutgoingScreen(
         submitting = submitting,
         result = result,
         submitLabel = "Done · post delivery note",
+        slots = {
+            BoxSlots(
+                draft = outDraft,
+                showQuantity = false,
+                onTypeProduct = { outTyping = BoxDraft.Slot.PRODUCT },
+                onTypeBox = { outTyping = BoxDraft.Slot.BOX },
+                onTypeQuantity = {},
+            )
+        },
         onSubmit = {
             scope.launch {
                 val r = repo ?: return@launch
@@ -655,13 +652,40 @@ fun OutgoingScreen(
                 }
             }
         },
-        onManual = {
-            scope.launch {
-                val r = repo ?: return@launch
-                nav.navigate("manual/${ensure(r)}")
-            }
-        },
     )
+
+    outTyping?.let { slot ->
+        SlotEntryDialog(
+            slot = slot,
+            draft = outDraft,
+            onCancel = { outTyping = null },
+            onConfirm = { value ->
+                outDraft = when (slot) {
+                    BoxDraft.Slot.PRODUCT -> outDraft.withTypedProduct(value)
+                    BoxDraft.Slot.BOX -> outDraft.withTypedBox(value)
+                    BoxDraft.Slot.QUANTITY -> outDraft
+                }
+                outTyping = null
+
+                // A typed field completes a despatch exactly as a scanned one
+                // does: same checks, same keypad, same ceilings.
+                val d = outDraft
+                if (d.pid.isNotEmpty() && d.boxSerial.isNotEmpty()) {
+                    scope.launch {
+                        val r = repo ?: return@launch
+                        val sid = ensure(r)
+                        val decision = r.despatchAssembled(
+                            sid, salesOrder, godown, d.pid, d.boxSerial, d.rawTrail,
+                        )
+                        outDraft = BoxDraft()
+                        last = decision
+                        app.feedback.play(decision.beep)
+                        if (decision.outcome == Outcome2.ACCEPT) qtyFor = decision
+                    }
+                }
+            },
+        )
+    }
 
     qtyFor?.let { d ->
         QuantityKeypad(
@@ -1001,7 +1025,6 @@ private fun ScanScaffold(
     result: String?,
     submitLabel: String,
     onSubmit: () -> Unit,
-    onManual: () -> Unit,
     /** The box being assembled, for the flows that build one field at a time. */
     slots: (@Composable () -> Unit)? = null,
 ) {
@@ -1021,16 +1044,6 @@ private fun ScanScaffold(
                 navigationIcon = {
                     IconButton(onClick = { nav.popBackStack() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
-                    }
-                },
-                actions = {
-                    // Manual entry is one tap away and always present: the
-                    // labels sit under packing tape, and torn ones happen.
-                    //
-                    // It asks for the receipt rather than reading one, because
-                    // there is deliberately none until something is entered.
-                    IconButton(onClick = onManual) {
-                        Icon(Icons.Default.Keyboard, "Manual entry")
                     }
                 },
             )
@@ -1080,175 +1093,6 @@ private fun ScanScaffold(
                     modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
                 ) { Text("Back to start") }
             }
-        }
-    }
-}
-
-// --- manual entry -----------------------------------------------------------
-
-/**
- * Manual entry: a first-class tab, not a hidden escape hatch.
- *
- * It runs through the IDENTICAL parser and validation path as a scan, for
- * whichever flow it was opened from. It is a substitute for the scanner, never
- * a bypass for the checks -- otherwise it quietly becomes the route people take
- * when validation is inconvenient, and stock accuracy dies.
- *
- * It used to treat every typed box as an incoming receipt whatever screen it
- * was opened from, which was exactly the bypass this comment promised it was
- * not: on a despatch it skipped the check that a box cannot give up more than
- * it holds, and on an inventory check it recorded a count as a receipt.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun ManualEntryScreen(nav: NavController, sessionId: String) {
-    SuspendScanCapture()
-    val app = rememberApp()
-    val scope = rememberCoroutineScope()
-
-    var repo by remember { mutableStateOf<Repository?>(null) }
-    var kind by remember { mutableStateOf("") }
-    var salesOrder by remember { mutableStateOf("") }
-    var godown by remember { mutableStateOf("") }
-    var pid by remember { mutableStateOf("") }
-    var serial by remember { mutableStateOf("") }
-    var qty by remember { mutableStateOf("") }
-    var last by remember { mutableStateOf<ScanDecision?>(null) }
-    var refusal by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(Unit) {
-        val r = app.repository()
-        repo = r
-        godown = app.config.godown.first()
-        val s = r.session(sessionId)
-        kind = s?.kind ?: "INCOMING"
-        salesOrder = s?.salesOrder.orEmpty()
-    }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Manual entry") },
-                navigationIcon = {
-                    IconButton(onClick = { nav.popBackStack() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
-                    }
-                },
-            )
-        },
-    ) { pad ->
-        Column(
-            Modifier.padding(pad).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text(
-                when (kind) {
-                    "OUTGOING" ->
-                        "Use this when a label is torn or unreadable. The quantity is still " +
-                            "checked against what the box actually holds."
-                    "STOCKCHECK" ->
-                        "Use this when a label is torn or unreadable. Count what is in the " +
-                            "box in front of you."
-                    else ->
-                        "Use this when a label is torn or unreadable. Every check that " +
-                            "applies to a scan applies here too."
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-
-            OutlinedTextField(
-                value = pid, onValueChange = { pid = it },
-                label = { Text("Product code (PID)") },
-                placeholder = { Text("4098-9792") },
-                singleLine = true, modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = serial, onValueChange = { serial = it.filter { c -> !c.isWhitespace() } },
-                label = { Text("Box number") },
-                placeholder = { Text("1124241658336425") },
-                singleLine = true, modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = qty, onValueChange = { qty = it.filter { c -> c.isDigit() } },
-                label = {
-                    Text(
-                        when (kind) {
-                            "OUTGOING" -> "Quantity to despatch"
-                            "STOCKCHECK" -> "Quantity counted"
-                            else -> "Quantity"
-                        },
-                    )
-                },
-                singleLine = true, modifier = Modifier.fillMaxWidth(),
-            )
-
-            Button(
-                onClick = {
-                    scope.launch {
-                        val r = repo ?: return@launch
-                        refusal = null
-                        // Rebuilt into the label's own format so it goes
-                        // through exactly the same parser as a real scan.
-                        val payload = "$pid|$serial|$qty|"
-                        val scan = ManualScanSource.scan(payload)
-                        val typed = qty.toDoubleOrNull() ?: 0.0
-
-                        // Whichever flow this was opened from decides the
-                        // checks. Anything else would make this the soft route
-                        // round them.
-                        val d = when (kind) {
-                            "OUTGOING" -> r.scanOutgoing(sessionId, salesOrder, godown, scan)
-                            "STOCKCHECK" -> r.scanStockCheck(sessionId, godown, scan, blind = true)
-                            else -> r.scanIncoming(sessionId, scan)
-                        }
-                        last = d
-                        app.feedback.play(d.beep)
-
-                        if (d.outcome != Outcome2.ACCEPT && d.outcome != Outcome2.FLAGGED) {
-                            return@launch
-                        }
-
-                        // A despatch quantity is the employee's to type, and it
-                        // can never exceed what that box actually holds.
-                        if (kind == "OUTGOING") {
-                            val check = r.checkOutgoingQty(
-                                sessionId, salesOrder, godown,
-                                d.pid, d.boxSerial, d.stockItemName, typed,
-                            )
-                            if (!check.ok) {
-                                refusal = check.error
-                                app.feedback.play(Beep.REJECT)
-                                return@launch
-                            }
-                            r.commitLine(sessionId, d, typed)
-                        } else {
-                            r.commitLine(sessionId, d)
-                        }
-                        pid = ""; serial = ""; qty = ""
-                    }
-                },
-                enabled = pid.isNotBlank() && serial.isNotBlank() && qty.isNotBlank(),
-                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-            ) {
-                Text(
-                    when (kind) {
-                        "OUTGOING" -> "Add to despatch"
-                        "STOCKCHECK" -> "Record count"
-                        else -> "Add box"
-                    },
-                )
-            }
-
-            refusal?.let {
-                Text(
-                    it,
-                    color = LocalSemantics.current.reject.fg,
-                    style = MaterialTheme.typography.bodyLarge,
-                )
-            }
-
-            ScanResultCard(last)
         }
     }
 }

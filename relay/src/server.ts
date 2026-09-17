@@ -38,6 +38,32 @@ const app = Fastify({
 });
 await app.register(websocket);
 
+/**
+ * An empty body is not a malformed one.
+ *
+ * A DELETE carries no body, but plenty of HTTP clients still put a JSON
+ * content type on one, and the default parser answers 400 to that. Every
+ * discarded receipt came back refused for exactly this reason, silently,
+ * because the phone had already deleted its own copy and never looked.
+ *
+ * Every handler here already reads `req.body ?? {}`, so an empty object is
+ * what they expect anyway.
+ */
+app.addContentTypeParser(
+  'application/json',
+  { parseAs: 'string' },
+  (_req, body, done) => {
+    const text = String(body ?? '').trim();
+    if (text === '') return done(null, {});
+    try {
+      done(null, JSON.parse(text));
+    } catch (err) {
+      (err as any).statusCode = 400;
+      done(err as Error, undefined);
+    }
+  },
+);
+
 function sha256(s: string): string {
   return createHash('sha256').update(s).digest('hex');
 }
@@ -407,6 +433,19 @@ app.get('/api/v1/sync', async (req, reply) => {
     `SELECT pid, description, alternates FROM product_catalogue`,
   ).all();
 
+  // What became of every product scanned that Tally did not have.
+  //
+  // The device binds a new product locally the moment the operator describes
+  // it, so the rest of the pallet scans without prompting again. That binding
+  // is a guess until Tally confirms it, and when the creation failed the phone
+  // had no way to find out -- it kept a product that does not exist, stopped
+  // prompting for it, and every receipt built on it was refused with nothing
+  // on screen to say why.
+  const proposals = db.prepare(
+    `SELECT pid, name, description, base_units AS baseUnits, state, error
+       FROM proposed_items`,
+  ).all();
+
   const receivedBoxes = db.prepare(
     `SELECT pid, box_serial, received_at FROM received_boxes
       WHERE received_at > datetime('now','-12 months')`,
@@ -416,7 +455,7 @@ app.get('/api/v1/sync', async (req, reply) => {
     syncedAt: nowIso(),
     godown: d.godown,
     company: d.company,
-    items, bindings, balances, receivedBoxes, catalogue,
+    items, bindings, balances, receivedBoxes, catalogue, proposals,
     orders: orders.map((o) => ({
       ...o,
       lines: orderLines.filter((l) => l.voucher_number === o.voucher_number),

@@ -31,12 +31,20 @@ data class StockItemEntity(
     val hasBatches: Boolean = true,
 )
 
-/** Learned PID -> Tally item mapping, synced from the relay. */
+/**
+ * Learned PID -> Tally item mapping.
+ *
+ * Normally synced from the relay, which got it from Tally. The exception is a
+ * product the operator has just described: that is bound here immediately so
+ * the rest of the pallet scans without prompting again, and it is a GUESS
+ * until Tally confirms the item exists. Provisional says which is which.
+ */
 @Entity(tableName = "pid_bindings")
 data class PidBindingEntity(
     @PrimaryKey val pid: String,
     val stockItemName: String,
     val description: String = "",
+    val provisional: Boolean = false,
 )
 
 /**
@@ -170,6 +178,30 @@ interface ScanDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertBindings(bindings: List<PidBindingEntity>)
+
+    /**
+     * Tally is the only authority on what exists.
+     *
+     * Bindings and items used to be upserted and never cleared, so anything the
+     * relay stopped sending stayed on the phone for ever -- including a product
+     * whose creation Tally refused. The phone then resolved that part number
+     * happily, never prompted for it again, and every receipt it appeared on
+     * was refused with nothing on screen to explain it.
+     *
+     * Provisional bindings are spared: those are products described seconds ago
+     * that Tally has not been asked about yet.
+     */
+    @Query("DELETE FROM pid_bindings WHERE provisional = 0")
+    suspend fun clearConfirmedBindings()
+
+    @Query("DELETE FROM pid_bindings WHERE pid = :pid")
+    suspend fun deleteBinding(pid: String)
+
+    @Query("SELECT * FROM pid_bindings WHERE provisional = 1")
+    suspend fun provisionalBindings(): List<PidBindingEntity>
+
+    @Query("DELETE FROM stock_items WHERE name NOT IN (SELECT stockItemName FROM pid_bindings WHERE provisional = 1)")
+    suspend fun clearItemsExceptProvisional()
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertBalances(balances: List<BatchBalanceEntity>)
@@ -392,7 +424,7 @@ interface ScanDao {
         SalesOrderEntity::class, SalesOrderLineEntity::class, ReceivedBoxEntity::class,
         SessionEntity::class, SessionLineEntity::class, CatalogueEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class ScanDatabase : RoomDatabase() {

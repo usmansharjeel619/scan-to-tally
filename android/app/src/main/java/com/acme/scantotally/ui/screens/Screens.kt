@@ -707,9 +707,13 @@ fun ReceiptsScreen(nav: NavController) {
                                             busy = s.id
                                             val r = repo?.submit(s.id)
                                             busy = null
-                                            note = r?.message?.ifEmpty { null }
-                                                ?: if (r == null) "Saved on the phone. It will reach Tally when there is signal."
-                                                else "Sent to Tally."
+                                            note = when {
+                                                r == null ->
+                                                    "Saved on the phone. It will reach Tally when there is signal."
+                                                r.message.isNotEmpty() -> r.message
+                                                r.ok -> "Sent to Tally."
+                                                else -> "Tally would not accept this."
+                                            }
                                         }
                                     },
                                     enabled = busy == null && (summary?.boxes ?: 0) > 0,

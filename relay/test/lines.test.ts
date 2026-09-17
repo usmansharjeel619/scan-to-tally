@@ -217,6 +217,35 @@ test('a creation Tally refuses is recorded, not silently forgotten', async () =>
   assert.equal(r.stock_item_name, '');
 });
 
+test('a receipt that never reached Tally can be discarded', async () => {
+  // This failed silently for a while: the phone sends DELETE with a JSON
+  // content type and no body, and the default parser called that malformed.
+  const id = await openSession('INCOMING');
+  await line(id, { pid: KNOWN_PID, boxSerial: 'BOX-1', qty: 18, raw: 'x' });
+
+  const r = await app.inject({
+    method: 'DELETE', url: `/api/v1/sessions/${id}`,
+    headers: { ...auth, 'content-type': 'application/json' },
+  });
+  assert.equal(r.statusCode, 200, r.body);
+
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM sessions WHERE id=?`).get(id).n, 0);
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM session_lines WHERE session_id=?`).get(id).n, 0);
+});
+
+test('a receipt that reached Tally cannot be discarded', async () => {
+  const id = await openSession('INCOMING');
+  await line(id, { pid: KNOWN_PID, boxSerial: 'BOX-1', qty: 18, raw: 'x' });
+  db.prepare(`UPDATE sessions SET state='POSTED', tally_voucher_id='RN-1' WHERE id=?`).run(id);
+
+  const r = await app.inject({
+    method: 'DELETE', url: `/api/v1/sessions/${id}`,
+    headers: { ...auth, 'content-type': 'application/json' },
+  });
+  assert.equal(r.statusCode, 409);
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM sessions WHERE id=?`).get(id).n, 1);
+});
+
 test('outgoing still refuses a part number Tally does not have', async () => {
   const id = await openSession('OUTGOING');
   const r = await line(id, { pid: NEW_PID, boxSerial: 'BOX-9', qty: 1, raw: 'x' });

@@ -12,6 +12,7 @@ import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
@@ -37,8 +38,20 @@ data class SyncResponse(
     val bindings: List<ApiBinding> = emptyList(),
     val balances: List<ApiBalance> = emptyList(),
     val receivedBoxes: List<ApiReceivedBox> = emptyList(),
+    val proposals: List<ApiProposal> = emptyList(),
     val catalogue: List<ApiCatalogue> = emptyList(),
     val orders: List<ApiOrder> = emptyList(),
+)
+
+/** What became of a product the operator described. */
+@Serializable
+data class ApiProposal(
+    val pid: String = "",
+    val name: String = "",
+    val description: String = "",
+    val baseUnits: String = "",
+    val state: String = "",
+    val error: String = "",
 )
 
 @Serializable
@@ -143,10 +156,18 @@ data class SubmitRequest(val scope: String = "PARTIAL")
 @Serializable
 data class SubmitResponse(
     val sessionId: String = "",
+    val ok: Boolean = false,
     val state: String = "",
     val dispatched: Boolean = false,
     val unresolvedLines: Int = 0,
     val noVariance: Boolean = false,
+    val message: String = "",
+)
+
+/** The shape the relay refuses things in. */
+@Serializable
+data class ApiError(
+    val error: String = "",
     val message: String = "",
 )
 
@@ -248,10 +269,28 @@ class RelayApi(
         return resp.status.isSuccess()
     }
 
-    suspend fun submit(sessionId: String, scope: String = "PARTIAL"): SubmitResponse =
-        client.post("$baseUrl/api/v1/sessions/$sessionId/submit") {
+    /**
+     * Closes a receipt.
+     *
+     * A refusal comes back as a normal answer with `ok = false` rather than an
+     * exception: the reason is the whole point, and it was being thrown away.
+     * A receipt that will not save and does not say why is the worst thing this
+     * app can put in front of an operator.
+     */
+    suspend fun submit(sessionId: String, scope: String = "PARTIAL"): SubmitResponse {
+        val resp = client.post("$baseUrl/api/v1/sessions/$sessionId/submit") {
             setBody(SubmitRequest(scope))
-        }.body()
+        }
+        if (resp.status.isSuccess()) return resp.body<SubmitResponse>().copy(ok = true)
+        val err = runCatching { resp.body<ApiError>() }.getOrNull()
+        return SubmitResponse(
+            sessionId = sessionId,
+            ok = false,
+            message = err?.message?.ifEmpty { null }
+                ?: err?.error?.ifEmpty { null }
+                ?: "Tally would not accept this (${resp.status.value}).",
+        )
+    }
 
     suspend fun sessionState(sessionId: String): SessionStateResponse =
         client.get("$baseUrl/api/v1/sessions/$sessionId").body()
@@ -277,7 +316,12 @@ class RelayApi(
 
 
     suspend fun deleteSession(sessionId: String) {
-        client.delete("$baseUrl/api/v1/sessions/$sessionId")
+        // No content type. The client sets application/json by default, and a
+        // DELETE carries no body, which the relay rejects as a malformed one --
+        // every Discard and Clear was quietly answered 400 because of it.
+        client.delete("$baseUrl/api/v1/sessions/$sessionId") {
+            headers.remove(HttpHeaders.ContentType)
+        }
     }
 
     suspend fun retry(sessionId: String) {

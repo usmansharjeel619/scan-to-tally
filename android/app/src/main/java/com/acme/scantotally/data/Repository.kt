@@ -464,7 +464,7 @@ class Repository(context: Context, private val api: RelayApi?) {
         unit: String, raw: String, operator: String,
     ): Boolean {
         val name = "$pid $description"
-        dao.upsertBindings(listOf(PidBindingEntity(pid, name, description)))
+        dao.upsertBindings(listOf(PidBindingEntity(pid, name, description, provisional = true)))
         dao.upsertItems(listOf(StockItemEntity(name = name, baseUnits = unit, hasBatches = true)))
         // Backfill the lines already scanned for this PID in this session.
         for (l in dao.lines(sessionId)) {
@@ -481,6 +481,9 @@ class Repository(context: Context, private val api: RelayApi?) {
             )?.ok ?: false
         }.getOrDefault(false)
     }
+
+    /** What the price list calls a part number, if it knows it. */
+    suspend fun catalogueDescription(pid: String): String? = dao.catalogue(pid)?.description
 
     suspend fun updateLineQty(lineId: Long, qty: Double, flags: String) =
         dao.setLineQty(lineId, qty, flags)
@@ -528,7 +531,15 @@ class Repository(context: Context, private val api: RelayApi?) {
         // posting short.
         if (!pushPendingLines(sessionId)) return null
 
-        return runCatching { api?.submit(sessionId, scope) }.getOrNull()
+        val resp = runCatching { api?.submit(sessionId, scope) }.getOrNull() ?: return null
+
+        // A refusal goes back to DRAFT with the reason on it. Leaving it QUEUED
+        // would be a lie -- nothing is queued, nothing is coming, and the
+        // operator would wait for something that is never going to happen.
+        if (!resp.ok) {
+            dao.setSessionResult(sessionId, "DRAFT", "", "BUSINESS", resp.message)
+        }
+        return resp
     }
 
     /**
@@ -601,6 +612,34 @@ class Repository(context: Context, private val api: RelayApi?) {
     /** Pulls everything the device needs to keep working without a network. */
     suspend fun syncMasters(): Boolean = runCatching {
         val s = api?.sync() ?: return false
+
+        // A product the operator described is bound here the moment they
+        // describe it, so the rest of the pallet does not prompt again. Until
+        // Tally has actually created it that binding is a guess, and the relay
+        // is the only thing that knows how the guess turned out.
+        for (p in s.proposals) {
+            when (p.state) {
+                // Refused by Tally, or refused before it ever got there. Drop
+                // the guess so the next carton asks again instead of building
+                // receipt after receipt on a product that does not exist.
+                "FAILED" -> dao.deleteBinding(p.pid)
+                // Done: it is a real item now and arrives in the sync proper.
+                "CREATED" -> dao.deleteBinding(p.pid)
+                // Still in flight; leave the guess alone.
+                else -> Unit
+            }
+        }
+
+        // Anything the relay no longer mentions is a guess it has no record of
+        // -- a proposal that was cleared, or one that never arrived. Same
+        // conclusion: the phone must stop resolving it.
+        val known = s.proposals.map { it.pid }.toSet()
+        for (b in dao.provisionalBindings()) if (b.pid !in known) dao.deleteBinding(b.pid)
+
+        // Replaced wholesale, like balances: Tally is the only authority on
+        // what exists, and an item it has stopped sending does not.
+        dao.clearItemsExceptProvisional()
+        dao.clearConfirmedBindings()
 
         dao.upsertItems(s.items.map {
             StockItemEntity(it.name, it.alias, it.partNo, it.baseUnits, it.hasBatches != 0)

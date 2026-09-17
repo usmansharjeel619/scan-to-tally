@@ -58,6 +58,7 @@ import com.acme.scantotally.data.Outcome2
 import com.acme.scantotally.data.Repository
 import com.acme.scantotally.data.ScanDecision
 import com.acme.scantotally.data.SessionLineEntity
+import com.acme.scantotally.feedback.Beep
 import com.acme.scantotally.scan.ManualScanSource
 import com.acme.scantotally.scan.RawScan
 import com.acme.scantotally.scan.SuspendScanCapture
@@ -110,6 +111,22 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
     val lines by (sessionId?.let { repo?.linesFlow(it) }?.collectAsState(emptyList())
         ?: remember { mutableStateOf(emptyList<SessionLineEntity>()) })
 
+    // A receipt reopened from the list may be stuck on a product nobody ever
+    // described -- that is exactly why it would not save. Ask again, rather
+    // than leaving it unsaveable with no way in.
+    LaunchedEffect(lines, newProduct) {
+        if (newProduct != null) return@LaunchedEffect
+        val stuck = lines.firstOrNull { it.stockItemName.isEmpty() } ?: return@LaunchedEffect
+        val r = repo ?: return@LaunchedEffect
+        newProduct = ScanDecision(
+            outcome = Outcome2.FLAGGED, beep = Beep.FLAGGED,
+            message = "${stuck.pid} still needs its details",
+            pid = stuck.pid, boxSerial = stuck.boxSerial, labelQty = stuck.qty,
+            catalogueDescription = r.catalogueDescription(stuck.pid),
+            raw = stuck.rawPayload, symbology = stuck.symbology,
+        )
+    }
+
     LaunchedEffect(repo, sessionId) {
         val r = repo ?: return@LaunchedEffect
         val sid = sessionId ?: return@LaunchedEffect
@@ -152,9 +169,12 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                 submitting = true
                 val resp = r.submit(sid)
                 submitting = false
-                app.feedback.playSessionPosted()
+                // Only sound the saved chime when it actually saved. A refusal
+                // that sounds like success is worse than no sound at all.
+                if (resp == null || resp.ok) app.feedback.playSessionPosted()
                 result = when {
                     resp == null -> "Saved. It will post to Tally when the connection returns."
+                    !resp.ok -> resp.message.ifEmpty { "Tally would not accept this receipt." }
                     resp.unresolvedLines > 0 ->
                         "Saved, but ${resp.unresolvedLines} line(s) are waiting for Tally to create the product."
                     resp.dispatched -> "Sent to Tally."
@@ -295,9 +315,10 @@ fun StockCheckScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String?
                     val resp = r.submit(sid, scope2)
                     submitting = false
                     showVariance = false
-                    app.feedback.playSessionPosted()
+                    if (resp == null || resp.ok) app.feedback.playSessionPosted()
                     result = when {
                         resp == null -> "Saved. It will post when the connection returns."
+                        !resp.ok -> resp.message.ifEmpty { "Tally would not accept this count." }
                         resp.noVariance -> "Count matches the book exactly. Nothing to adjust."
                         else -> "Adjustment sent to Tally."
                     }
@@ -454,9 +475,13 @@ fun OutgoingScreen(
                 submitting = true
                 val resp = r.submit(sid)
                 submitting = false
-                app.feedback.playSessionPosted()
-                result = if (resp?.dispatched == true) "Sent to Tally."
-                else "Saved. It will post when the connection returns."
+                if (resp == null || resp.ok) app.feedback.playSessionPosted()
+                result = when {
+                    resp == null -> "Saved. It will post when the connection returns."
+                    !resp.ok -> resp.message.ifEmpty { "Tally would not accept this despatch." }
+                    resp.dispatched -> "Sent to Tally."
+                    else -> "Saved. It will post when the connection returns."
+                }
             }
         },
     )

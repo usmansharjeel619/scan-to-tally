@@ -29,6 +29,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -102,6 +103,8 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
     var typing by remember { mutableStateOf<BoxDraft.Slot?>(null) }
     /** A quantity read off a barcode, waiting to be confirmed against the carton. */
     var offeredQty by remember { mutableStateOf<Int?>(null) }
+    /** The camera, off unless asked for. Scanning is unchanged and still first. */
+    var reading by remember { mutableStateOf(false) }
     var operator by remember { mutableStateOf("") }
     var submitting by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<String?>(null) }
@@ -271,7 +274,25 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                 onTypeQuantity = { typing = BoxDraft.Slot.QUANTITY },
             )
         },
+        onReadLabel = { reading = true },
     )
+
+    if (reading) {
+        LabelCameraSheet(
+            onCancel = { reading = false },
+            onRead = { product, box, qty ->
+                reading = false
+                // Filled in, never committed: whatever the camera read lands
+                // in the slots and the operator confirms it against the carton.
+                // One digit wrong in a part number still looks like a part
+                // number, so nothing here is taken on trust.
+                product?.let { draft = draft.withTypedProduct(it) }
+                box?.let { draft = draft.withTypedBox(it) }
+                qty?.let { draft = draft.withTypedQty(it) }
+            },
+        )
+        return
+    }
 
     typing?.let { slot ->
         SlotEntryDialog(
@@ -1032,6 +1053,8 @@ private fun ScanScaffold(
     onSubmit: () -> Unit,
     /** The box being assembled, for the flows that build one field at a time. */
     slots: (@Composable () -> Unit)? = null,
+    /** Offered only where reading a printed label makes sense. */
+    onReadLabel: (() -> Unit)? = null,
 ) {
     Scaffold(
         topBar = {
@@ -1049,6 +1072,13 @@ private fun ScanScaffold(
                 navigationIcon = {
                     IconButton(onClick = { nav.popBackStack() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                    }
+                },
+                actions = {
+                    onReadLabel?.let {
+                        IconButton(onClick = it) {
+                            Icon(Icons.Default.PhotoCamera, "Read the label")
+                        }
                     }
                 },
             )

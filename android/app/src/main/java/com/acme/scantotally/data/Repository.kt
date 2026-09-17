@@ -736,6 +736,30 @@ class Repository(context: Context, private val api: RelayApi?) {
         runCatching { api?.deleteSession(sessionId) }
     }
 
+    /**
+     * Empties this handset of everything it has scanned and cached.
+     *
+     * Not a routine action: it throws away receipts that have not been sent.
+     * It exists because the alternative is clearing the app's storage, which
+     * also wipes the relay address and token and means provisioning the handset
+     * again -- too much ceremony for "start this test from nothing", and a good
+     * way to lose a device's settings during a rollout.
+     *
+     * Master data comes straight back on the next sync, so what is really being
+     * discarded is the scan history.
+     */
+    suspend fun wipeLocalData() {
+        dao.clearSessionLines()
+        dao.clearSessions()
+        dao.clearReceivedBoxes()
+        dao.clearBalances()
+        dao.clearOrderLines()
+        dao.clearOrders()
+        dao.clearAllBindings()
+        dao.clearAllItems()
+        setConfigCompany("")
+    }
+
     /** Clears every receipt that never reached Tally. */
     suspend fun discardAllUnsaved(): Int {
         val ids = dao.unsavedSessionIds()

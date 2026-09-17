@@ -234,6 +234,18 @@ interface ScanDao {
     @Query("DELETE FROM received_boxes")
     suspend fun clearReceivedBoxes()
 
+    @Query("DELETE FROM sessions")
+    suspend fun clearSessions()
+
+    @Query("DELETE FROM session_lines")
+    suspend fun clearSessionLines()
+
+    @Query("DELETE FROM pid_bindings")
+    suspend fun clearAllBindings()
+
+    @Query("DELETE FROM stock_items")
+    suspend fun clearAllItems()
+
     @Query("DELETE FROM batch_balances")
     suspend fun clearBalances()
 

@@ -157,6 +157,7 @@ fun SetupScreen(nav: NavController, scans: Flow<RawScan>? = null) {
     // a working one. Moving Tally to another PC changes the godown and nothing
     // else, and wiping the app to edit one field would lose every unsent scan.
     var loaded by remember { mutableStateOf(false) }
+    var confirmWipe by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         url = app.config.relayUrl.first()
         token = app.config.token.first()
@@ -308,6 +309,34 @@ fun SetupScreen(nav: NavController, scans: Flow<RawScan>? = null) {
                 },
                 modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
             ) { Text(if (loaded && token.isNotBlank()) "Cancel" else "Skip for now") }
+
+            // Starting a test from nothing, without losing the settings. The
+            // alternative is clearing the app's storage, which takes the relay
+            // address and token with it.
+            if (loaded && token.isNotBlank()) {
+                Spacer(Modifier.height(24.dp))
+                TextButton(
+                    onClick = { confirmWipe = true },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Clear everything scanned on this phone",
+                        color = LocalSemantics.current.reject.fg)
+                }
+            }
+
+            if (confirmWipe) {
+                WipeDialog(
+                    onCancel = { confirmWipe = false },
+                    onWipe = {
+                        scope.launch {
+                            app.repository().wipeLocalData()
+                            confirmWipe = false
+                            error = null
+                            app.repository().syncMasters()
+                        }
+                    },
+                )
+            }
         }
     }
 }
@@ -339,6 +368,24 @@ private fun BigAction(
             }
         }
     }
+}
+
+/** Asked before anything is thrown away, and told plainly what goes. */
+@Composable
+private fun WipeDialog(onCancel: () -> Unit, onWipe: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Clear this phone?") },
+        text = {
+            Text(
+                "Every receipt on this phone is discarded, including any that " +
+                    "have not been sent to Tally. Products and stock figures come " +
+                    "back on the next sync. The relay address and token are kept.",
+            )
+        },
+        confirmButton = { Button(onClick = onWipe) { Text("Clear it") } },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Keep") } },
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

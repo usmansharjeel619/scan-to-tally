@@ -338,7 +338,7 @@ class Repository(context: Context, private val api: RelayApi?) {
         val sentElsewhere = dao.despatchedElsewhere(salesOrder, resolved.stockItemName, sessionId)
         val orderPending = max(
             0.0,
-            orderLine.orderedQty - orderLine.deliveredQty - sentElsewhere - itemCommitted,
+            orderLine.orderedQty - max(orderLine.deliveredQty, sentElsewhere) - itemCommitted,
         )
 
         // Nothing left on the order: say so at the scan rather than letting the
@@ -384,13 +384,14 @@ class Repository(context: Context, private val api: RelayApi?) {
 
         val orderLine = dao.orderLines(salesOrder).firstOrNull { it.stockItemName == stockItemName }
         val itemCommitted = dao.committedForItem(sessionId, stockItemName, excludeLineId)
-        // Plus whatever this device has already sent against the order that
-        // Tally has not confirmed back yet -- the delivered figure is only as
-        // fresh as the last sync, and two despatches inside that window both
-        // saw the whole order outstanding.
+        // Two sources for what has already gone out, and the LARGER is used
+        // rather than the sum. Tally's figure is authoritative but a sync late;
+        // this device's own record is immediate but blind to anything sent
+        // elsewhere. Adding them double-counts, taking the larger never
+        // under-counts, and under-counting is what lets stock leave twice.
         val sentElsewhere = dao.despatchedElsewhere(salesOrder, stockItemName, sessionId)
         val orderPending = orderLine?.let {
-            max(0.0, it.orderedQty - it.deliveredQty - sentElsewhere - itemCommitted)
+            max(0.0, it.orderedQty - max(it.deliveredQty, sentElsewhere) - itemCommitted)
         } ?: 0.0
 
         if (qty <= 0) return QtyCheck(false, "Enter a quantity.", available = available, orderPending = orderPending)

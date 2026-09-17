@@ -457,3 +457,78 @@ test('a sync that carries no item list at all leaves the cache alone', async () 
   applySync(db, { balances: [] } as any);
   assert.ok(resolvePid(db, KNOWN_PID), 'items must survive a message that omits them');
 });
+
+test('the order ceiling holds even when Tally reports nothing delivered', async () => {
+  // An older connector on the Tally machine does not report how much of an
+  // order has gone out, so delivered_qty stays 0 for ever. A rule that stops
+  // stock leaving must not weaken because a Windows box is running last week's
+  // binary, so this relay's own record of what it posted is used instead
+  // whenever it is the larger of the two.
+  const { validateOutgoingQty } = await import('../src/validation.ts');
+
+  db.prepare(`INSERT INTO sales_orders (voucher_number, party_name, order_date, synced_at)
+              VALUES ('SO-OLD','A Customer','2026-01-01', ?)`).run(nowIso());
+  db.prepare(`INSERT INTO sales_order_lines
+                (voucher_number, stock_item_name, ordered_qty, delivered_qty, unit)
+              VALUES ('SO-OLD', ?, 4, 0, 'NO')`).run(KNOWN_ITEM);
+  db.prepare(`INSERT INTO batch_balances
+                (stock_item_name, batch_name, godown_name, closing_qty, unit, synced_at)
+              VALUES (?, 'BOX-1', ?, 50, 'NO', ?)`).run(KNOWN_ITEM, GODOWN, nowIso());
+
+  // A despatch posted long ago -- well before the order's last sync, which is
+  // what the previous version of this rule used to decide whether to count it.
+  const old = 'sess-old-1';
+  db.prepare(`INSERT INTO sessions (id, kind, device_id, operator, company, godown, party,
+                                    sales_order, state, narration, created_at, submitted_at)
+              VALUES (?, 'OUTGOING','dock-1','Tester','New Test Company', ?, '', 'SO-OLD',
+                      'POSTED','', '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')`)
+    .run(old, GODOWN);
+  db.prepare(`INSERT INTO session_lines (session_id, pid, box_serial, qty, unit,
+                                         stock_item_name, description, raw_payload,
+                                         symbology, flags, scanned_at)
+              VALUES (?, ?, 'BOX-1', 4, 'NO', ?, '', '', '', '', ?)`)
+    .run(old, KNOWN_PID, KNOWN_ITEM, nowIso());
+
+  const v = validateOutgoingQty(db, {
+    sessionId: 'sess-new', salesOrder: 'SO-OLD', godown: GODOWN,
+    pid: KNOWN_PID, boxSerial: 'BOX-1', stockItemName: KNOWN_ITEM, qty: 1,
+  });
+
+  assert.equal(v.orderPending, 0, 'the order is already filled by what we posted');
+  assert.equal(v.ok, false, 'and nothing more may go out on it');
+  assert.equal(v.available, 50, 'the box is nowhere near the limit here');
+});
+
+test('what Tally reports delivered is not double counted against our own record', async () => {
+  // Both sources describe the SAME despatch. Adding them would make an order
+  // for 4 look 8 over-delivered and refuse a legitimate second pick.
+  const { validateOutgoingQty } = await import('../src/validation.ts');
+
+  db.prepare(`INSERT INTO sales_orders (voucher_number, party_name, order_date, synced_at)
+              VALUES ('SO-BOTH','A Customer','2026-01-01', ?)`).run(nowIso());
+  db.prepare(`INSERT INTO sales_order_lines
+                (voucher_number, stock_item_name, ordered_qty, delivered_qty, unit)
+              VALUES ('SO-BOTH', ?, 10, 4, 'NO')`).run(KNOWN_ITEM);
+  db.prepare(`INSERT INTO batch_balances
+                (stock_item_name, batch_name, godown_name, closing_qty, unit, synced_at)
+              VALUES (?, 'BOX-1', ?, 50, 'NO', ?)`).run(KNOWN_ITEM, GODOWN, nowIso());
+
+  const posted = 'sess-both-1';
+  db.prepare(`INSERT INTO sessions (id, kind, device_id, operator, company, godown, party,
+                                    sales_order, state, narration, created_at, submitted_at)
+              VALUES (?, 'OUTGOING','dock-1','Tester','New Test Company', ?, '', 'SO-BOTH',
+                      'POSTED','', ?, ?)`).run(posted, GODOWN, nowIso(), nowIso());
+  db.prepare(`INSERT INTO session_lines (session_id, pid, box_serial, qty, unit,
+                                         stock_item_name, description, raw_payload,
+                                         symbology, flags, scanned_at)
+              VALUES (?, ?, 'BOX-1', 4, 'NO', ?, '', '', '', '', ?)`)
+    .run(posted, KNOWN_PID, KNOWN_ITEM, nowIso());
+
+  const v = validateOutgoingQty(db, {
+    sessionId: 'sess-both-2', salesOrder: 'SO-BOTH', godown: GODOWN,
+    pid: KNOWN_PID, boxSerial: 'BOX-1', stockItemName: KNOWN_ITEM, qty: 6,
+  });
+
+  assert.equal(v.orderPending, 6, 'ten ordered, four gone once -- not twice');
+  assert.equal(v.ok, true, v.error ?? '');
+});

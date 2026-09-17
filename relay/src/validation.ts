@@ -360,18 +360,21 @@ export function validateOutgoingQty(
       WHERE session_id = ? AND stock_item_name = ? AND id IS NOT ?`,
   ).get(opts.sessionId, opts.stockItemName, opts.excludeLineId ?? -1) as { q: number }).q;
 
-  // Ceiling 3b: what OTHER despatches have already taken off this order and
-  // Tally has not told us about yet.
+  // Ceiling 3b: everything already sent against this order.
   //
-  // delivered_qty is Tally's figure, and it is up to a sync interval old. Two
-  // despatches against the same order inside that window both saw the full
-  // order outstanding, and six went out against an order for four. The order
-  // was not over-picked from the box -- that ceiling held -- it was the order
-  // itself that was exceeded.
+  // Two sources, and the LARGER of them is used rather than the sum.
   //
-  // Only sessions submitted AFTER the order was last synced are counted, so
-  // anything Tally has already reported is not deducted twice.
-  const despatchedSinceSync = (db.prepare(
+  // Tally's delivered figure is authoritative but arrives a sync late, and
+  // only if the connector on that machine is new enough to report it at all.
+  // This relay's own record of what it has posted is immediate but blind to
+  // anything despatched directly in Tally. Adding them double-counts every
+  // despatch that appears in both; taking the larger never under-counts, and
+  // under-counting is what let six go out against an order for four.
+  //
+  // Deliberately not dependent on which connector build is installed: a rule
+  // that stops stock going out must not quietly weaken because a Windows
+  // machine is running last week's binary.
+  const sentByUs = (db.prepare(
     `SELECT COALESCE(SUM(l.qty),0) AS q
        FROM session_lines l
        JOIN sessions s ON s.id = l.session_id
@@ -379,16 +382,13 @@ export function validateOutgoingQty(
         AND s.sales_order = ?
         AND l.stock_item_name = ?
         AND s.id != ?
-        AND s.state IN ('QUEUED','POSTING','POSTED')
-        AND (
-          s.submitted_at IS NULL
-          OR s.submitted_at > COALESCE(
-            (SELECT synced_at FROM sales_orders WHERE voucher_number = ?), '')
-        )`,
-  ).get(opts.salesOrder, opts.stockItemName, opts.sessionId, opts.salesOrder) as { q: number }).q;
+        AND s.state IN ('QUEUED','POSTING','POSTED')`,
+  ).get(opts.salesOrder, opts.stockItemName, opts.sessionId) as { q: number }).q;
+
+  const alreadyGone = Math.max(soLine?.delivered_qty ?? 0, sentByUs);
 
   const orderPending = soLine
-    ? Math.max(0, soLine.ordered_qty - soLine.delivered_qty - despatchedSinceSync - itemCommitted)
+    ? Math.max(0, soLine.ordered_qty - alreadyGone - itemCommitted)
     : 0;
 
   if (!(opts.qty > 0)) {

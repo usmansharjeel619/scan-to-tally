@@ -70,17 +70,44 @@ try {
 }
 
 Write-Host "Starting $ServiceName..." -ForegroundColor Cyan
-Start-Service -Name $ServiceName
+
+# Start-Service THROWS when the service will not start, and with
+# ErrorActionPreference = Stop that ended the script before the rollback below
+# could run -- so a bad binary left the Tally machine with no connector at all
+# and no way back. It is caught now, and the previous binary is always restored.
+$started = $true
+try {
+    Start-Service -Name $ServiceName -ErrorAction Stop
+} catch {
+    $started = $false
+    Write-Host "   it refused to start: $($_.Exception.Message)" -ForegroundColor Yellow
+}
 Start-Sleep -Seconds 4
 
 $svc = Get-Service -Name $ServiceName
-Write-Host "   service is $($svc.Status)" -ForegroundColor Green
-Write-Host ""
-if ($svc.Status -ne "Running") {
-    Write-Host "It did not start. Putting the previous connector back." -ForegroundColor Yellow
+if (-not $started -or $svc.Status -ne "Running") {
+    Write-Host ""
+    Write-Host "Putting the previous connector back." -ForegroundColor Yellow
+
+    # Keep the binary that failed, so the reason can be found rather than lost.
+    $kept = Join-Path $InstallDir "connector.failed.exe"
+    Copy-Item $target $kept -Force -ErrorAction SilentlyContinue
+
     Copy-Item $backup $target -Force
     Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 3
+
+    $svc = Get-Service -Name $ServiceName
+    Write-Host "   rolled back; service is $($svc.Status)" -ForegroundColor $(
+        if ($svc.Status -eq "Running") { "Green" } else { "Red" })
+    Write-Host ""
+    Write-Host "The update did NOT apply. The binary that failed is kept at:"
+    Write-Host "   $kept"
+    Write-Host "To see why it would not start, run it in this window:"
+    Write-Host "   & '$kept'"
     exit 1
 }
 
+Write-Host "   service is $($svc.Status)" -ForegroundColor Green
+Write-Host ""
 Write-Host "Updated. Stock figures will refresh within two minutes." -ForegroundColor Green

@@ -32,6 +32,11 @@ param(
     # by the connector regardless. Turn it off once Phase 0 is signed off:
     #   .\install-connector.ps1 ... (without -Diagnostics)
     [switch] $Diagnostics,
+    # Lets a SUPERVISOR-APPROVED new product be created in Tally's item master.
+    # Off unless asked for. A stock item cannot be deleted once it has
+    # transactions, so this is a deliberate choice, never a default.
+    [switch] $AllowNewProducts,
+    [string] $NewProductGroup = "",
     [switch] $Uninstall
 )
 
@@ -152,6 +157,10 @@ $config = [ordered]@{
         enabled  = [bool]$Diagnostics
         maxBytes = 8000000
     }
+    masters = [ordered]@{
+        allowCreate   = [bool]$AllowNewProducts
+        defaultParent = $NewProductGroup
+    }
     dbPath  = (Join-Path $InstallDir "connector.db")
     logFile = (Join-Path $InstallDir "connector.log")
     # Loopback only. The status page shows stock figures and must never be
@@ -242,6 +251,14 @@ powercfg /change monitor-timeout-ac 15
 Write-Host "   sleep and hibernate disabled on mains power" -ForegroundColor Green
 
 Write-Host ""
+if ($AllowNewProducts) {
+    Write-Host ""
+    Write-Host "NEW PRODUCTS CAN BE CREATED IN TALLY." -ForegroundColor Yellow
+    Write-Host "  Only after a supervisor approves one in the app."
+    Write-Host "  A stock item cannot be deleted once it has transactions."
+    Write-Host "  Re-run without -AllowNewProducts to switch this off."
+}
+
 if ($Diagnostics) {
     Write-Host ""
     Write-Host "DIAGNOSTICS ARE ON." -ForegroundColor Yellow

@@ -16,7 +16,10 @@
 
 param(
     [string] $Company = "",
-    [switch] $NoDiagnostics
+    [switch] $NoDiagnostics,
+    # Permits supervisor-approved new products to be created in Tally.
+    [switch] $AllowNewProducts,
+    [string] $NewProductGroup = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -175,10 +178,12 @@ Write-Host ""
 Write-Host "3. Installing the service" -ForegroundColor White
 
 $installArgs = @{
-    RelayUrl    = "__RELAY_URL__"
-    Secret      = "__SECRET__"
-    Company     = $Company
-    Diagnostics = (-not $NoDiagnostics)
+    RelayUrl        = "__RELAY_URL__"
+    Secret          = "__SECRET__"
+    Company         = $Company
+    Diagnostics     = (-not $NoDiagnostics)
+    AllowNewProducts = [bool]$AllowNewProducts
+    NewProductGroup = $NewProductGroup
 }
 
 & (Join-Path $dir "install-connector.ps1") @installArgs

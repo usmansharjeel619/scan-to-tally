@@ -148,7 +148,7 @@ func buildExport(company, collection, tdl string, from, to *time.Time) ([]byte, 
 // asserting a path means a schema change in the wrapper cannot break us, only
 // a change to the elements we actually read.
 func walk(body []byte, tag string, fn func(d *xml.Decoder, start xml.StartElement) error) error {
-	dec := xml.NewDecoder(bytes.NewReader(body))
+	dec := xml.NewDecoder(bytes.NewReader(sanitiseTallyXML(body)))
 	// Tally emits cp1252/latin-1 bytes in some locales; pass them through
 	// rather than failing the whole sync on one accented party name.
 	dec.CharsetReader = func(_ string, r io.Reader) (io.Reader, error) { return r, nil }
@@ -449,7 +449,7 @@ func buildStockSummary(company string) ([]byte, error) {
 // position carries the meaning, and a quantity belongs to the batch only if a
 // batch name has been seen since the last one was consumed.
 func parseStockSummary(body []byte, godown string, now time.Time) ([]BatchBalance, error) {
-	dec := xml.NewDecoder(bytes.NewReader(body))
+	dec := xml.NewDecoder(bytes.NewReader(sanitiseTallyXML(body)))
 	dec.Strict = false
 	// Same as walk: Tally emits cp1252 bytes in some locales, and one
 	// accented name must not fail the whole sync.

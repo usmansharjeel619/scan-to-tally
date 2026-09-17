@@ -1,11 +1,14 @@
 package com.acme.scantotally.scan
 
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.KeyEvent
+import android.view.View
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
@@ -39,6 +42,22 @@ import androidx.compose.ui.viewinterop.AndroidView
  * whether the terminator is Enter, Tab, or absent entirely.
  */
 private const val QUIET_PERIOD_MS = 120L
+
+/**
+ * Puts the on-screen keyboard away.
+ *
+ * showSoftInputOnFocus = false asks for it not to appear, and on a rugged
+ * handset running DataWedge in keystroke mode that is not always honoured --
+ * the scanner's own input method can raise it anyway. So it is dismissed
+ * explicitly whenever this field takes focus, which is the moment it appears.
+ *
+ * There is no text field on the home screen at all, so a keyboard there is
+ * always wrong: it covers half the screen and nothing can be typed into it.
+ */
+private fun View.hideKeyboard() {
+    val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+    imm?.hideSoftInputFromWindow(windowToken, 0)
+}
 
 @Composable
 fun KeystrokeScanner(
@@ -124,15 +143,21 @@ fun KeystrokeScanner(
                 }
 
                 // A scanner is useless if focus drifts, and in a Compose screen
-                // it drifts for all sorts of reasons. Take it back.
+                // it drifts for all sorts of reasons. Take it back -- and put
+                // the keyboard away each time, because taking focus is exactly
+                // what raises it.
                 setOnFocusChangeListener { v, hasFocus ->
-                    if (!hasFocus) v.post { v.requestFocus() }
+                    if (hasFocus) v.hideKeyboard() else v.post { v.requestFocus() }
                 }
 
                 requestFocus()
+                hideKeyboard()
             }
         },
-        update = { if (!it.hasFocus()) it.requestFocus() },
+        update = {
+            if (!it.hasFocus()) it.requestFocus()
+            it.hideKeyboard()
+        },
     )
 
     DisposableEffect(Unit) { onDispose { } }

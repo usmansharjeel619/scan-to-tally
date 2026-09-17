@@ -204,21 +204,21 @@ fun SlotEntryDialog(
 
     val numeric = slot == BoxDraft.Slot.QUANTITY
 
-    // A typed field is held to the same standard as a scanned one.
+    // An unusual product code is questioned, not refused.
     //
-    // Typing skipped the check that scanning applies, so "GGVVCCH" went in as a
-    // product code and sat in a receipt that could never post. A rule that
-    // applies to the scanner and not the keyboard is not a rule.
-    val problem = when (slot) {
-        BoxDraft.Slot.QUANTITY ->
-            if ((value.toIntOrNull() ?: 0) > 0) null else ""
-        BoxDraft.Slot.PRODUCT ->
-            if (value.isBlank()) ""
-            else if (classifyFragment(value).kind == FragmentKind.PRODUCT) null
-            else "Product codes look like 4098-9792."
-        BoxDraft.Slot.BOX -> if (value.isBlank()) "" else null
+    // Every code seen so far is nnnn-nnnn, so something else is far more often
+    // a typo than a real product -- "GGVVCCH" was typed in and sat in a receipt
+    // that could never post. But suppliers do differ, and a rule strict enough
+    // to block a genuine code would leave the operator with no way to receive
+    // the carton in their hands. So it is said out loud and then allowed.
+    val unusual = slot == BoxDraft.Slot.PRODUCT &&
+        value.isNotBlank() &&
+        classifyFragment(value).kind != FragmentKind.PRODUCT
+
+    val valid = when (slot) {
+        BoxDraft.Slot.QUANTITY -> (value.toIntOrNull() ?: 0) > 0
+        else -> value.isNotBlank()
     }
-    val valid = problem == null
 
     AlertDialog(
         onDismissRequest = onCancel,
@@ -246,21 +246,23 @@ fun SlotEntryDialog(
                     capitalization = if (numeric) KeyboardCapitalization.None
                     else KeyboardCapitalization.Characters,
                 ),
-                isError = !problem.isNullOrEmpty(),
                 modifier = Modifier.fillMaxWidth(),
             )
-            if (!problem.isNullOrEmpty()) {
+            if (unusual) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    problem,
+                    "Most product codes look like 4098-9792. Check it, or carry on " +
+                        "if this supplier is different.",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = LocalSemantics.current.reject.fg,
+                    color = LocalSemantics.current.review.fg,
                 )
             }
             }
         },
         confirmButton = {
-            Button(onClick = { onConfirm(value.trim()) }, enabled = valid) { Text("Done") }
+            Button(onClick = { onConfirm(value.trim()) }, enabled = valid) {
+                Text(if (unusual) "Use it anyway" else "Done")
+            }
         },
         dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
     )

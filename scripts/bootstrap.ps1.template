@@ -11,13 +11,14 @@
     be reachable from a network.
 
     Re-run with -NoDiagnostics once Phase 0 is finished to close the read-only
-    query channel.
+    query channel, and with -AllowNewProducts to let scanned products that Tally
+    does not have yet be created automatically.
 #>
 
 param(
     [string] $Company = "",
     [switch] $NoDiagnostics,
-    # Permits supervisor-approved new products to be created in Tally.
+    # Lets the app add a scanned product Tally does not have yet.
     [switch] $AllowNewProducts,
     [string] $NewProductGroup = ""
 )

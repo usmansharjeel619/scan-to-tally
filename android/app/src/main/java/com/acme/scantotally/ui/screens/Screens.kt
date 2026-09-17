@@ -56,10 +56,12 @@ import com.acme.scantotally.ScanToTallyApp
 import com.acme.scantotally.data.Repository
 import com.acme.scantotally.data.SalesOrderEntity
 import com.acme.scantotally.data.SessionEntity
+import com.acme.scantotally.data.SessionSummary
 import com.acme.scantotally.scan.RawScan
 import com.acme.scantotally.scan.SuspendScanCapture
 import com.acme.scantotally.ui.theme.AcceptGreen
 import com.acme.scantotally.ui.theme.LocalSemantics
+import com.acme.scantotally.ui.theme.TouchTarget
 import kotlinx.coroutines.flow.Flow
 import com.acme.scantotally.ui.theme.FlagAmber
 import com.acme.scantotally.ui.theme.RejectRed
@@ -516,7 +518,11 @@ fun QueueScreen(nav: NavController) {
     val repo = rememberRepo()
     val sessions by (repo?.openSessionsFlow()?.collectAsState(emptyList())
         ?: remember { mutableStateOf(emptyList<SessionEntity>()) })
+    val summaries by (repo?.lineSummariesFlow()?.collectAsState(emptyList())
+        ?: remember { mutableStateOf(emptyList<SessionSummary>()) })
     val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf<String?>(null) }
+    var note by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(repo) {
         while (repo != null) {
@@ -554,12 +560,31 @@ fun QueueScreen(nav: NavController) {
         }
 
         LazyColumn(Modifier.padding(pad).padding(16.dp)) {
-            items(sessions) { s ->
-                val colour = when (s.state) {
-                    "POSTED" -> AcceptGreen
-                    "FAILED" -> RejectRed
-                    else -> FlagAmber
+            note?.let { n ->
+                item {
+                    Card(
+                        Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = LocalSemantics.current.accept.bg,
+                        ),
+                    ) {
+                        Text(
+                            n,
+                            Modifier.padding(14.dp),
+                            color = LocalSemantics.current.onCard,
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                    }
                 }
+            }
+            items(sessions) { s ->
+                val sem = LocalSemantics.current
+                val colour = when (s.state) {
+                    "POSTED" -> sem.accept.fg
+                    "FAILED" -> sem.reject.fg
+                    else -> sem.review.fg
+                }
+                val summary = summaries.firstOrNull { it.sessionId == s.id }
                 Card(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
                     Column(Modifier.padding(16.dp)) {
                         Row(
@@ -574,8 +599,31 @@ fun QueueScreen(nav: NavController) {
                                 },
                                 style = MaterialTheme.typography.titleMedium,
                             )
-                            Text(s.state, color = colour, style = MaterialTheme.typography.labelLarge)
+                            Text(
+                                // "DRAFT" is warehouse-meaningless. Say what it
+                                // is: scanned, and not sent anywhere yet.
+                                when (s.state) {
+                                    "DRAFT" -> "NOT SAVED"
+                                    "QUEUED", "POSTING" -> "SENDING"
+                                    else -> s.state
+                                },
+                                color = colour,
+                                style = MaterialTheme.typography.labelLarge,
+                            )
                         }
+
+                        // What is actually in it. A queue entry that does not
+                        // say how many boxes it holds tells the operator
+                        // nothing they can act on.
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            if (summary == null || summary.boxes == 0) "No boxes scanned"
+                            else "${summary.boxes} ${if (summary.boxes == 1) "box" else "boxes"}" +
+                                "  ·  ${fmtQty(summary.totalQty)} total",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+
                         if (s.errorMessage.isNotEmpty()) {
                             Spacer(Modifier.height(8.dp))
                             // Tally's own words, verbatim. Paraphrasing an
@@ -583,7 +631,7 @@ fun QueueScreen(nav: NavController) {
                             Text(
                                 s.errorMessage,
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = RejectRed,
+                                color = sem.reject.fg,
                             )
                         }
                         if (s.tallyVoucherId.isNotEmpty()) {
@@ -594,6 +642,58 @@ fun QueueScreen(nav: NavController) {
                                 fontFamily = FontFamily.Monospace,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                        }
+
+                        // An unsaved receipt must be reachable from here. It was
+                        // not, and a session you cannot open or save is just a
+                        // line of text telling you something is wrong.
+                        if (s.state == "DRAFT") {
+                            Spacer(Modifier.height(12.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                OutlinedButton(
+                                    onClick = {
+                                        nav.navigate(
+                                            when (s.kind) {
+                                                "INCOMING" -> "incoming?session=${s.id}"
+                                                "OUTGOING" -> "outgoing/${s.salesOrder}?session=${s.id}"
+                                                else -> "stockcheck?session=${s.id}"
+                                            },
+                                        )
+                                    },
+                                    modifier = Modifier.weight(1f).height(TouchTarget),
+                                ) { Text("Open") }
+
+                                Button(
+                                    onClick = {
+                                        scope.launch {
+                                            busy = s.id
+                                            val r = repo?.submit(s.id)
+                                            busy = null
+                                            note = r?.message?.ifEmpty { null }
+                                                ?: if (r == null) "Saved on the phone. It will reach Tally when there is signal."
+                                                else "Sent to Tally."
+                                        }
+                                    },
+                                    enabled = busy == null && (summary?.boxes ?: 0) > 0,
+                                    modifier = Modifier.weight(1f).height(TouchTarget),
+                                ) { Text(if (busy == s.id) "Saving…" else "Save to Tally") }
+                            }
+                        }
+
+                        if (s.state == "FAILED") {
+                            Spacer(Modifier.height(12.dp))
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        busy = s.id
+                                        repo?.submit(s.id)
+                                        busy = null
+                                        note = "Sent to Tally again."
+                                    }
+                                },
+                                enabled = busy == null,
+                                modifier = Modifier.fillMaxWidth().height(TouchTarget),
+                            ) { Text(if (busy == s.id) "Retrying…" else "Try again") }
                         }
                     }
                 }

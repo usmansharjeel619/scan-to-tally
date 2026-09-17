@@ -15,7 +15,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.compose.NavHost
+import androidx.navigation.NavType
 import androidx.navigation.compose.composable
+import androidx.navigation.navArgument
 import androidx.navigation.compose.rememberNavController
 import com.acme.scantotally.scan.DataWedgeScanSource
 import com.acme.scantotally.scan.KeyboardInputGuard
@@ -104,12 +106,32 @@ class MainActivity : ComponentActivity() {
                     ) {
                         composable("setup") { SetupScreen(nav, scans) }
                         composable("home") { HomeScreen(nav) }
-                        composable("incoming") { IncomingScreen(nav, scans) }
-                        composable("orders") { SalesOrderPickerScreen(nav) }
-                        composable("outgoing/{order}") { entry ->
-                            OutgoingScreen(nav, scans, entry.arguments?.getString("order").orEmpty())
+                        // The session id is optional on each of these: absent
+                        // starts a new one, present picks up an unsaved receipt
+                        // from the queue rather than stranding it.
+                        composable(
+                            "incoming?session={session}",
+                            arguments = listOf(resumeArg()),
+                        ) { entry ->
+                            IncomingScreen(nav, scans, entry.arguments?.getString("session"))
                         }
-                        composable("stockcheck") { StockCheckScreen(nav, scans) }
+                        composable("orders") { SalesOrderPickerScreen(nav) }
+                        composable(
+                            "outgoing/{order}?session={session}",
+                            arguments = listOf(resumeArg()),
+                        ) { entry ->
+                            OutgoingScreen(
+                                nav, scans,
+                                entry.arguments?.getString("order").orEmpty(),
+                                entry.arguments?.getString("session"),
+                            )
+                        }
+                        composable(
+                            "stockcheck?session={session}",
+                            arguments = listOf(resumeArg()),
+                        ) { entry ->
+                            StockCheckScreen(nav, scans, entry.arguments?.getString("session"))
+                        }
                         composable("manual/{sessionId}") { entry ->
                             ManualEntryScreen(nav, entry.arguments?.getString("sessionId").orEmpty())
                         }
@@ -119,6 +141,13 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /** An optional session id on a scan route: null means start a fresh one. */
+    private fun resumeArg() = navArgument("session") {
+        type = NavType.StringType
+        nullable = true
+        defaultValue = null
     }
 
     override fun onNewIntent(intent: Intent) {

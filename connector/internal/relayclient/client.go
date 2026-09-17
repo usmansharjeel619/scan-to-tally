@@ -153,6 +153,7 @@ func (c *Client) session(ctx context.Context) error {
 		Payload: protocol.Hello{
 			ConnectorID: c.cfg.ConnectorID, Version: c.cfg.Version,
 			Company: c.cfg.Company, Hostname: host, ProtocolVersion: 1,
+			CanCreateItems: c.createItem != nil,
 		},
 	}); err != nil {
 		return fmt.Errorf("hello: %w", err)

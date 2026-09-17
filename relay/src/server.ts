@@ -80,6 +80,15 @@ const hub = new ConnectorHub(
  * net working is not an error.
  */
 function applyJobResult(r: JobResult): void {
+  // Item creation reports back on the same channel, keyed by part number
+  // rather than session -- it is not warehouse work and has no session. Its
+  // result used to fall straight through this function and be discarded, so a
+  // creation that Tally refused looked exactly like one that worked.
+  if (r.jobId?.startsWith('mk-')) {
+    applyItemCreationResult(r);
+    return;
+  }
+
   const session = db.prepare(`SELECT id, kind FROM sessions WHERE id = ?`)
     .get(r.sessionId) as { id: string; kind: string } | undefined;
   if (!session) return;
@@ -104,6 +113,110 @@ function applyJobResult(r: JobResult): void {
         r.attempts ?? 0, nowIso(), r.sessionId);
     audit(db, 'connector', 'FAILED', r.sessionId, `${r.errorCode}: ${r.errorMessage}`);
   }
+}
+
+/**
+ * Creates a scanned-but-unknown product in Tally, there and then.
+ *
+ * There is deliberately no approval step. A carton on the dock is evidence the
+ * product exists; making the operator wait for someone at a desk to agree
+ * stops the unloading, which is the one thing this app must never do. The
+ * operator has already supplied the description and unit at the scan, and the
+ * name follows the live convention, so there is nothing for a second person to
+ * add.
+ *
+ * What a human IS still needed for is a creation Tally refuses -- that lands in
+ * the review queue with Tally's own words.
+ */
+function dispatchItemCreation(pid: string, company: string): boolean {
+  const p = db.prepare(`SELECT * FROM proposed_items WHERE pid = ?`).get(pid) as any;
+  if (!p || p.state === 'CREATED') return false;
+
+  // A connector installed without master-creation rights will refuse this, and
+  // the refusal is worth saying plainly and once rather than every time a
+  // carton is scanned.
+  const conn = hub.stateFor(company);
+  if (conn && !conn.canCreateItems) {
+    db.prepare(`UPDATE proposed_items SET state='FAILED', error=? WHERE pid=?`)
+      .run('This Tally connector is not allowed to create stock items. ' +
+           'Re-run the installer with -AllowNewProducts.', pid);
+    return false;
+  }
+
+  const sent = hub.dispatch(company, `mk-${pid}`, {
+    kind: 'CREATE_STOCK_ITEM',
+    pid,
+    name: p.name,
+    baseUnits: p.base_units || 'NO',
+    batchwise: !!p.batchwise,
+    trackMfgDate: !!p.batchwise && !!p.track_mfg,
+    company,
+  });
+
+  db.prepare(`UPDATE proposed_items SET state = ? WHERE pid = ?`)
+    .run(sent ? 'CREATING' : 'PENDING', pid);
+  return sent;
+}
+
+/** Everything that could not be sent because Tally was unreachable. */
+function dispatchPendingItems(company: string): number {
+  const pending = db.prepare(
+    `SELECT pid FROM proposed_items WHERE state IN ('PENDING','CREATING')`,
+  ).all() as Array<{ pid: string }>;
+
+  let sent = 0;
+  for (const { pid } of pending) if (dispatchItemCreation(pid, company)) sent++;
+  return sent;
+}
+
+function applyItemCreationResult(r: JobResult): void {
+  const pid = r.sessionId;
+  const p = db.prepare(`SELECT * FROM proposed_items WHERE pid = ?`).get(pid) as any;
+  if (!p) return;
+
+  if (!r.ok) {
+    db.prepare(`UPDATE proposed_items SET state='FAILED', error=?, decided_at=? WHERE pid=?`)
+      .run(`${r.errorCode ?? ''}: ${r.errorMessage ?? 'unknown error'}`.trim(), nowIso(), pid);
+    audit(db, 'connector', 'ITEM_CREATE_FAILED', pid, r.errorMessage ?? '');
+    return;
+  }
+
+  // Tally may have named it something slightly different; its answer wins.
+  const name = r.tallyVoucherId || p.name;
+
+  const tx = db.transaction(() => {
+    db.prepare(`UPDATE proposed_items SET state='CREATED', name=?, error='', decided_at=?
+                WHERE pid=?`).run(name, nowIso(), pid);
+
+    // Resolvable immediately, rather than after the next master sync: the very
+    // next carton off the same pallet must not prompt again.
+    db.prepare(`INSERT INTO stock_items (name, part_no, base_units, has_batches, synced_at)
+                VALUES (?,'',?,?,?)
+                ON CONFLICT(name) DO UPDATE SET base_units=excluded.base_units,
+                  has_batches=excluded.has_batches, synced_at=excluded.synced_at`)
+      .run(name, p.base_units || 'NO', p.batchwise ? 1 : 0, nowIso());
+
+    db.prepare(`INSERT INTO pid_bindings (pid, stock_item_name, description, source, bound_by, bound_at)
+                VALUES (?,?,?,'AUTO_CREATED','scanner',?)
+                ON CONFLICT(pid) DO UPDATE SET stock_item_name=excluded.stock_item_name,
+                  description=excluded.description, source='AUTO_CREATED',
+                  bound_at=excluded.bound_at`)
+      .run(pid, name, String(p.description || ''), nowIso());
+
+    // The cartons scanned before Tally answered are the whole point: the
+    // operator kept unloading. Without this they stay unresolved for ever and
+    // the voucher is refused.
+    db.prepare(`
+      UPDATE session_lines SET stock_item_name=?, unit=?,
+        description=CASE WHEN description='' THEN ? ELSE description END,
+        flags=TRIM(REPLACE(','||flags||',', ',UNRESOLVED_PID,', ','), ',')
+      WHERE pid=? AND stock_item_name=''
+        AND session_id IN (SELECT id FROM sessions WHERE state IN ('DRAFT','QUEUED','FAILED'))`)
+      .run(name, p.base_units || 'NO', String(p.description || ''), pid);
+  });
+  tx();
+
+  audit(db, 'connector', 'ITEM_CREATED', pid, name);
 }
 
 /** After a successful post, remember every box so future scans can detect it. */
@@ -134,6 +247,12 @@ function recordBoxHistory(sessionId: string, kind: string): void {
 
 /** Redelivers anything the connector may have missed while disconnected. */
 function resendOutstanding(company: string): void {
+  // Products scanned while Tally was unreachable go first: a voucher that
+  // names an item which does not exist yet is refused, so the master has to
+  // land before the vouchers that depend on it.
+  const items = dispatchPendingItems(company);
+  if (items) app.log.info({ count: items }, 'redelivered pending item creations');
+
   const rows = db.prepare(
     `SELECT id FROM sessions WHERE state IN ('QUEUED','POSTING') ORDER BY created_at`,
   ).all() as Array<{ id: string }>;
@@ -662,7 +781,16 @@ app.post('/api/v1/proposed-items', async (req, reply) => {
       String(b.raw ?? ''));
 
   audit(db, `device:${d.id}`, 'ITEM_PROPOSED', pid, name);
-  return { ok: true, pid, name, state: 'PENDING' };
+
+  // Straight to Tally. No queue, no approval, no waiting.
+  const sent = dispatchItemCreation(pid, d.company);
+  return {
+    ok: true, pid, name,
+    state: sent ? 'CREATING' : 'PENDING',
+    message: sent
+      ? `Creating "${name}" in Tally.`
+      : 'Saved. It will be created as soon as Tally is reachable.',
+  };
 });
 
 app.get('/api/v1/proposed-items', async (req, reply) => {

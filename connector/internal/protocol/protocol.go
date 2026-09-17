@@ -70,6 +70,10 @@ type Hello struct {
 	Hostname         string `json:"hostname"`
 	TallyVersion     string `json:"tallyVersion,omitempty"`
 	ProtocolVersion  int    `json:"protocolVersion"`
+	// CanCreateItems reports whether this connector is permitted to add stock
+	// items. Announced rather than discovered from a failure, so the relay can
+	// say why a new product is not appearing instead of leaving it queued.
+	CanCreateItems   bool   `json:"canCreateItems"`
 }
 
 // Heartbeat is what drives the device's status bar. Operators tolerate delay;

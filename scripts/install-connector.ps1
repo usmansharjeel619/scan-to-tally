@@ -32,9 +32,9 @@ param(
     # by the connector regardless. Turn it off once Phase 0 is signed off:
     #   .\install-connector.ps1 ... (without -Diagnostics)
     [switch] $Diagnostics,
-    # Lets a SUPERVISOR-APPROVED new product be created in Tally's item master.
-    # Off unless asked for. A stock item cannot be deleted once it has
-    # transactions, so this is a deliberate choice, never a default.
+    # Lets the app add a stock item Tally does not have yet, from what the
+    # operator types at the scan. Off unless asked for: a stock item cannot be
+    # deleted once it has transactions, so this stays a deliberate choice.
     [switch] $AllowNewProducts,
     [string] $NewProductGroup = "",
     [switch] $Uninstall

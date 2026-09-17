@@ -71,6 +71,10 @@ class Repository(context: Context, private val api: RelayApi?) {
     // --- sessions ---
 
     /** The id is minted here so it survives being offline and never changes. */
+    /** Picks up a session that is already open, for the queue's Open button. */
+    suspend fun resumeSession(sessionId: String): String? =
+        dao.session(sessionId)?.takeIf { it.state == "DRAFT" }?.id
+
     suspend fun openSession(kind: String, godown: String, party: String = "", salesOrder: String = ""): String {
         // Clear out sessions someone opened and backed out of. Five minutes is
         // longer than anyone spends deciding not to scan, and short enough that
@@ -90,6 +94,7 @@ class Repository(context: Context, private val api: RelayApi?) {
     fun linesFlow(sessionId: String): Flow<List<SessionLineEntity>> = dao.linesFlow(sessionId)
     fun sessionFlow(sessionId: String): Flow<SessionEntity?> = dao.sessionFlow(sessionId)
     fun openSessionsFlow(): Flow<List<SessionEntity>> = dao.openSessionsFlow()
+    fun lineSummariesFlow(): Flow<List<SessionSummary>> = dao.lineSummariesFlow()
     fun pendingCountFlow(): Flow<Int> = dao.pendingCountFlow()
     fun failedCountFlow(): Flow<Int> = dao.failedCountFlow()
     fun ordersFlow(): Flow<List<SalesOrderEntity>> = dao.ordersFlow()
@@ -154,9 +159,31 @@ class Repository(context: Context, private val api: RelayApi?) {
             )
         }
 
-        // 2. Received in an earlier session. Returns and reprinted labels are
+        // 2. On another receipt that has not been saved yet. A hard block: the
+        //    box number identifies one physical carton, so this is the same
+        //    pallet being scanned a second time, and there is nothing to
+        //    override -- the earlier receipt is still there to be finished.
+        val elsewhere = dao.boxInAnotherSession(box.pid, box.boxSerial, sessionId)
+        if (elsewhere != null && elsewhere.state != "POSTED") {
+            return ScanDecision(
+                Outcome2.DUPLICATE, Beep.DUPLICATE,
+                "Box ${tailOf(box.boxSerial)} is already counted (${fmt(elsewhere.qty)}) on " +
+                    "an ${elsewhere.state.lowercase()} receipt. Finish that one instead.",
+                raw = scan.data, symbology = scan.symbology,
+            )
+        }
+
+        // 3. Received in an earlier session. Returns and reprinted labels are
         //    real, so this one the operator may deliberately override.
         val historical = dao.receivedBox(box.pid, box.boxSerial)
+        if (historical == null && elsewhere != null && !overrideDuplicate) {
+            return ScanDecision(
+                Outcome2.DUPLICATE, Beep.DUPLICATE,
+                "Box ${tailOf(box.boxSerial)} was already received on this device. " +
+                    "Accept again only if this is a return.",
+                overridable = true, raw = scan.data, symbology = scan.symbology,
+            )
+        }
         if (historical != null && !overrideDuplicate) {
             return ScanDecision(
                 Outcome2.DUPLICATE, Beep.DUPLICATE,
@@ -165,10 +192,11 @@ class Repository(context: Context, private val api: RelayApi?) {
                 overridable = true, raw = scan.data, symbology = scan.symbology,
             )
         }
-        if (historical != null) flags += "DUPLICATE_OVERRIDE"
+        if (historical != null || elsewhere != null) flags += "DUPLICATE_OVERRIDE"
 
-        // 3. An unknown product does NOT stop the operator. The count is right;
-        //    only the identity is pending, and a supervisor settles it later.
+        // 4. An unknown product does NOT stop the operator. The count is right
+        //    the moment it is scanned; the item is created in Tally from what
+        //    the operator types next, while they carry on unloading.
         val resolved = resolve(box.pid)
         if (resolved == null) flags += "UNRESOLVED_PID"
         else if (!resolved.hasBatches) flags += "NO_BATCH_SUPPORT"
@@ -181,8 +209,8 @@ class Repository(context: Context, private val api: RelayApi?) {
             outcome = if (flagged) Outcome2.FLAGGED else Outcome2.ACCEPT,
             beep = if (flagged) Beep.FLAGGED else Beep.ACCEPT,
             message = resolved?.let { "${it.description.ifEmpty { it.stockItemName }} - ${box.qty}" }
-                ?: cat?.let { "${it.description} - ${box.qty} counted, not yet a Tally item" }
-                ?: "Unknown product ${box.pid} - ${box.qty} counted, needs review",
+                ?: cat?.let { "${it.description} - ${box.qty} counted, adding to Tally" }
+                ?: "New product ${box.pid} - ${box.qty} counted, tell me what it is",
             catalogueDescription = cat?.description,
             pid = box.pid, boxSerial = box.boxSerial, labelQty = box.qty.toDouble(),
             stockItemName = resolved?.stockItemName ?: "",

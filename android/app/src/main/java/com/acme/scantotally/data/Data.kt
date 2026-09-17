@@ -124,6 +124,22 @@ data class SessionEntity(
     val syncedToRelay: Boolean = false,
 )
 
+/** What a session actually holds, for a queue that says something useful. */
+data class SessionSummary(
+    val sessionId: String,
+    val boxes: Int,
+    val totalQty: Double,
+)
+
+/** Where else this box has been scanned, and what became of that session. */
+data class BoxElsewhere(
+    val lineId: Long,
+    val sessionId: String,
+    val state: String,
+    val qty: Double,
+    val createdAt: Long,
+)
+
 @Entity(tableName = "session_lines")
 data class SessionLineEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -319,8 +335,32 @@ interface ScanDao {
     @Query("UPDATE session_lines SET synced = 1 WHERE id = :id")
     suspend fun markLineSynced(id: Long)
 
+    /**
+     * The same carton on a DIFFERENT session.
+     *
+     * (part number, box number) identifies one physical box, so this is always
+     * the same box being counted twice -- and it stayed invisible for as long
+     * as history was built only from sessions that had already posted. A
+     * receipt sitting unsaved on the device is exactly the case where someone
+     * scans the pallet again.
+     */
+    @Query(
+        """SELECT l.id AS lineId, l.sessionId AS sessionId, s.state AS state,
+                  l.qty AS qty, s.createdAt AS createdAt
+             FROM session_lines l JOIN sessions s ON s.id = l.sessionId
+            WHERE l.pid = :pid AND l.boxSerial = :serial AND l.sessionId != :exceptSession
+            ORDER BY l.id DESC LIMIT 1"""
+    )
+    suspend fun boxInAnotherSession(pid: String, serial: String, exceptSession: String): BoxElsewhere?
+
     @Query("SELECT * FROM session_lines WHERE sessionId = :sessionId AND synced = 0 ORDER BY id")
     suspend fun unsyncedLines(sessionId: String): List<SessionLineEntity>
+
+    @Query(
+        """SELECT sessionId, COUNT(*) AS boxes, COALESCE(SUM(qty),0) AS totalQty
+             FROM session_lines GROUP BY sessionId"""
+    )
+    fun lineSummariesFlow(): Flow<List<SessionSummary>>
 
     @Query("SELECT COUNT(*) FROM session_lines WHERE sessionId = :sessionId AND synced = 0")
     suspend fun unsyncedCount(sessionId: String): Int

@@ -83,7 +83,7 @@ private fun rememberApp(): ScanToTallyApp =
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun IncomingScreen(nav: NavController, scans: Flow<RawScan>) {
+fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? = null) {
     val app = rememberApp()
     val scope = rememberCoroutineScope()
 
@@ -100,7 +100,11 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>) {
         val r = app.repository()
         repo = r
         operator = app.config.operator.first()
-        sessionId = r.openSession("INCOMING", app.config.godown.first())
+        // Resuming keeps the scans already on it; only a fresh start mints a
+        // new id, so an unsaved receipt reopened from the queue is the SAME
+        // receipt rather than a second one for the same pallet.
+        sessionId = resumeId?.let { r.resumeSession(it) }
+            ?: r.openSession("INCOMING", app.config.godown.first())
     }
 
     val lines by (sessionId?.let { repo?.linesFlow(it) }?.collectAsState(emptyList())
@@ -152,7 +156,7 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>) {
                 result = when {
                     resp == null -> "Saved. It will post to Tally when the connection returns."
                     resp.unresolvedLines > 0 ->
-                        "Saved, but ${resp.unresolvedLines} line(s) need a supervisor to map the product."
+                        "Saved, but ${resp.unresolvedLines} line(s) are waiting for Tally to create the product."
                     resp.dispatched -> "Sent to Tally."
                     else -> "Saved. Waiting for Tally to come back."
                 }
@@ -211,7 +215,7 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>) {
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StockCheckScreen(nav: NavController, scans: Flow<RawScan>) {
+fun StockCheckScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? = null) {
     val app = rememberApp()
     val scope = rememberCoroutineScope()
 
@@ -229,7 +233,8 @@ fun StockCheckScreen(nav: NavController, scans: Flow<RawScan>) {
         val r = app.repository()
         repo = r
         godown = app.config.godown.first()
-        sessionId = r.openSession("STOCKCHECK", godown)
+        sessionId = resumeId?.let { r.resumeSession(it) }
+            ?: r.openSession("STOCKCHECK", godown)
     }
 
     val lines by (sessionId?.let { repo?.linesFlow(it) }?.collectAsState(emptyList())
@@ -394,7 +399,9 @@ private fun VarianceDialog(
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun OutgoingScreen(nav: NavController, scans: Flow<RawScan>, salesOrder: String) {
+fun OutgoingScreen(
+    nav: NavController, scans: Flow<RawScan>, salesOrder: String, resumeId: String? = null,
+) {
     val app = rememberApp()
     val scope = rememberCoroutineScope()
 
@@ -410,7 +417,8 @@ fun OutgoingScreen(nav: NavController, scans: Flow<RawScan>, salesOrder: String)
         val r = app.repository()
         repo = r
         godown = app.config.godown.first()
-        sessionId = r.openSession("OUTGOING", godown, salesOrder = salesOrder)
+        sessionId = resumeId?.let { r.resumeSession(it) }
+            ?: r.openSession("OUTGOING", godown, salesOrder = salesOrder)
     }
 
     val lines by (sessionId?.let { repo?.linesFlow(it) }?.collectAsState(emptyList())
@@ -643,9 +651,11 @@ private fun Key(label: String, modifier: Modifier = Modifier, accent: Boolean = 
  * nothing but the description -- the receipt is still correct either way. That
  * is what makes it safe to interrupt at all.
  *
- * Nothing here creates anything in Tally. It records what the operator can see
- * on the carton; a supervisor decides afterwards whether it becomes a real
- * stock item, because that cannot be undone once it has transactions.
+ * What the operator types here creates the stock item in Tally directly. There
+ * is no approval step: a carton on the dock is evidence the product exists, and
+ * making the dock wait for someone at a desk to agree is the one thing this app
+ * must not do. They already have the only facts a second person could add --
+ * the description is printed in front of them and the unit is on the carton.
  */
 @Composable
 private fun NewProductDialog(
@@ -732,7 +742,8 @@ private fun NewProductDialog(
 
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    "A supervisor approves this before anything is added to Tally.",
+                    "This is added to Tally straight away, and the rest of the " +
+                        "pallet will scan without asking again.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

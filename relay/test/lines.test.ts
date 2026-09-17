@@ -16,7 +16,7 @@ process.env.STT_PORT = '0';
 process.env.STT_CONNECTOR_SECRET = 'test-secret';
 process.env.LOG_LEVEL = 'silent';
 
-const { app, db, hub } = await import('../src/server.ts');
+const { app, db, hub, applyJobResult } = await import('../src/server.ts');
 const { applySync, nowIso } = await import('../src/db.ts');
 
 const TOKEN = 'device-token-for-tests';
@@ -32,7 +32,11 @@ before(() => app.ready());
 after(() => app.close());
 
 beforeEach(() => {
-  for (const t of ['session_lines', 'sessions', 'proposed_items', 'pid_bindings', 'devices']) {
+  // stock_items included: a test that creates an item would otherwise leave it
+  // resolvable for the next one, which quietly turns "new product" tests into
+  // "already known" ones.
+  for (const t of ['session_lines', 'sessions', 'proposed_items', 'pid_bindings',
+                   'stock_items', 'received_boxes', 'devices']) {
     db.prepare(`DELETE FROM ${t}`).run();
   }
   db.prepare(`INSERT INTO devices (id, name, company, godown, token_hash, operator, created_at)
@@ -114,36 +118,58 @@ test('the same part number in a different box is a separate line', async () => {
   assert.equal(n.n, 2);
 });
 
-test('approving a proposed item fills in the cartons already scanned', async () => {
+test('a new product goes straight to Tally, with no approval step', async () => {
+  // The dock must never wait for someone at a desk. A carton in an operator's
+  // hands is evidence the product exists.
   const id = await openSession('INCOMING');
   await line(id, { pid: NEW_PID, boxSerial: 'BOX-1', qty: 6, raw: 'x' });
   await line(id, { pid: NEW_PID, boxSerial: 'BOX-2', qty: 6, raw: 'x' });
 
-  const proposed = await app.inject({
-    method: 'POST', url: '/api/v1/proposed-items', headers: auth,
-    payload: {
-      pid: NEW_PID, description: 'FLOW SWITCH', baseUnits: 'NO',
-      batchwise: true, sessionId: id,
-    },
-  });
-  assert.equal(proposed.statusCode, 200, proposed.body);
-
-  // Approval only dispatches when a connector is attached, and there is none in
-  // a unit test, so stand in for one -- the point here is what happens to the
-  // lines afterwards, which is where the real flow was broken.
+  const sent: any[] = [];
   const realDispatch = hub.dispatch;
-  (hub as any).dispatch = () => true;
-  let approve;
+  (hub as any).dispatch = (_c: string, jobId: string, job: any) => {
+    sent.push({ jobId, job });
+    return true;
+  };
+  let proposed;
   try {
-    approve = await app.inject({
-      method: 'POST', url: `/api/v1/proposed-items/${NEW_PID}/approve`, headers: auth,
-      payload: {},
+    proposed = await app.inject({
+      method: 'POST', url: '/api/v1/proposed-items', headers: auth,
+      payload: { pid: NEW_PID, description: 'FLOW SWITCH', baseUnits: 'NO', batchwise: true },
     });
   } finally {
     (hub as any).dispatch = realDispatch;
   }
 
-  assert.equal(approve.statusCode, 200, approve.body);
+  assert.equal(proposed.statusCode, 200, proposed.body);
+  assert.equal(proposed.json().state, 'CREATING');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].jobId, `mk-${NEW_PID}`);
+  assert.equal(sent[0].job.kind, 'CREATE_STOCK_ITEM');
+  assert.equal(sent[0].job.name, `${NEW_PID} FLOW SWITCH`);
+});
+
+test('once Tally confirms it, the cartons already scanned are filled in', async () => {
+  const id = await openSession('INCOMING');
+  await line(id, { pid: NEW_PID, boxSerial: 'BOX-1', qty: 6, raw: 'x' });
+  await line(id, { pid: NEW_PID, boxSerial: 'BOX-2', qty: 6, raw: 'x' });
+
+  const realDispatch = hub.dispatch;
+  (hub as any).dispatch = () => true;
+  try {
+    await app.inject({
+      method: 'POST', url: '/api/v1/proposed-items', headers: auth,
+      payload: { pid: NEW_PID, description: 'FLOW SWITCH', baseUnits: 'NO', batchwise: true },
+    });
+  } finally {
+    (hub as any).dispatch = realDispatch;
+  }
+
+  applyJobResult({
+    sessionId: NEW_PID, jobId: `mk-${NEW_PID}`, ok: true,
+    tallyVoucherId: `${NEW_PID} FLOW SWITCH`,
+  });
+
   const rows = db.prepare(`SELECT * FROM session_lines WHERE pid=?`).all(NEW_PID) as any[];
   assert.equal(rows.length, 2);
   for (const r of rows) {
@@ -158,6 +184,37 @@ test('approving a proposed item fills in the cartons already scanned', async () 
   const fresh = db.prepare(`SELECT * FROM session_lines WHERE session_id=?`).get(id2) as any;
   assert.equal(fresh.stock_item_name, `${NEW_PID} FLOW SWITCH`);
   assert.equal(fresh.flags, '');
+});
+
+test('a creation Tally refuses is recorded, not silently forgotten', async () => {
+  const id = await openSession('INCOMING');
+  await line(id, { pid: NEW_PID, boxSerial: 'BOX-1', qty: 6, raw: 'x' });
+
+  const realDispatch = hub.dispatch;
+  (hub as any).dispatch = () => true;
+  try {
+    await app.inject({
+      method: 'POST', url: '/api/v1/proposed-items', headers: auth,
+      payload: { pid: NEW_PID, description: 'FLOW SWITCH', baseUnits: 'NO' },
+    });
+  } finally {
+    (hub as any).dispatch = realDispatch;
+  }
+
+  applyJobResult({
+    sessionId: NEW_PID, jobId: `mk-${NEW_PID}`, ok: false,
+    errorClass: 'BUSINESS', errorCode: 'ITEM_CREATE_FAILED',
+    errorMessage: 'Unit NO does not exist',
+  });
+
+  const p = db.prepare(`SELECT * FROM proposed_items WHERE pid=?`).get(NEW_PID) as any;
+  assert.equal(p.state, 'FAILED');
+  assert.match(p.error, /Unit NO does not exist/);
+
+  // The carton stays counted and unresolved, so submit still blocks on it.
+  const r = db.prepare(`SELECT * FROM session_lines WHERE pid=?`).get(NEW_PID) as any;
+  assert.equal(r.qty, 6);
+  assert.equal(r.stock_item_name, '');
 });
 
 test('outgoing still refuses a part number Tally does not have', async () => {

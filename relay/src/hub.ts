@@ -24,6 +24,14 @@ export interface ConnectorState {
   lastError: string;
   queuedJobs: number;
   failedJobs: number;
+  /**
+   * Whether this connector may add stock items to Tally.
+   *
+   * Announced rather than discovered from a failed creation, so a new product
+   * that cannot be created says so at the scan instead of sitting in a queue
+   * nobody is watching.
+   */
+  canCreateItems: boolean;
   connectedAt: string;
 }
 
@@ -107,6 +115,7 @@ export class ConnectorHub {
               lastError: '',
               queuedJobs: 0,
               failedJobs: 0,
+              canCreateItems: !!p.canCreateItems,
               connectedAt: nowIso(),
             },
           });
@@ -212,6 +221,11 @@ export class ConnectorHub {
         resolve({ id, ok: false, error: `Could not reach the connector: ${String(e)}` });
       }
     });
+  }
+
+  /** What the attached connector for a company reports about itself. */
+  stateFor(company: string): ConnectorState | undefined {
+    return this.forCompany(company)?.state;
   }
 
   private forCompany(company: string): Conn | undefined {

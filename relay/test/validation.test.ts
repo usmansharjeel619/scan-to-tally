@@ -232,9 +232,9 @@ test('quantities across several lines of one box cannot exceed the box', () => {
   assert.equal(v.available, 3);
 });
 
-test('exceeding the order warns but does not block', () => {
-  // Order is for 30; the box only holds 13, so raise the order shortfall by
-  // pre-committing most of it on this session.
+test('exceeding the order is refused', () => {
+  // Order is for 20 and 18 are already on this session, so only 2 remain. The
+  // box has plenty, which is what makes this purely the order ceiling.
   addLine(SESSION, PID, BOX_B, 18);
   db.prepare(`UPDATE sales_order_lines SET ordered_qty = 20 WHERE voucher_number = ?`).run(SO);
 
@@ -242,8 +242,23 @@ test('exceeding the order warns but does not block', () => {
     sessionId: SESSION, salesOrder: SO, godown: GODOWN,
     pid: PID, boxSerial: BOX_A, stockItemName: ITEM, qty: 5,
   });
-  assert.equal(v.ok, true, 'over-shipping within tolerance is a business decision, not an error');
-  assert.ok(v.warning?.includes('outstanding'));
+  // Was a warning, on the reasoning that over-shipping within tolerance is a
+  // business decision. It let six go out against an order for four, so the
+  // business asked for it refused.
+  assert.equal(v.ok, false, 'more than the order asks for must not be sendable');
+  assert.match(String(v.error), /outstanding/);
+  assert.equal(v.orderPending, 2);
+});
+
+test('up to what the order still has outstanding is accepted', () => {
+  addLine(SESSION, PID, BOX_B, 18);
+  db.prepare(`UPDATE sales_order_lines SET ordered_qty = 20 WHERE voucher_number = ?`).run(SO);
+
+  const v = validateOutgoingQty(db, {
+    sessionId: SESSION, salesOrder: SO, godown: GODOWN,
+    pid: PID, boxSerial: BOX_A, stockItemName: ITEM, qty: 2,
+  });
+  assert.equal(v.ok, true, v.error ?? '');
 });
 
 test('editing an existing line does not count that line against itself', () => {

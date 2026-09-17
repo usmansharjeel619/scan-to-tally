@@ -314,8 +314,8 @@ test('a second despatch cannot exceed what the order still has outstanding', asy
   });
 
   assert.equal(v.orderPending, 0, 'the order has nothing left outstanding');
-  assert.ok(v.warning, 'it must at least say the order is exceeded');
-  assert.match(String(v.warning), /outstanding/);
+  assert.equal(v.ok, false, 'it must be refused, not merely flagged');
+  assert.match(String(v.error), /nothing left outstanding/);
 
   // The box itself still has room, so this is purely the order ceiling.
   assert.equal(v.available, 8);

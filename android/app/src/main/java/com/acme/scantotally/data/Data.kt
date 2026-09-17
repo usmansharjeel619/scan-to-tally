@@ -331,6 +331,24 @@ interface ScanDao {
     )
     fun failedCountFlow(): Flow<Int>
 
+    /**
+     * What this device has already despatched against an order and Tally has
+     * not confirmed back yet.
+     *
+     * The delivered figure on an order is only as fresh as the last sync. Two
+     * despatches inside that window both saw the whole order outstanding, and
+     * six went out against an order for four.
+     */
+    @Query(
+        """SELECT COALESCE(SUM(l.qty),0) FROM session_lines l
+             JOIN sessions s ON s.id = l.sessionId
+            WHERE s.kind = 'OUTGOING' AND s.salesOrder = :salesOrder
+              AND l.stockItemName = :item
+              AND s.id != :exceptSession
+              AND s.state IN ('QUEUED','POSTING','POSTED')"""
+    )
+    suspend fun despatchedElsewhere(salesOrder: String, item: String, exceptSession: String): Double
+
     @Query("SELECT * FROM sessions WHERE state = :state ORDER BY createdAt")
     suspend fun sessionsInState(state: String): List<SessionEntity>
 

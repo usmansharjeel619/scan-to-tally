@@ -404,13 +404,18 @@ export function validateOutgoingQty(
     };
   }
 
-  // Ceiling 3: the sales order. A warning, not a block -- deliberate
-  // over-shipping within tolerance is a real thing. Flip to an error here if
-  // the business wants it hard-blocked.
+  // Ceiling 3: the sales order. A hard block, like the box.
+  //
+  // This was a warning, on the reasoning that deliberate over-shipping within
+  // tolerance is a real thing. In practice it meant six went out against an
+  // order for four and the screen said it was fine. The business asked for it
+  // refused outright, so the operator cannot send more than the order asks for.
   if (opts.qty - orderPending > EPS) {
     return {
-      ok: true,
-      warning: `This exceeds what order ${opts.salesOrder} still has outstanding (${fmt(orderPending)}).`,
+      ok: false,
+      error: orderPending <= EPS
+        ? `Order ${opts.salesOrder} has nothing left outstanding.`
+        : `Order ${opts.salesOrder} has only ${fmt(orderPending)} left outstanding.`,
       available, orderPending,
     };
   }

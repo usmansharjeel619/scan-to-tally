@@ -334,7 +334,23 @@ class Repository(context: Context, private val api: RelayApi?) {
         }
 
         val itemCommitted = dao.committedForItem(sessionId, resolved.stockItemName, existing?.id ?: -1)
-        val orderPending = max(0.0, orderLine.orderedQty - orderLine.deliveredQty - itemCommitted)
+        val sentElsewhere = dao.despatchedElsewhere(salesOrder, resolved.stockItemName, sessionId)
+        val orderPending = max(
+            0.0,
+            orderLine.orderedQty - orderLine.deliveredQty - sentElsewhere - itemCommitted,
+        )
+
+        // Nothing left on the order: say so at the scan rather than letting the
+        // operator type a quantity that cannot be accepted.
+        if (orderPending <= EPS) {
+            return ScanDecision(
+                Outcome2.REJECT, Beep.REJECT,
+                "Order $salesOrder has nothing left outstanding for " +
+                    resolved.description.ifEmpty { resolved.stockItemName } + ".",
+                available = available, availableAsOf = balance?.syncedAt,
+                raw = scan.data, symbology = scan.symbology,
+            )
+        }
 
         return ScanDecision(
             outcome = Outcome2.ACCEPT, beep = Beep.ACCEPT,
@@ -367,8 +383,13 @@ class Repository(context: Context, private val api: RelayApi?) {
 
         val orderLine = dao.orderLines(salesOrder).firstOrNull { it.stockItemName == stockItemName }
         val itemCommitted = dao.committedForItem(sessionId, stockItemName, excludeLineId)
+        // Plus whatever this device has already sent against the order that
+        // Tally has not confirmed back yet -- the delivered figure is only as
+        // fresh as the last sync, and two despatches inside that window both
+        // saw the whole order outstanding.
+        val sentElsewhere = dao.despatchedElsewhere(salesOrder, stockItemName, sessionId)
         val orderPending = orderLine?.let {
-            max(0.0, it.orderedQty - it.deliveredQty - itemCommitted)
+            max(0.0, it.orderedQty - it.deliveredQty - sentElsewhere - itemCommitted)
         } ?: 0.0
 
         if (qty <= 0) return QtyCheck(false, "Enter a quantity.", available = available, orderPending = orderPending)
@@ -380,11 +401,16 @@ class Repository(context: Context, private val api: RelayApi?) {
                 available = available, orderPending = orderPending,
             )
         }
-        // Ceiling 3: the order. A warning, not a block -- deliberate
-        // over-shipping within tolerance is a real business decision.
+        // Ceiling 3: the order. A hard block, like the box.
+        //
+        // It was a warning, on the reasoning that over-shipping within
+        // tolerance is a real business decision. In practice six went out
+        // against an order for four and the screen said it was fine.
         if (qty - orderPending > EPS) {
             return QtyCheck(
-                true, warning = "This exceeds what order $salesOrder still has outstanding (${fmt(orderPending)}).",
+                false,
+                if (orderPending <= EPS) "Order $salesOrder has nothing left outstanding."
+                else "Order $salesOrder has only ${fmt(orderPending)} left outstanding.",
                 available = available, orderPending = orderPending,
             )
         }

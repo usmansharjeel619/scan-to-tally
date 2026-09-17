@@ -118,6 +118,20 @@ func (b *Breaker) Failure(notListening bool) {
 	}
 }
 
+// Trip jumps straight to the longest backoff.
+//
+// For events where climbing the ladder one failure at a time is wrong -- a
+// crash, most obviously. Every request after a crash lands on a process that
+// has just fallen over, so there is nothing to be gained by trying again soon.
+func (b *Breaker) Trip() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.consecutiveFailures < b.QuiescentAfter {
+		b.consecutiveFailures = b.QuiescentAfter
+	}
+	b.quiescent = true
+}
+
 // State reports what to show a human.
 func (b *Breaker) State() (failures int, interval time.Duration, quiescent bool) {
 	b.mu.Lock()

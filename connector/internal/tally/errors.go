@@ -65,6 +65,22 @@ func business(code, msg string) *Error {
 
 func msg2code(c string) string { return c }
 
+// crashSignatures are what a process dying mid-request looks like from the
+// client side, on Windows and on Unix.
+//
+// This is not the same as "Tally is closed". The port answered, the request was
+// accepted, and then the process went away underneath it -- which is what a
+// crash looks like. Observed for real: TallyPrime died during a plain read-only
+// Unit collection, and the connector's instinct was to retry 0.2s later.
+var crashSignatures = []string{
+	"forcibly closed",          // Windows: WSAECONNRESET
+	"connection reset by peer", // Unix
+	"wsarecv",                  // Windows socket read failure
+	"unexpected eof",
+	"eof",
+	"broken pipe",
+}
+
 // classifyTransport maps a Go network error onto our two classes. Anything at
 // this layer is transient by definition -- we never reached Tally's logic.
 func classifyTransport(err error) *Error {
@@ -79,6 +95,18 @@ func classifyTransport(err error) *Error {
 	if strings.Contains(err.Error(), "connection refused") {
 		return transient("TALLY_NOT_RUNNING",
 			"Nothing is listening on the Tally gateway port. Tally is probably not running.", err)
+	}
+
+	// The connection died mid-request. Treat this as Tally having crashed:
+	// retrying straight into a process that just fell over is the worst
+	// available move, and a repeat of it is what a damaged company looks like.
+	low := strings.ToLower(err.Error())
+	for _, sig := range crashSignatures {
+		if strings.Contains(low, sig) {
+			return transient("TALLY_CRASHED",
+				"Tally accepted the request and then stopped responding, which usually means "+
+					"the process crashed. Backing off; this machine needs looking at.", err)
+		}
 	}
 	return transient("TRANSPORT", err.Error(), err)
 }

@@ -115,17 +115,44 @@ type Voucher struct {
 	Type VoucherType
 	Date time.Time
 
-	// Reference carries the session UUID. It is the idempotency key, written
-	// into the voucher itself so reconciliation survives total loss of the
-	// connector's local database.
+	// Reference is the BUSINESS reference -- a supplier's delivery note number,
+	// a customer order number. It is left for the business to use.
+	//
+	// It deliberately does NOT carry the idempotency key. A live company was
+	// found using REFERENCE for a real document number ("MI/203-C/09/2026"),
+	// and overwriting that would destroy information somebody relies on.
 	Reference string
 	Narration string
+
+	// IdempotencyKey is the session UUID. It is written into the NARRATION as a
+	// [STT:...] marker rather than into REFERENCE, so reconciliation can still
+	// find it by reading the day book after a total loss of the connector's
+	// local database, without clobbering a business field.
+	IdempotencyKey string
 
 	PartyLedgerName string
 	VoucherNumber   string // usually left empty so Tally auto-numbers
 
 	Entries []InventoryEntry
 }
+
+// NarrationWithKey appends the idempotency marker to the narration.
+//
+// Kept greppable and distinctive: reconciliation reads the day book back and
+// looks for this exact marker to work out which sessions already reached Tally.
+func (v Voucher) NarrationWithKey() string {
+	if v.IdempotencyKey == "" {
+		return v.Narration
+	}
+	marker := "[" + IdempotencyMarker + ":" + v.IdempotencyKey + "]"
+	if v.Narration == "" {
+		return marker
+	}
+	return v.Narration + " " + marker
+}
+
+// IdempotencyMarker prefixes the key in the narration.
+const IdempotencyMarker = "STT"
 
 // Validate catches the mistakes that Tally would either silently accept or
 // reject with an opaque message. Cheaper to fail here than to debug a
@@ -137,8 +164,8 @@ func (v Voucher) Validate() error {
 	if v.Date.IsZero() {
 		return fmt.Errorf("voucher date is required")
 	}
-	if v.Reference == "" {
-		return fmt.Errorf("reference (idempotency key) is required")
+	if v.IdempotencyKey == "" {
+		return fmt.Errorf("idempotency key is required")
 	}
 	if len(v.Entries) == 0 {
 		return fmt.Errorf("voucher has no inventory entries")

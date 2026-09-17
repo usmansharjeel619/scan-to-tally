@@ -194,7 +194,7 @@ func (r *Runner) processOne(ctx context.Context, job store.Job) {
 	// and this write leaves a voucher we do not know about, which is what
 	// Reconcile repairs on the next start.
 	if err := r.st.RecordPosted(ctx, store.Posted{
-		SessionID: pj.SessionID, Reference: voucher.Reference,
+		SessionID: pj.SessionID, Reference: voucher.IdempotencyKey,
 		VoucherType: string(voucher.Type), TallyVchID: res.LastVchID,
 		Company: r.tc.Company(), PostedAt: time.Now(), PayloadHash: hash,
 	}); err != nil {

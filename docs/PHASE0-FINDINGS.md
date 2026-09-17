@@ -1,92 +1,129 @@
 # Phase 0 findings
 
-Recorded against a live TallyPrime, company `New Test Company`, reached through
-the connector's read-only diagnostic channel on 2026-09-16.
+Read from the live **Northwind Trading Company** (574 stock items,
+books from Jan 2021) on 17 Sep 2026, direct from this machine to the Tally PC
+at `192.168.50.20:9000`. Read-only throughout; nothing was created or altered.
 
-## Confirmed
+---
 
-**Response envelope.** Every Export answers with a `CMPINFO` preamble inside
-`DESC`, then the rows under `BODY > DATA > COLLECTION`:
+## The one that decides the design
+
+### Batch tracking is OFF, company-wide
+
+```
+ISBATCHWISEON (company)   No
+items with batches on     0 of 574
+```
+
+**A box cannot be a batch in this company as it stands.** The whole box-level
+traceability design — scan a box, deduct from that exact box — needs
+`Maintain Batches` on at company level and `Maintain in batches` on each item
+that will be scanned.
+
+This is a business decision, not a technical one. Options:
+
+1. **Enable batches** on the items the warehouse handles. Full box-level
+   traceability, as designed. Needs whoever owns the books to agree.
+2. **Ship without batches.** Quantities per item still work — the app still
+   posts Receipt Notes and Delivery Notes, still validates against sales
+   orders, still prevents over-shipping at the item level. What is lost is
+   knowing *which box* a unit came from.
+
+Everything else below holds either way.
+
+---
+
+## Confirmed against live vouchers
+
+**Item naming is `<PID> <DESCRIPTION>`** — exactly what the Simplex labels
+carry:
+
+```
+4099-9006 DS PUSH PULL TYPE MPS
+2081-9044 SURGE PROTECTOR
+2080-9057 ABORT SWITCH, SURFACE
+```
+
+So a scanned PID resolves by **name prefix**, which is what the resolver
+already does. **No item has `PARTNO` populated** (0 of 574), so part-number
+matching is dead weight here — the prefix match is the one that works.
+
+**`BATCHALLOCATIONS.LIST` is emitted even with batch tracking off.** It is the
+carrier for godown and order linkage, not just batch names. Field names
+confirmed verbatim from a live voucher:
 
 ```xml
-<ENVELOPE><HEADER><VERSION>1</VERSION><STATUS>1</STATUS></HEADER>
- <BODY>
-  <DESC><CMPINFO>...counters...</CMPINFO></DESC>
-  <DATA><COLLECTION><COMPANY NAME="New Test Company"> ... </COMPANY></COLLECTION></DATA>
- </BODY></ENVELOPE>
+<BATCHALLOCATIONS.LIST>
+  <MFDON/>
+  <GODOWNNAME>Main Location</GODOWNNAME>
+  <BATCHNAME>Primary Batch</BATCHNAME>
+  <ORDERNO>&#4; Not Applicable</ORDERNO>
+  <TRACKINGNUMBER>&#4; Not Applicable</TRACKINGNUMBER>
+  <ACTUALQTY> 3.00 NO</ACTUALQTY>
+  <BILLEDQTY> 3.00 NO</BILLEDQTY>
+</BATCHALLOCATIONS.LIST>
 ```
 
-The connector searches for elements **by name at any depth** rather than
-asserting a path, so this nesting needed no change. That decision paid off.
+`GODOWNNAME`, `BATCHNAME`, `ORDERNO`, `TRACKINGNUMBER`, `MFDON`, `ACTUALQTY`,
+`BILLEDQTY` — every name we emit is correct.
 
-**All four TDL collections execute** and return `STATUS 1`: companies, stock
-items, godowns, voucher types. They were guesses written from documentation;
-they are now confirmed against a real installation.
+With batches off, Tally writes `Primary Batch`. `&#4; Not Applicable` is its
+empty sentinel, not an empty element.
 
-**Every voucher type we need exists** in a default company: `Receipt Note`,
+**`ISDEEMEDPOSITIVE` polarity**: `No` on a live SALES INVOICE — goods leaving.
+Incoming is `Yes`. As implemented.
+
+**All required voucher types exist** with standard names: `Receipt Note`,
 `Delivery Note`, `Physical Stock`, `Sales Order`, `Purchase Order`,
-`Stock Journal`.
+`Stock Journal`. The company has additionally renamed its sales types
+(`SALES INVOICE`, `Tax Invoice`, `TAZ INVOICE`, all parented to `Sales A/c`),
+which is why voucher type is configurable.
 
-## Corrected
+**Godown**: one, `Main Location`.
 
-**The entity name lives in the `NAME` attribute**, not reliably in a child
-element. For godowns and voucher types the `<NAME>` element is buried under
-`LANGUAGENAME.LIST > NAME.LIST > NAME`, which a flat Go struct tag never
-reaches. Only `COMPANY` had a usable top-level `<NAME>`.
+**Units**: `NO` (551 items), `mts` (5), `EA` (1), 17 with none. Not "Nos" —
+which had been assumed everywhere.
 
-The parsers now read the attribute first and fall back to the element. Had the
-fallback not already been there, the item master would have synced as a list of
-blank names.
+---
 
-**The default godown is `Main Location`, not `Main Store`.** Everything written
-before this -- device config, simulator seed data, docs -- used `Main Store`.
-Since a batch balance is keyed on (item, batch, **godown**), every outgoing
-quantity check would have looked up a godown that does not exist, found no
-balance, and refused every despatch as "not in stock".
+## Two bugs this found
 
-**Control characters appear in values.** `PARENT` came back as `&#4; Primary`.
-The decoder already runs non-strict, so this passes through.
+### The per-line description was being silently dropped
 
-## Still unproven
+Tally nests it:
 
-The test company is **empty** -- no stock items, no ledgers, no orders. So
-nothing below has been exercised against real Tally yet, and every one of them
-is a `VERIFY` comment still standing in `internal/tally`:
-
-- the multi-batch Receipt Note shape (one inventory entry, N batch allocations)
-- how a Delivery Note links to a Sales Order (`ORDERNO` / `TRACKINGNUMBER`)
-- `ISDEEMEDPOSITIVE` polarity in vs out
-- `MFDON` (batch manufacturing date)
-- `BASICUSERDESCRIPTION` (per-line description)
-- which of the three batch-balance queries returns closing stock
-- whether the company allows negative stock
-
-These need data in the company. See the note at the end of `PHASE0.md`.
-
-## Tally crashes on malformed master XML
-
-Sending `<UNIT ACTION="Create">` with no `NAME` attribute did not produce an
-error response. It crashed TallyPrime outright:
-
-```
-Internal Error. Contact Tally Solutions.
-Software Exception c0000005 (Memory Access Violation)
+```xml
+<BASICUSERDESCRIPTION.LIST>
+  <BASICUSERDESCRIPTION>4099-9006 Manual Pull Station / ...</BASICUSERDESCRIPTION>
+</BASICUSERDESCRIPTION.LIST>
 ```
 
-This matters well beyond the seeding script.
+A flat `<BASICUSERDESCRIPTION>` — what we emitted — is accepted and then
+ignored. No error; the description would simply never appear. Fixed.
 
-**Tally cannot be treated as a system that validates its input.** A malformed
-request may be rejected with a `LINEERROR`, or it may take the process down and
-with it the whole warehouse's connection. The connector must therefore only ever
-send shapes that are known to work, which is what it does -- it builds every
-voucher from typed structures and never passes through XML it did not construct.
+The live data also shows they write **bilingual** descriptions (English and
+Arabic) on invoice lines, so this field matters to them.
 
-It also vindicates keeping the diagnostic channel **read-only**. Had the
-speculative write path been in place when this happened, the crash would have
-arrived over the network from the relay rather than from someone standing at
-the machine.
+### The idempotency key was about to overwrite a business field
 
-**Do not brute-force XML shapes against a live Tally.** The earlier seeding
-script did exactly that and is withdrawn (`docs/withdrawn/`). Learn the schema
-the way PHASE0.md already prescribed: create the record in Tally's UI, export
-it, and read what Tally wrote.
+A live invoice carries `<REFERENCE>MI/203-C/09/2026</REFERENCE>` — a real
+document number. The design put the session UUID there.
+
+The key now goes in the narration as `[STT:<uuid>]`, leaving `REFERENCE` for
+the business. Reconciliation still finds it by reading the day book back.
+
+---
+
+## Also worth knowing
+
+**Tally puts a GUID on every voucher** (`REMOTEID`, plus `MASTERID` and
+`ALTERID`). Useful for reconciliation later.
+
+**Tally crashed twice** during this work — once on malformed import XML I sent,
+once inside an ordinary read-only `Unit` collection. It cannot be treated as
+something that validates its input: a bad request may be rejected, or may take
+the process down. The connector now treats a mid-request disconnect as
+`TALLY_CRASHED` and backs off hard rather than retrying.
+
+**Never brute-force XML shapes at a live Tally.** Create the record in the UI,
+export it, read what Tally wrote.

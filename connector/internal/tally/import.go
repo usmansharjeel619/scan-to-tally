@@ -78,10 +78,18 @@ type wireVoucher struct {
 	Entries []wireInventoryEntry `xml:"ALLINVENTORYENTRIES.LIST"`
 }
 
+// wireUserDescription is the nested wrapper Tally actually uses.
+// Confirmed against a real Sales Invoice: the description sits inside
+// <BASICUSERDESCRIPTION.LIST>, not as a direct child of the entry. A flat
+// element is accepted and then silently dropped.
+type wireUserDescription struct {
+	Text string `xml:"BASICUSERDESCRIPTION"`
+}
+
 type wireInventoryEntry struct {
 	StockItemName    string   `xml:"STOCKITEMNAME"`
 	IsDeemedPositive string   `xml:"ISDEEMEDPOSITIVE"`
-	Description      string   `xml:"BASICUSERDESCRIPTION,omitempty"`
+	Description      *wireUserDescription `xml:"BASICUSERDESCRIPTION.LIST,omitempty"`
 	Rate             string   `xml:"RATE,omitempty"`
 	Amount           string   `xml:"AMOUNT,omitempty"`
 	ActualQty        string   `xml:"ACTUALQTY"`
@@ -141,10 +149,12 @@ func BuildImport(company string, v Voucher) ([]byte, error) {
 		we := wireInventoryEntry{
 			StockItemName:    e.StockItemName,
 			IsDeemedPositive: deemedPositive,
-			Description:      e.Description,
 			ActualQty:        e.Qty.String(),
 			BilledQty:        e.Qty.String(),
 			Batches:          batches,
+		}
+		if e.Description != "" {
+			we.Description = &wireUserDescription{Text: e.Description}
 		}
 		if e.Rate != nil {
 			we.Rate = fmt.Sprintf("%g/%s", *e.Rate, e.Qty.Unit)
@@ -175,7 +185,7 @@ func BuildImport(company string, v Voucher) ([]byte, error) {
 							VoucherNumber:   v.VoucherNumber,
 							Reference:       v.Reference,
 							ReferenceDate:   v.Date.Format(dateFmt),
-							Narration:       v.Narration,
+							Narration:       v.NarrationWithKey(),
 							PartyLedgerName: v.PartyLedgerName,
 							PersistedView:   "Invoice Voucher View",
 							Entries:         entries,
@@ -201,11 +211,11 @@ func BuildImport(company string, v Voucher) ([]byte, error) {
 // ref is the session UUID and becomes the voucher's REFERENCE: the idempotency
 // key, written into Tally itself so a retry can be recognised even if the
 // connector's local map is lost.
-func NewReceiptNote(ref, narration, party string, date time.Time, entries []InventoryEntry) Voucher {
+func NewReceiptNote(key, narration, party string, date time.Time, entries []InventoryEntry) Voucher {
 	return Voucher{
 		Type:            ReceiptNote,
 		Date:            date,
-		Reference:       ref,
+		IdempotencyKey:  key,
 		Narration:       narration,
 		PartyLedgerName: party,
 		Entries:         entries,
@@ -219,11 +229,11 @@ func NewReceiptNote(ref, narration, party string, date time.Time, entries []Inve
 // boxes that were actually counted: a batch omitted from a full-godown count is
 // a batch nobody looked at, and writing it as zero would destroy real stock.
 // Scope is enforced upstream, in the relay.
-func NewPhysicalStock(ref, narration string, date time.Time, entries []InventoryEntry) Voucher {
+func NewPhysicalStock(key, narration string, date time.Time, entries []InventoryEntry) Voucher {
 	return Voucher{
-		Type:      PhysicalStock,
-		Date:      date,
-		Reference: ref,
+		Type:           PhysicalStock,
+		Date:           date,
+		IdempotencyKey: key,
 		Narration: narration,
 		Entries:   entries,
 	}
@@ -233,7 +243,7 @@ func NewPhysicalStock(ref, narration string, date time.Time, entries []Inventory
 //
 // orderNo is stamped onto every batch allocation, which is what links the
 // Delivery Note back to its Sales Order in Tally.
-func NewDeliveryNote(ref, narration, party, orderNo string, date time.Time, entries []InventoryEntry) Voucher {
+func NewDeliveryNote(key, narration, party, orderNo string, date time.Time, entries []InventoryEntry) Voucher {
 	for i := range entries {
 		for j := range entries[i].Batches {
 			entries[i].Batches[j].OrderNo = orderNo
@@ -242,7 +252,7 @@ func NewDeliveryNote(ref, narration, party, orderNo string, date time.Time, entr
 	return Voucher{
 		Type:            DeliveryNote,
 		Date:            date,
-		Reference:       ref,
+		IdempotencyKey:  key,
 		Narration:       narration,
 		PartyLedgerName: party,
 		Entries:         entries,

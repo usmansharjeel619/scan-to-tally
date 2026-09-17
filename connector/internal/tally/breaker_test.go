@@ -105,3 +105,54 @@ func TestBreakerAllowRespectsInterval(t *testing.T) {
 		t.Error("should allow once the interval has elapsed")
 	}
 }
+
+// TestCrashTripsImmediately pins the lesson from a live incident: TallyPrime
+// died during a plain read-only Unit collection, and the connector fired the
+// next query 0.2 seconds later. Retrying into a process that has just fallen
+// over is the worst available move.
+func TestCrashTripsImmediately(t *testing.T) {
+	b := NewBreaker(15*time.Second, 15*time.Minute)
+
+	b.Trip()
+
+	if !b.Quiescent() {
+		t.Error("a crash must go quiescent at once, not climb there gradually")
+	}
+	if got := b.Interval(); got < 5*time.Minute {
+		t.Errorf("interval after a crash = %v; far too eager to try again", got)
+	}
+	// Recovery must still be immediate once Tally is genuinely back.
+	b.Success()
+	if got := b.Interval(); got != 15*time.Second {
+		t.Errorf("interval after recovery = %v, want 15s", got)
+	}
+}
+
+// The exact wire errors seen on Windows and Unix when the process dies
+// mid-request must be recognised as a crash, not as an ordinary blip.
+func TestCrashSignaturesAreRecognised(t *testing.T) {
+	// The real one, copied from the incident log.
+	for _, msg := range []string{
+		`Post "http://127.0.0.1:9000": read tcp 127.0.0.1:60642->127.0.0.1:9000: wsarecv: An existing connection was forcibly closed by the remote host.`,
+		`Post "http://127.0.0.1:9000": read tcp: connection reset by peer`,
+		`Post "http://127.0.0.1:9000": EOF`,
+		`write tcp 127.0.0.1:9000: broken pipe`,
+	} {
+		e := classifyTransport(errStr(msg))
+		if e.Code != "TALLY_CRASHED" {
+			t.Errorf("classified %q as %s, want TALLY_CRASHED", truncate(msg, 60), e.Code)
+		}
+		if !IsTransient(e) {
+			t.Error("a crash is still transient -- Tally may come back")
+		}
+	}
+
+	// These must NOT be mistaken for a crash.
+	if e := classifyTransport(errStr("dial tcp 127.0.0.1:9000: connection refused")); e.Code != "TALLY_NOT_RUNNING" {
+		t.Errorf("connection refused classified as %s", e.Code)
+	}
+}
+
+type errStr string
+
+func (e errStr) Error() string { return string(e) }

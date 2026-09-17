@@ -80,6 +80,8 @@ type Client struct {
 	// breaker widens the gap between probes when Tally is unwell, so an
 	// unhealthy machine is not polled every 15 seconds all night.
 	breaker *Breaker
+	// crashes counts how often Tally has died mid-request.
+	crashes atomic.Int64
 }
 
 // NewClient builds a client. It does not contact Tally; call Probe or Run.
@@ -171,10 +173,20 @@ func (c *Client) noteSuccess(elapsed time.Duration) {
 }
 
 func (c *Client) noteFailure(e *Error) {
-	// A closed port is unambiguous and backs off faster than a timeout.
-	c.breaker.Failure(e.Code == "TALLY_NOT_RUNNING")
 	c.lastErr.Store(e.Message)
+
 	switch e.Code {
+	case "TALLY_CRASHED":
+		// A crash is not an ordinary transient. Go straight to the longest
+		// backoff rather than climbing there one failure at a time, because
+		// every further request lands on a process that has just fallen over.
+		c.crashes.Add(1)
+		c.breaker.Trip()
+		c.health.Store(HealthOffline)
+		c.log.Error("Tally appears to have CRASHED during a request. "+
+			"Backing right off and not retrying quickly. This machine needs attention.",
+			"crashesSeen", c.crashes.Load(), "err", e.Message)
+		return
 	case "COMPANY_NOT_OPEN":
 		c.health.Store(HealthCompanyClosed)
 	case "TALLY_BUSY", "TIMEOUT":
@@ -182,7 +194,15 @@ func (c *Client) noteFailure(e *Error) {
 	case "TALLY_NOT_RUNNING", "TRANSPORT", "EMPTY_RESPONSE":
 		c.health.Store(HealthOffline)
 	}
+
+	// A closed port is unambiguous and backs off faster than a timeout.
+	c.breaker.Failure(e.Code == "TALLY_NOT_RUNNING")
 }
+
+// Crashes reports how many times Tally has died mid-request since start.
+// Surfaced in the heartbeat: repeated crashes mean the installation is damaged
+// and no amount of retrying will help.
+func (c *Client) Crashes() int64 { return c.crashes.Load() }
 
 // noteAppError updates health from an application-level error that arrived
 // inside a *successful* HTTP response.

@@ -46,6 +46,9 @@ type staticVariables struct {
 	ExportFormat   string `xml:"SVEXPORTFORMAT,omitempty"`
 	FromDate       string `xml:"SVFROMDATE,omitempty"`
 	ToDate         string `xml:"SVTODATE,omitempty"`
+	// Explodes the stock summary down to its batch rows. Without it the report
+	// stops at the item, which is the figure we do NOT want.
+	ExplodeFlag    string `xml:"EXPLODEFLAG,omitempty"`
 }
 
 type requestData struct {

@@ -103,11 +103,12 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
         val r = app.repository()
         repo = r
         operator = app.config.operator.first()
-        // Resuming keeps the scans already on it; only a fresh start mints a
-        // new id, so an unsaved receipt reopened from the queue is the SAME
-        // receipt rather than a second one for the same pallet.
         sessionId = resumeId?.let { r.resumeSession(it) }
-            ?: r.openSession("INCOMING", app.config.godown.first())
+        // Resuming keeps the scans already on it. A fresh start deliberately
+        // opens NOTHING yet: a receipt is created by the first scan, not by
+        // looking at the screen. Opening one here left an empty receipt behind
+        // every time somebody tapped in and changed their mind, and a list full
+        // of those is a list nobody reads.
     }
 
     val lines by (sessionId?.let { repo?.linesFlow(it) }?.collectAsState(emptyList())
@@ -138,10 +139,14 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
         )
     }
 
-    LaunchedEffect(repo, sessionId) {
+    // Creates the receipt the first time it is needed, and never before.
+    suspend fun ensure(r: Repository): String =
+        sessionId ?: r.openSession("INCOMING", app.config.godown.first()).also { sessionId = it }
+
+    LaunchedEffect(repo) {
         val r = repo ?: return@LaunchedEffect
-        val sid = sessionId ?: return@LaunchedEffect
         scans.collect { scan ->
+            val sid = ensure(r)
             val d = r.scanIncoming(sid, scan)
             last = d
             app.feedback.play(d.beep)
@@ -194,6 +199,12 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                     resp.dispatched -> "Sent to Tally."
                     else -> "Saved. Waiting for Tally to come back."
                 }
+            }
+        },
+        onManual = {
+            scope.launch {
+                val r = repo ?: return@launch
+                nav.navigate("manual/${ensure(r)}")
             }
         },
     )
@@ -273,17 +284,23 @@ fun StockCheckScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String?
         val r = app.repository()
         repo = r
         godown = app.config.godown.first()
+        // Nothing is opened until the first box is counted. Eleven empty stock
+        // takes reached the receipts list from people simply opening this
+        // screen, which is what made the list worth ignoring.
         sessionId = resumeId?.let { r.resumeSession(it) }
-            ?: r.openSession("STOCKCHECK", godown)
     }
 
     val lines by (sessionId?.let { repo?.linesFlow(it) }?.collectAsState(emptyList())
         ?: remember { mutableStateOf(emptyList<SessionLineEntity>()) })
 
-    LaunchedEffect(repo, sessionId) {
+    suspend fun ensure(r: Repository): String =
+        sessionId ?: r.openSession("STOCKCHECK", godown).also { sessionId = it }
+
+    LaunchedEffect(repo, godown) {
         val r = repo ?: return@LaunchedEffect
-        val sid = sessionId ?: return@LaunchedEffect
+        if (godown.isEmpty()) return@LaunchedEffect
         scans.collect { scan ->
+            val sid = ensure(r)
             val d = r.scanStockCheck(sid, godown, scan, blind = true)
             last = d
             app.feedback.play(d.beep)
@@ -317,6 +334,12 @@ fun StockCheckScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String?
                 }.getOrNull()
                 submitting = false
                 showVariance = true
+            }
+        },
+        onManual = {
+            scope.launch {
+                val r = repo ?: return@launch
+                nav.navigate("manual/${ensure(r)}")
             }
         },
     )
@@ -459,16 +482,20 @@ fun OutgoingScreen(
         repo = r
         godown = app.config.godown.first()
         sessionId = resumeId?.let { r.resumeSession(it) }
-            ?: r.openSession("OUTGOING", godown, salesOrder = salesOrder)
     }
 
     val lines by (sessionId?.let { repo?.linesFlow(it) }?.collectAsState(emptyList())
         ?: remember { mutableStateOf(emptyList<SessionLineEntity>()) })
 
-    LaunchedEffect(repo, sessionId) {
+    suspend fun ensure(r: Repository): String =
+        sessionId ?: r.openSession("OUTGOING", godown, salesOrder = salesOrder)
+            .also { sessionId = it }
+
+    LaunchedEffect(repo, godown) {
         val r = repo ?: return@LaunchedEffect
-        val sid = sessionId ?: return@LaunchedEffect
+        if (godown.isEmpty()) return@LaunchedEffect
         scans.collect { scan ->
+            val sid = ensure(r)
             val d = r.scanOutgoing(sid, salesOrder, godown, scan)
             last = d
             app.feedback.play(d.beep)
@@ -502,6 +529,12 @@ fun OutgoingScreen(
                     resp.dispatched -> "Sent to Tally."
                     else -> "Saved. It will post when the connection returns."
                 }
+            }
+        },
+        onManual = {
+            scope.launch {
+                val r = repo ?: return@launch
+                nav.navigate("manual/${ensure(r)}")
             }
         },
     )
@@ -819,6 +852,7 @@ private fun ScanScaffold(
     result: String?,
     submitLabel: String,
     onSubmit: () -> Unit,
+    onManual: () -> Unit,
 ) {
     Scaffold(
         topBar = {
@@ -841,7 +875,10 @@ private fun ScanScaffold(
                 actions = {
                     // Manual entry is one tap away and always present: the
                     // labels sit under packing tape, and torn ones happen.
-                    IconButton(onClick = { sessionId?.let { nav.navigate("manual/$it") } }) {
+                    //
+                    // It asks for the receipt rather than reading one, because
+                    // there is deliberately none until something is entered.
+                    IconButton(onClick = onManual) {
                         Icon(Icons.Default.Keyboard, "Manual entry")
                     }
                 },

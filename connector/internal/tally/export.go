@@ -322,14 +322,17 @@ func (c *Client) ListStockItems(ctx context.Context) ([]StockItem, error) {
 	return out, nil
 }
 
-// ListBatchBalances returns closing stock per (item, batch, godown).
+// ListGodowns returns the stock locations defined in the company.
 //
-// This is the hard ceiling for outgoing quantity. It is NOT the printed box
-// quantity: a box that shipped 5 of 18 last week has 13 left while its label
-// still says 18.
-func (c *Client) ListBatchBalances(ctx context.Context) ([]BatchBalance, error) {
-	payload, err := buildExport(c.cfg.Company, "STT_BatchBalances",
-		pick(c.cfg.TDL.BatchBalances, tdlBatchBalances), nil, nil)
+// Read separately rather than inferred from the balances, because a company
+// with no stock yet still has godowns, and the balance report does not name
+// them.
+func (c *Client) ListGodowns(ctx context.Context) ([]string, error) {
+	payload, err := buildExport(c.cfg.Company, "STT_Godowns",
+		`<COLLECTION NAME="STT_Godowns" ISMODIFY="No">
+  <TYPE>Godown</TYPE>
+  <NATIVEMETHOD>NAME</NATIVEMETHOD>
+</COLLECTION>`, nil, nil)
 	if err != nil {
 		return nil, business("BUILD_FAILED", err.Error())
 	}
@@ -341,52 +344,175 @@ func (c *Client) ListBatchBalances(ctx context.Context) ([]BatchBalance, error) 
 		return nil, c.noteAppError(classifyMessage(le))
 	}
 
-	now := time.Now()
-	var out []BatchBalance
-	err = walk(body, "STOCKITEM", func(d *xml.Decoder, se xml.StartElement) error {
+	var out []string
+	err = walk(body, "GODOWN", func(d *xml.Decoder, se xml.StartElement) error {
 		var row struct {
-			Name      string `xml:"NAME"`
-			BaseUnits string `xml:"BASEUNITS"`
-			Batches   []struct {
-				BatchName      string `xml:"BATCHNAME"`
-				GodownName     string `xml:"GODOWNNAME"`
-				ClosingBalance string `xml:"CLOSINGBALANCE"`
-				ClosingQty     string `xml:"CLOSINGQTY"`
-				ActualQty      string `xml:"ACTUALQTY"`
-			} `xml:"BATCHALLOCATIONS.LIST"`
+			Name string `xml:"NAME"`
 		}
 		if err := d.DecodeElement(&row, &se); err != nil {
 			return nil
 		}
-		item := strings.TrimSpace(attr(se, "NAME"))
-		if item == "" {
-			item = strings.TrimSpace(row.Name)
+		name := strings.TrimSpace(attr(se, "NAME"))
+		if name == "" {
+			name = strings.TrimSpace(row.Name)
 		}
-		for _, b := range row.Batches {
-			name := strings.TrimSpace(b.BatchName)
-			if name == "" {
-				continue
-			}
-			// Tally names the balance field differently across versions; take
-			// whichever is populated rather than betting on one.
-			raw := firstNonEmpty(b.ClosingBalance, b.ClosingQty, b.ActualQty)
-			qty, unit := parseTallyQty(raw)
-			if unit == "" {
-				unit = strings.TrimSpace(row.BaseUnits)
-			}
-			out = append(out, BatchBalance{
-				StockItemName: item,
-				BatchName:     name,
-				GodownName:    strings.TrimSpace(b.GodownName),
-				ClosingQty:    qty,
-				Unit:          unit,
-				AsOf:          now,
-			})
+		if name != "" {
+			out = append(out, name)
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, business("PARSE_FAILED", err.Error())
+	}
+	return out, nil
+}
+
+// ListBatchBalances returns closing stock per (item, batch, godown).
+//
+// This is the hard ceiling for outgoing quantity. It is NOT the printed box
+// quantity: a box that shipped 5 of 18 last week has 13 left while its label
+// still says 18.
+//
+// Read from the Stock Summary report rather than the StockItem collection,
+// because the collection does not carry it. BATCHALLOCATIONS on a stock item
+// master is its OPENING allocation, so it comes back empty for an item whose
+// stock arrived by voucher -- which is every item here. Confirmed against the
+// live company: two receipts posted, correct batches on both vouchers, and the
+// collection still reported no batches at all. Everything downstream of this
+// depends on it -- a despatch cannot be checked against a box whose balance is
+// unknown, and the stock lookup showed zero for a product that had just been
+// received.
+func (c *Client) ListBatchBalances(ctx context.Context) ([]BatchBalance, error) {
+	// The report names no godown. With a single location that is unambiguous,
+	// so the balances are attributed to it; with several there is no honest
+	// answer here, and an empty name means "location unknown" downstream rather
+	// than a guess that could despatch from the wrong shelf.
+	godown := ""
+	if gs, err := c.ListGodowns(ctx); err == nil && len(gs) == 1 {
+		godown = gs[0]
+	}
+
+	payload, err := buildStockSummary(c.cfg.Company)
+	if err != nil {
+		return nil, business("BUILD_FAILED", err.Error())
+	}
+	body, err := c.post(ctx, payload)
+	if err != nil {
+		return nil, err
+	}
+	if le := extractTag(string(body), "LINEERROR"); le != "" {
+		return nil, c.noteAppError(classifyMessage(le))
+	}
+
+	out, err := parseStockSummary(body, godown, time.Now())
+	if err != nil {
+		return nil, business("PARSE_FAILED", err.Error())
+	}
+	return out, nil
+}
+
+// buildStockSummary asks for the stock summary exploded down to batches.
+//
+// EXPLODEFLAG is what adds the per-batch rows; without it the report stops at
+// the item. No date window: a CLOSING balance is cumulative from the start of
+// the books, so a from-date would only narrow the columns this does not read,
+// and picking one risks falling outside a company's period.
+func buildStockSummary(company string) ([]byte, error) {
+	env := exportEnvelope{
+		Header: exportHeader{
+			Version: 1, TallyRequest: "Export", Type: "Data", ID: "Stock Summary",
+		},
+		Body: exportBody{
+			Desc: exportDesc{
+				StaticVariables: staticVariables{
+					CurrentCompany: company,
+					ExportFormat:   "$$SysName:XML",
+					ExplodeFlag:    "Yes",
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	enc := xml.NewEncoder(&buf)
+	enc.Indent("", " ")
+	if err := enc.Encode(env); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// parseStockSummary reads the exploded report.
+//
+// The report is a FLAT stream, not a nested structure: an item name, then that
+// item's total, then a batch name and that batch's total for each batch. So
+// position carries the meaning, and a quantity belongs to the batch only if a
+// batch name has been seen since the last one was consumed.
+func parseStockSummary(body []byte, godown string, now time.Time) ([]BatchBalance, error) {
+	dec := xml.NewDecoder(bytes.NewReader(body))
+	dec.Strict = false
+	// Same as walk: Tally emits cp1252 bytes in some locales, and one
+	// accented name must not fail the whole sync.
+	dec.CharsetReader = func(_ string, r io.Reader) (io.Reader, error) { return r, nil }
+
+	var (
+		out   []BatchBalance
+		item  string
+		batch string
+	)
+
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		se, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+
+		switch se.Name.Local {
+		case "DSPDISPNAME":
+			var v string
+			if err := dec.DecodeElement(&v, &se); err != nil {
+				continue
+			}
+			item = strings.TrimSpace(v)
+			// A new item cancels any batch left over from the previous one.
+			batch = ""
+
+		case "SSBATCH":
+			var v string
+			if err := dec.DecodeElement(&v, &se); err != nil {
+				continue
+			}
+			batch = strings.TrimSpace(v)
+
+		case "DSPCLQTY":
+			var v string
+			if err := dec.DecodeElement(&v, &se); err != nil {
+				continue
+			}
+			// No batch pending means this is the item's own total, which is the
+			// sum of the batch rows that follow it. Counting it would double
+			// every figure.
+			if batch == "" || item == "" {
+				continue
+			}
+			qty, unit := parseTallyQty(v)
+			out = append(out, BatchBalance{
+				StockItemName: item,
+				BatchName:     batch,
+				GodownName:    godown,
+				ClosingQty:    qty,
+				Unit:          unit,
+				AsOf:          now,
+			})
+			batch = ""
+		}
 	}
 	return out, nil
 }

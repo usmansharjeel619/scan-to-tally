@@ -380,7 +380,11 @@ fun HomeScreen(nav: NavController) {
             ConnectionBanner(health, pending, failed)
 
             Column(
-                Modifier.padding(16.dp),
+                // Scrollable: five actions plus the footer do not fit a rugged
+                // handset's screen, and the fifth was simply unreachable.
+                Modifier
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 BigAction("Incoming", "Scan boxes off a delivery", Icons.Default.MoveToInbox) {
@@ -634,7 +638,7 @@ fun ReceiptsScreen(nav: NavController) {
                                 when (s.kind) {
                                     "INCOMING" -> "Incoming"
                                     "OUTGOING" -> "Outgoing ${s.salesOrder}"
-                                    else -> "Stock check"
+                                    else -> "Stock take"
                                 },
                                 style = MaterialTheme.typography.titleMedium,
                             )

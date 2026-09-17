@@ -259,3 +259,65 @@ test('editing an existing line does not count that line against itself', () => {
   assert.equal(v.ok, true, 'changing 13 to 13 must not report the box as full');
   assert.equal(v.available, 13);
 });
+
+// --- ambiguous PIDs ---------------------------------------------------------
+//
+// Found in a live catalogue: one Simplex part number entered under EIGHT
+// different item names, because each sale bundled it differently. 17 PIDs were
+// affected. Auto-picking one posts stock against the wrong item and nothing
+// downstream ever notices.
+
+test('a PID matching several items never auto-resolves', () => {
+  applySync(db, {
+    items: [
+      { name: '4098-9714 SSD SMOKE SENSOR', baseUnits: 'NO', hasBatches: true },
+      { name: '4098-9714 Smoke Detector with Sounder Base', baseUnits: 'NO', hasBatches: true },
+      { name: '4098-9714 SIMPLEX SMOKE DETECTOR WITH BASE', baseUnits: 'NO', hasBatches: true },
+    ],
+  });
+
+  const d = decideIncomingScan(db, {
+    sessionId: SESSION, raw: '4098-9714|1124249900007001|18|', symbology: 'CODE128',
+  });
+
+  assert.equal(d.outcome, 'FLAGGED', 'counted, but not resolved');
+  assert.ok(d.flags.includes('AMBIGUOUS_PID'), 'must be flagged as ambiguous, not unknown');
+  assert.ok(!d.flags.includes('UNRESOLVED_PID'), 'ambiguous is a different problem from unknown');
+  assert.equal(d.box?.stockItemName, '', 'must NOT have silently picked one of the three');
+  assert.equal(d.box?.labelQty, 18, 'the count is still right');
+  assert.ok(/matches 3 items/.test(d.message), `message should name the count: ${d.message}`);
+});
+
+test('an ambiguous PID cannot be despatched', () => {
+  applySync(db, {
+    items: [
+      { name: '4090-9001 IAM MODULE', baseUnits: 'NO', hasBatches: true },
+      { name: '4090-9001 IAM RELAY IDENT', baseUnits: 'NO', hasBatches: true },
+    ],
+  });
+
+  const d = decideOutgoingScan(db, {
+    sessionId: SESSION, salesOrder: SO, godown: GODOWN,
+    raw: '4090-9001|1124249900007002|5|', symbology: 'CODE128',
+  });
+
+  assert.equal(d.outcome, 'REJECT', 'outgoing has nothing unambiguous to deduct from');
+  assert.equal(d.beep, 'REJECT');
+  assert.ok(/matches \d+ different items/.test(d.message), d.message);
+  assert.ok(/supervisor must decide/.test(d.message), d.message);
+});
+
+test('a PID matching exactly one item still resolves by name prefix', () => {
+  // The live catalogue names items "<PID> <DESCRIPTION>" and populates no
+  // PARTNO at all, so this prefix match is the path that actually works.
+  applySync(db, {
+    items: [{ name: '4099-9006 DS PUSH PULL TYPE MPS', baseUnits: 'NO', hasBatches: true }],
+  });
+
+  const d = decideIncomingScan(db, {
+    sessionId: SESSION, raw: '4099-9006|1124249900007003|4|', symbology: 'CODE128',
+  });
+
+  assert.equal(d.outcome, 'ACCEPT');
+  assert.equal(d.box?.stockItemName, '4099-9006 DS PUSH PULL TYPE MPS');
+});

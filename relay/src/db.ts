@@ -29,6 +29,7 @@ export type SessionState =
  */
 export type LineFlag =
   | 'UNRESOLVED_PID'      // no binding to a Tally stock item yet
+  | 'AMBIGUOUS_PID'       // several Tally items share this PID; a human must pick
   | 'DUPLICATE_OVERRIDE'  // box was received before; operator deliberately accepted
   | 'MANUAL'              // typed, not scanned
   | 'QTY_EDITED'          // operator changed the quantity from the label
@@ -305,6 +306,22 @@ export interface Resolved {
 }
 
 /**
+ * A PID that matches several Tally items.
+ *
+ * Real and common: in a live catalogue, one Simplex part number was entered
+ * under EIGHT different item names, because each sale bundled it differently
+ * ("with base", "with sounder base", "with remote LED"...).
+ *
+ * Picking one would post stock against the wrong item, and nothing downstream
+ * would ever notice. So an ambiguous PID resolves to nothing and carries its
+ * candidates to a supervisor, who decides once and binds it for good.
+ */
+export interface Ambiguous {
+  pid: string;
+  candidates: string[];
+}
+
+/**
  * Maps a scanned PID onto a Tally stock item.
  *
  * Order matters. An explicit binding always wins, because it is the one a human
@@ -313,6 +330,33 @@ export interface Resolved {
  * wrong auto-match is traceable later.
  */
 export function resolvePid(db: DB, pid: string): Resolved | null {
+  return resolvePidDetailed(db, pid).resolved;
+}
+
+/**
+ * Resolution, with the ambiguity made visible.
+ *
+ * Callers that can act on it (the scan path, the supervisor queue) use this;
+ * everything else uses resolvePid and treats ambiguity as simply unresolved.
+ */
+export function resolvePidDetailed(
+  db: DB, pid: string,
+): { resolved: Resolved | null; ambiguous: Ambiguous | null } {
+  const r = resolveOne(db, pid);
+  if (r) return { resolved: r, ambiguous: null };
+
+  // No single answer. Were there several?
+  const candidates = (db.prepare(
+    `SELECT name FROM stock_items WHERE name LIKE ? ORDER BY name LIMIT 20`,
+  ).all(`${pid} %`) as Array<{ name: string }>).map((x) => x.name);
+
+  if (candidates.length > 1) {
+    return { resolved: null, ambiguous: { pid, candidates } };
+  }
+  return { resolved: null, ambiguous: null };
+}
+
+function resolveOne(db: DB, pid: string): Resolved | null {
   const binding = db.prepare(
     `SELECT stock_item_name, description FROM pid_bindings WHERE pid = ?`,
   ).get(pid) as { stock_item_name: string; description: string } | undefined;

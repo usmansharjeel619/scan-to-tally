@@ -14,7 +14,7 @@
  */
 
 import type { DB, LineFlag, Resolved } from './db.ts';
-import { resolvePid } from './db.ts';
+import { resolvePid, resolvePidDetailed } from './db.ts';
 import { registry, boxKey, type ParseResult } from './barcode.ts';
 
 /** What the device does with the scan. */
@@ -131,14 +131,15 @@ export function decideIncomingScan(db: DB, input: IncomingScanInput): ScanDecisi
   }
   if (historical && input.overrideDuplicate) flags.push('DUPLICATE_OVERRIDE');
 
-  // 3. Resolve the product. An unknown PID does NOT stop the operator -- the
-  //    count is right, only the identity is pending.
-  const resolved = resolvePid(db, pid);
-  if (!resolved) flags.push('UNRESOLVED_PID');
-  else if (!resolved.hasBatches) flags.push('NO_BATCH_SUPPORT');
+  // 3. Resolve the product. Neither an unknown NOR an ambiguous PID stops the
+  //    operator -- the count is right either way, only the identity is pending.
+  const { resolved, ambiguous } = resolvePidDetailed(db, pid);
+  if (ambiguous) flags.push('AMBIGUOUS_PID');
+  else if (!resolved) flags.push('UNRESOLVED_PID');
+  if (resolved && !resolved.hasBatches) flags.push('NO_BATCH_SUPPORT');
 
-  const flagged = flags.some((f) => f === 'UNRESOLVED_PID' || f === 'NO_BATCH_SUPPORT'
-    || f === 'DUPLICATE_OVERRIDE');
+  const flagged = flags.some((f) => f === 'UNRESOLVED_PID' || f === 'AMBIGUOUS_PID'
+    || f === 'NO_BATCH_SUPPORT' || f === 'DUPLICATE_OVERRIDE');
 
   return {
     outcome: flagged ? 'FLAGGED' : 'ACCEPT',
@@ -153,7 +154,9 @@ export function decideIncomingScan(db: DB, input: IncomingScanInput): ScanDecisi
     },
     message: resolved
       ? `${resolved.description || resolved.stockItemName} - ${fmt(qty)}`
-      : `Unknown product ${pid} - ${fmt(qty)} counted, needs review`,
+      : ambiguous
+        ? `${pid} matches ${ambiguous.candidates.length} items in Tally - ${fmt(qty)} counted, a supervisor must pick which`
+        : `Unknown product ${pid} - ${fmt(qty)} counted, needs review`,
   };
 }
 
@@ -197,11 +200,14 @@ export function decideOutgoingScan(db: DB, input: OutgoingScanInput): ScanDecisi
 
   // Outgoing cannot proceed on an unknown product: there is nothing to
   // deduct stock from.
-  const resolved = resolvePid(db, pid);
+  const { resolved, ambiguous } = resolvePidDetailed(db, pid);
   if (!resolved) {
     return {
       outcome: 'REJECT', beep: 'REJECT', flags, parse,
-      message: `Product ${pid} is not mapped to a Tally item. A supervisor must map it first.`,
+      message: ambiguous
+        ? `${pid} matches ${ambiguous.candidates.length} different items in Tally. ` +
+          `A supervisor must decide which one before this can be despatched.`
+        : `Product ${pid} is not mapped to a Tally item. A supervisor must map it first.`,
     };
   }
 

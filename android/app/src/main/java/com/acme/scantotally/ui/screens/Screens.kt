@@ -58,6 +58,7 @@ import com.acme.scantotally.ScanToTallyApp
 import com.acme.scantotally.data.Repository
 import com.acme.scantotally.data.SalesOrderEntity
 import com.acme.scantotally.data.SessionEntity
+import com.acme.scantotally.data.OrderOutstanding
 import com.acme.scantotally.data.SessionSummary
 import com.acme.scantotally.scan.RawScan
 import com.acme.scantotally.scan.SuspendScanCapture
@@ -482,6 +483,8 @@ fun SalesOrderPickerScreen(nav: NavController) {
     val orders by (repo?.ordersFlow()?.collectAsState(emptyList())
         ?: remember { mutableStateOf(emptyList<SalesOrderEntity>()) })
     var filter by remember { mutableStateOf("") }
+    val outstanding by (repo?.orderOutstandingFlow()?.collectAsState(emptyList())
+        ?: remember { mutableStateOf(emptyList<OrderOutstanding>()) })
     SuspendScanCapture()
 
     Scaffold(
@@ -536,6 +539,19 @@ fun SalesOrderPickerScreen(nav: NavController) {
                                 fontFamily = FontFamily.Monospace,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            // What is actually left to pick. Walking to the
+                            // rack to find out is the expensive way to learn it.
+                            outstanding.firstOrNull { it.voucherNumber == order.voucherNumber }
+                                ?.let { o ->
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(
+                                        "${fmtQty(o.pending)} still to pick" +
+                                            "  ·  ${o.items} ${if (o.items == 1) "product" else "products"}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = if (o.pending > 0) LocalSemantics.current.review.fg
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                         }
                     }
                 }

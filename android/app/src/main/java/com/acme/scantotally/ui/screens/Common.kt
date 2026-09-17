@@ -146,9 +146,22 @@ fun ScanResultCard(decision: ScanDecision?, modifier: Modifier = Modifier) {
                 Spacer(Modifier.height(4.dp))
                 Text(
                     "Box ${tail(decision.boxSerial)}" +
-                        if (decision.available != null) "  ·  ${fmtQty(decision.available)} available" else "",
+                        if (decision.available != null) "  ·  ${fmtQty(decision.available)} in box" else "",
                     color = sem.onCard.copy(alpha = 0.75f),
                     fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+
+            // On a despatch the box figure alone does not say what may be sent:
+            // the order is just as hard a limit, and is usually the smaller of
+            // the two. Showing only one of them leaves the operator to discover
+            // the other by being refused.
+            decision.orderPending?.let { pending ->
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "${fmtQty(pending)} still on the order",
+                    color = sem.onCard.copy(alpha = 0.75f),
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }

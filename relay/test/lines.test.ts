@@ -320,3 +320,79 @@ test('a second despatch cannot exceed what the order still has outstanding', asy
   // The box itself still has room, so this is purely the order ceiling.
   assert.equal(v.available, 8);
 });
+
+test('one order can be filled from several boxes, and stops at the order total', async () => {
+  // The real case: an order for 6, a box holding 2 and a box holding 10.
+  // Send 2 from the small one, then 4 from the big one. The box ceiling is per
+  // box; the order ceiling has to accumulate ACROSS boxes or the second scan
+  // would happily send another 6.
+  const { validateOutgoingQty } = await import('../src/validation.ts');
+
+  db.prepare(`INSERT INTO sales_orders (voucher_number, party_name, order_date, synced_at)
+              VALUES ('SO-9','A Customer','2026-01-01', ?)`).run(nowIso());
+  db.prepare(`INSERT INTO sales_order_lines
+                (voucher_number, stock_item_name, ordered_qty, delivered_qty, unit)
+              VALUES ('SO-9', ?, 6, 0, 'NO')`).run(KNOWN_ITEM);
+
+  const ins = db.prepare(`INSERT INTO batch_balances
+      (stock_item_name, batch_name, godown_name, closing_qty, unit, synced_at)
+      VALUES (?,?,?,?, 'NO', ?)`);
+  ins.run(KNOWN_ITEM, 'SMALL-BOX', GODOWN, 2, nowIso());
+  ins.run(KNOWN_ITEM, 'BIG-BOX', GODOWN, 10, nowIso());
+
+  const sid = await openSession('OUTGOING');
+  db.prepare(`UPDATE sessions SET sales_order='SO-9' WHERE id=?`).run(sid);
+
+  const check = (box: string, qty: number) => validateOutgoingQty(db, {
+    sessionId: sid, salesOrder: 'SO-9', godown: GODOWN,
+    pid: KNOWN_PID, boxSerial: box, stockItemName: KNOWN_ITEM, qty,
+  });
+
+  // The small box, all of it.
+  let v = check('SMALL-BOX', 2);
+  assert.equal(v.ok, true, v.error ?? '');
+  assert.equal(v.available, 2, 'the small box holds 2');
+  assert.equal(v.orderPending, 6, 'nothing sent yet');
+
+  // Its own ceiling still applies: it does not hold 3.
+  assert.equal(check('SMALL-BOX', 3).ok, false, 'a box cannot give up more than it holds');
+
+  await line(sid, { pid: KNOWN_PID, boxSerial: 'SMALL-BOX', qty: 2, raw: 'x' });
+
+  // Now the big box. It holds 10, but the order only wants 4 more.
+  v = check('BIG-BOX', 4);
+  assert.equal(v.ok, true, v.error ?? '');
+  assert.equal(v.available, 10, 'the big box is untouched');
+  assert.equal(v.orderPending, 4, 'the order must count the 2 already scanned from the other box');
+
+  // One more than the order has left, from a box with plenty in it.
+  v = check('BIG-BOX', 5);
+  assert.equal(v.ok, false, 'the order ceiling must bind even when the box has room');
+  assert.match(String(v.error), /outstanding/);
+
+  await line(sid, { pid: KNOWN_PID, boxSerial: 'BIG-BOX', qty: 4, raw: 'x' });
+
+  // Order complete: nothing further may go out on it, from any box.
+  v = check('BIG-BOX', 1);
+  assert.equal(v.ok, false, 'a filled order must take nothing more');
+  assert.equal(v.orderPending, 0);
+});
+
+test('two boxes of one product post as ONE voucher line with two batches', async () => {
+  // Splitting a part number across entries is accepted by Tally and quietly
+  // ruins its stock reports, so the job must nest the boxes under one line.
+  const { buildJob } = await import('../src/server.ts');
+
+  const sid = await openSession('INCOMING');
+  await line(sid, { pid: KNOWN_PID, boxSerial: 'BOX-A', qty: 2, raw: 'x' });
+  await line(sid, { pid: KNOWN_PID, boxSerial: 'BOX-B', qty: 4, raw: 'x' });
+
+  const job = buildJob(sid) as any;
+  assert.equal(job.lines.length, 1, 'one line for the part number');
+  assert.equal(job.lines[0].stockItemName, KNOWN_ITEM);
+  assert.equal(job.lines[0].boxes.length, 2, 'both boxes beneath it');
+  assert.deepEqual(
+    job.lines[0].boxes.map((b: any) => [b.boxSerial, b.qty]).sort(),
+    [['BOX-A', 2], ['BOX-B', 4]],
+  );
+});

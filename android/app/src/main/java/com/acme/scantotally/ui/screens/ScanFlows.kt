@@ -597,7 +597,11 @@ private fun QuantityKeypad(
     var warning by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
+    val sem = LocalSemantics.current
     val available = decision.available ?: 0.0
+    val orderLeft = decision.orderPending ?: 0.0
+    // What the operator may actually type: the tighter of the two ceilings.
+    val sendable = minOf(available, orderLeft)
     val qty = entry.toDoubleOrNull() ?: 0.0
     val valid = entry.isNotEmpty() && error == null && qty > 0
 
@@ -623,22 +627,43 @@ private fun QuantityKeypad(
         },
         text = {
             Column {
+                // BOTH ceilings, and which of them actually binds.
+                //
+                // The box figure on its own does not say what may be sent: the
+                // order is just as hard a limit and is usually the smaller.
+                // Showing one and enforcing two leaves the operator to find the
+                // other by being refused.
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     Text(
-                        "Label qty ${fmtQty(decision.labelQty)}",
+                        "Label ${fmtQty(decision.labelQty)}",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    // The ceiling and its age. A stale figure the operator
-                    // could see is stale makes a later rejection sensible
-                    // rather than baffling.
                     Text(
-                        "Available ${fmtQty(available)}",
+                        "In box ${fmtQty(available)}",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = FlagAmber,
-                        fontWeight = FontWeight.SemiBold,
+                        color = if (available <= orderLeft) sem.review.fg
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = if (available <= orderLeft) FontWeight.SemiBold
+                        else FontWeight.Normal,
+                    )
+                    Text(
+                        "On order ${fmtQty(orderLeft)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (orderLeft < available) sem.review.fg
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = if (orderLeft < available) FontWeight.SemiBold
+                        else FontWeight.Normal,
                     )
                 }
+
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "You can send up to ${fmtQty(sendable)}" +
+                        if (orderLeft < available) "  (order $salesOrder)" else "  (in this box)",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
                 decision.availableAsOf?.let {
                     val mins = ((System.currentTimeMillis() - it) / 60000).coerceAtLeast(0)
                     Text(

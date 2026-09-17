@@ -132,6 +132,13 @@ data class SessionEntity(
     val syncedToRelay: Boolean = false,
 )
 
+/** What an order still needs, so the picker says it before anyone walks. */
+data class OrderOutstanding(
+    val voucherNumber: String,
+    val items: Int,
+    val pending: Double,
+)
+
 /** What a session actually holds, for a queue that says something useful. */
 data class SessionSummary(
     val sessionId: String,
@@ -477,6 +484,15 @@ interface ScanDao {
              FROM session_lines GROUP BY sessionId"""
     )
     fun lineSummariesFlow(): Flow<List<SessionSummary>>
+
+    @Query(
+        """SELECT voucherNumber,
+                  COUNT(*) AS items,
+                  COALESCE(SUM(MAX(orderedQty - deliveredQty, 0)), 0) AS pending
+             FROM sales_order_lines
+            GROUP BY voucherNumber"""
+    )
+    fun orderOutstandingFlow(): Flow<List<OrderOutstanding>>
 
     @Query("SELECT COUNT(*) FROM session_lines WHERE sessionId = :sessionId AND synced = 0")
     suspend fun unsyncedCount(sessionId: String): Int

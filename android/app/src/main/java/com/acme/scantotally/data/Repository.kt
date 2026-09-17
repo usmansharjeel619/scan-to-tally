@@ -121,6 +121,7 @@ class Repository(context: Context, private val api: RelayApi?) {
     fun pendingCountFlow(): Flow<Int> = dao.pendingCountFlow()
     fun failedCountFlow(): Flow<Int> = dao.failedCountFlow()
     fun ordersFlow(): Flow<List<SalesOrderEntity>> = dao.ordersFlow()
+    fun orderOutstandingFlow(): Flow<List<OrderOutstanding>> = dao.orderOutstandingFlow()
 
     suspend fun orderLines(order: String) = dao.orderLines(order)
     suspend fun searchItems(q: String) = dao.searchItems(q)

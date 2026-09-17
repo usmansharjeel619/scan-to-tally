@@ -20,7 +20,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Inventory
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.LocalShipping
 import androidx.compose.material.icons.filled.MoveToInbox
@@ -398,9 +397,11 @@ fun HomeScreen(nav: NavController) {
                 BigAction("Check stock", "Scan a box, see what Tally has", Icons.Default.Search) {
                     nav.navigate("lookup")
                 }
-                BigAction("Stock take", "Count the shelf and correct Tally", Icons.Default.Inventory) {
-                    nav.navigate("stockcheck")
-                }
+                // Stock take is built and tested but deliberately not offered
+                // yet: it is the only flow that writes a correction to Tally,
+                // and it is not wanted until the two that move goods are
+                // trusted. The screen and its route are left intact so putting
+                // it back is one line, not a rebuild.
 
                 Spacer(Modifier.height(8.dp))
 

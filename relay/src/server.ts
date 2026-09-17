@@ -117,7 +117,18 @@ function applyJobResult(r: JobResult): void {
 
   const session = db.prepare(`SELECT id, kind FROM sessions WHERE id = ?`)
     .get(r.sessionId) as { id: string; kind: string } | undefined;
-  if (!session) return;
+  if (!session) {
+    // A result nobody is waiting for is still a result. Dropping it silently
+    // is how a post that Tally refused disappears without trace -- and the
+    // whole point of this queue is that one never does.
+    app.log.warn(
+      { sessionId: r.sessionId, ok: r.ok, code: r.errorCode, message: r.errorMessage },
+      'job result for an unknown session',
+    );
+    audit(db, 'connector', r.ok ? 'ORPHAN_POSTED' : 'ORPHAN_FAILED', r.sessionId,
+      r.ok ? (r.tallyVoucherId ?? '') : `${r.errorCode}: ${r.errorMessage}`);
+    return;
+  }
 
   if (r.ok) {
     db.prepare(`

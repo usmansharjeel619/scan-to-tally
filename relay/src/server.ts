@@ -86,7 +86,7 @@ const hub = new ConnectorHub(
       resendOutstanding(company);
       return;
     }
-    applySync(db, {
+    const removed = applySync(db, {
       items: p?.items, godowns: p?.godowns, balances: p?.balances,
       orders: p?.orders?.map((o: any) => ({
         voucherNumber: o.voucherNumber, partyName: o.partyName,
@@ -94,7 +94,18 @@ const hub = new ConnectorHub(
         lines: o.lines ?? [],
       })),
     });
-    app.log.info({ items: p?.items?.length, balances: p?.balances?.length }, 'master data synced');
+    app.log.info(
+      { items: p?.items?.length, balances: p?.balances?.length, orders: p?.orders?.length },
+      'master data synced',
+    );
+    if (removed) {
+      // Master data going away is either a real deletion in Tally or a sign
+      // that something is wrong. Both are worth seeing rather than inferring
+      // later from a part number that stopped resolving.
+      app.log.warn(removed, 'master data removed because Tally no longer has it');
+      audit(db, 'connector', 'MASTERS_REMOVED', '',
+        `${removed.items} item(s), ${removed.bindings} binding(s)`);
+    }
   },
 );
 

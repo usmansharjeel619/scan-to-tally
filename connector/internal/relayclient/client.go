@@ -72,9 +72,9 @@ type Syncer func(ctx context.Context) (*protocol.SyncPush, error)
 type Querier func(ctx context.Context, label, xml string) (string, time.Duration, error)
 
 type Client struct {
-	cfg    Config
-	st     *store.Store
-	health HealthSource
+	cfg        Config
+	st         *store.Store
+	health     HealthSource
 	sync       Syncer
 	query      Querier
 	createItem ItemCreator

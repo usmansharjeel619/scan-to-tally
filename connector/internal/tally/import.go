@@ -48,7 +48,7 @@ type staticVariables struct {
 	ToDate         string `xml:"SVTODATE,omitempty"`
 	// Explodes the stock summary down to its batch rows. Without it the report
 	// stops at the item, which is the figure we do NOT want.
-	ExplodeFlag    string `xml:"EXPLODEFLAG,omitempty"`
+	ExplodeFlag string `xml:"EXPLODEFLAG,omitempty"`
 }
 
 type requestData struct {
@@ -56,7 +56,7 @@ type requestData struct {
 }
 
 type tallyMessage struct {
-	UDFNamespace string      `xml:"xmlns:UDF,attr"`
+	UDFNamespace string       `xml:"xmlns:UDF,attr"`
 	Voucher      *wireVoucher `xml:"VOUCHER,omitempty"`
 }
 
@@ -90,14 +90,14 @@ type wireUserDescription struct {
 }
 
 type wireInventoryEntry struct {
-	StockItemName    string   `xml:"STOCKITEMNAME"`
-	IsDeemedPositive string   `xml:"ISDEEMEDPOSITIVE"`
+	StockItemName    string               `xml:"STOCKITEMNAME"`
+	IsDeemedPositive string               `xml:"ISDEEMEDPOSITIVE"`
 	Description      *wireUserDescription `xml:"BASICUSERDESCRIPTION.LIST,omitempty"`
-	Rate             string   `xml:"RATE,omitempty"`
-	Amount           string   `xml:"AMOUNT,omitempty"`
-	ActualQty        string   `xml:"ACTUALQTY"`
-	BilledQty        string   `xml:"BILLEDQTY"`
-	Batches          []wireBatch `xml:"BATCHALLOCATIONS.LIST"`
+	Rate             string               `xml:"RATE,omitempty"`
+	Amount           string               `xml:"AMOUNT,omitempty"`
+	ActualQty        string               `xml:"ACTUALQTY"`
+	BilledQty        string               `xml:"BILLEDQTY"`
+	Batches          []wireBatch          `xml:"BATCHALLOCATIONS.LIST"`
 }
 
 type wireBatch struct {
@@ -237,8 +237,8 @@ func NewPhysicalStock(key, narration string, date time.Time, entries []Inventory
 		Type:           PhysicalStock,
 		Date:           date,
 		IdempotencyKey: key,
-		Narration: narration,
-		Entries:   entries,
+		Narration:      narration,
+		Entries:        entries,
 	}
 }
 

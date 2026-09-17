@@ -271,13 +271,13 @@ func TestBusinessErrorStopsRetrying(t *testing.T) {
 	ctx := context.Background()
 
 	pj := protocol.PostVoucherJob{
-		SessionID: "sess-over-" + time.Now().Format("150405.000"),
-		Kind:      protocol.KindOutgoing,
-		Company:   "ACME FIRE SYSTEMS",
-		Godown:    "Main Store",
-		Party:     "Example Project FZC",
+		SessionID:  "sess-over-" + time.Now().Format("150405.000"),
+		Kind:       protocol.KindOutgoing,
+		Company:    "ACME FIRE SYSTEMS",
+		Godown:     "Main Store",
+		Party:      "Example Project FZC",
 		SalesOrder: "SO-2026-0041",
-		Date:      time.Now(),
+		Date:       time.Now(),
 		Lines: []protocol.Line{{
 			StockItemName: "4098-9792 SSD SENSOR BASE",
 			Unit:          "Nos",

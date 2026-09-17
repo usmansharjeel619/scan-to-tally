@@ -20,13 +20,13 @@ import "time"
 type MsgType string
 
 const (
-	MsgHello      MsgType = "hello"       // connector -> relay, on connect
-	MsgHelloAck   MsgType = "hello_ack"   // relay -> connector
-	MsgJob        MsgType = "job"         // relay -> connector
-	MsgJobResult  MsgType = "job_result"  // connector -> relay
-	MsgHeartbeat  MsgType = "heartbeat"   // connector -> relay, carries health
-	MsgSyncPush   MsgType = "sync_push"   // connector -> relay, master data
-	MsgSyncReq    MsgType = "sync_req"    // relay -> connector, "resync now"
+	MsgHello     MsgType = "hello"      // connector -> relay, on connect
+	MsgHelloAck  MsgType = "hello_ack"  // relay -> connector
+	MsgJob       MsgType = "job"        // relay -> connector
+	MsgJobResult MsgType = "job_result" // connector -> relay
+	MsgHeartbeat MsgType = "heartbeat"  // connector -> relay, carries health
+	MsgSyncPush  MsgType = "sync_push"  // connector -> relay, master data
+	MsgSyncReq   MsgType = "sync_req"   // relay -> connector, "resync now"
 
 	// Phase 0 only. Lets the relay run a READ-ONLY Tally query so the XML
 	// templates can be reconciled against a real installation. Refused unless
@@ -47,12 +47,12 @@ type DiagRequest struct {
 
 // DiagResponse is Tally's raw answer, unparsed.
 type DiagResponse struct {
-	ID       string `json:"id"`
-	OK       bool   `json:"ok"`
-	XML      string `json:"xml,omitempty"`
-	Error    string `json:"error,omitempty"`
-	Bytes    int    `json:"bytes,omitempty"`
-	Millis   int64  `json:"millis,omitempty"`
+	ID     string `json:"id"`
+	OK     bool   `json:"ok"`
+	XML    string `json:"xml,omitempty"`
+	Error  string `json:"error,omitempty"`
+	Bytes  int    `json:"bytes,omitempty"`
+	Millis int64  `json:"millis,omitempty"`
 }
 
 // Frame wraps every message. Payload is the type-specific body.
@@ -64,16 +64,16 @@ type Frame struct {
 
 // Hello identifies the connector and the Tally it fronts.
 type Hello struct {
-	ConnectorID      string `json:"connectorId"`
-	Version          string `json:"version"`
-	Company          string `json:"company"`
-	Hostname         string `json:"hostname"`
-	TallyVersion     string `json:"tallyVersion,omitempty"`
-	ProtocolVersion  int    `json:"protocolVersion"`
+	ConnectorID     string `json:"connectorId"`
+	Version         string `json:"version"`
+	Company         string `json:"company"`
+	Hostname        string `json:"hostname"`
+	TallyVersion    string `json:"tallyVersion,omitempty"`
+	ProtocolVersion int    `json:"protocolVersion"`
 	// CanCreateItems reports whether this connector is permitted to add stock
 	// items. Announced rather than discovered from a failure, so the relay can
 	// say why a new product is not appearing instead of leaving it queued.
-	CanCreateItems   bool   `json:"canCreateItems"`
+	CanCreateItems bool `json:"canCreateItems"`
 }
 
 // Heartbeat is what drives the device's status bar. Operators tolerate delay;
@@ -87,12 +87,12 @@ type Heartbeat struct {
 	// anyone knows is a despatch checked against a balance from hours ago.
 	SyncError string `json:"syncError,omitempty"`
 
-	Health      string    `json:"health"` // ONLINE|BUSY|COMPANY_CLOSED|OFFLINE|UNKNOWN
-	LastSeen    time.Time `json:"lastSeen"`
-	LastError   string    `json:"lastError,omitempty"`
-	QueuedJobs  int       `json:"queuedJobs"`
-	FailedJobs  int       `json:"failedJobs"`
-	SentAt      time.Time `json:"sentAt"`
+	Health     string    `json:"health"` // ONLINE|BUSY|COMPANY_CLOSED|OFFLINE|UNKNOWN
+	LastSeen   time.Time `json:"lastSeen"`
+	LastError  string    `json:"lastError,omitempty"`
+	QueuedJobs int       `json:"queuedJobs"`
+	FailedJobs int       `json:"failedJobs"`
+	SentAt     time.Time `json:"sentAt"`
 }
 
 // JobKind distinguishes the two flows.
@@ -139,7 +139,7 @@ const (
 type Box struct {
 	// BoxSerial becomes the Tally batch name verbatim. No transform, so an
 	// outgoing scan reproduces the receipt's batch name byte for byte.
-	BoxSerial string `json:"boxSerial"`
+	BoxSerial string  `json:"boxSerial"`
 	Qty       float64 `json:"qty"`
 	// MfgDate derived from the serial's date prefix, when it parsed. A
 	// calendar date, never an instant -- see the Date type.
@@ -162,10 +162,10 @@ type Box struct {
 // connector asserts it again before posting, because splitting an item across
 // lines is accepted by Tally and quietly ruins its stock reports.
 type Line struct {
-	StockItemName string  `json:"stockItemName"`
-	Unit          string  `json:"unit"`
-	Description   string  `json:"description,omitempty"`
-	Boxes         []Box   `json:"boxes"`
+	StockItemName string `json:"stockItemName"`
+	Unit          string `json:"unit"`
+	Description   string `json:"description,omitempty"`
+	Boxes         []Box  `json:"boxes"`
 }
 
 // TotalQty sums the boxes.
@@ -233,12 +233,18 @@ type JobResult struct {
 // SyncPush carries what the relay caches and fans out to devices, so scanning
 // and validation keep working with no signal at the dock.
 type SyncPush struct {
-	Company   string         `json:"company"`
-	SyncedAt  time.Time      `json:"syncedAt"`
-	Items     []SyncItem     `json:"items,omitempty"`
-	Godowns   []string       `json:"godowns,omitempty"`
-	Balances  []SyncBalance  `json:"balances,omitempty"`
-	Orders    []SyncOrder    `json:"orders,omitempty"`
+	Company  string    `json:"company"`
+	SyncedAt time.Time `json:"syncedAt"`
+	// Deliberately NOT omitempty.
+	//
+	// An empty list is a fact -- "Tally has no stock items" -- and omitting it
+	// makes that indistinguishable from "this message carries no master data".
+	// The relay could then never tell that something had been deleted, so it
+	// kept resolving part numbers to items Tally no longer had.
+	Items    []SyncItem    `json:"items"`
+	Godowns  []string      `json:"godowns"`
+	Balances []SyncBalance `json:"balances"`
+	Orders   []SyncOrder   `json:"orders"`
 }
 
 type SyncItem struct {

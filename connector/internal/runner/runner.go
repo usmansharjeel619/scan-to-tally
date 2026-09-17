@@ -4,9 +4,9 @@
 // enforces three things in a fixed order, because each one is cheaper and safer
 // than the next:
 //
-//	1. Idempotency  -- has this session already reached Tally? Never post twice.
-//	2. Pre-flight   -- does the live stock actually support this movement?
-//	3. Import       -- only now do we change anything.
+//  1. Idempotency  -- has this session already reached Tally? Never post twice.
+//  2. Pre-flight   -- does the live stock actually support this movement?
+//  3. Import       -- only now do we change anything.
 //
 // There is exactly ONE worker. Tally's gateway is serial; concurrency here buys
 // nothing and risks partially applied vouchers.

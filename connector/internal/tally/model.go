@@ -65,7 +65,7 @@ func (q Qty) String() string {
 type BatchAllocation struct {
 	// BatchName is the box serial, stored raw with no transform, so an
 	// outgoing scan reproduces the receipt's batch name byte for byte.
-	BatchName string
+	BatchName  string
 	GodownName string
 	Qty        Qty
 

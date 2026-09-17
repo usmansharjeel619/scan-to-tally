@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"time"
 
@@ -35,10 +36,10 @@ var version = "0.1.0"
 
 type Config struct {
 	Tally struct {
-		BaseURL       string `json:"baseUrl"`
-		Company       string `json:"company"`
-		TimeoutSec    int    `json:"timeoutSec"`
-		ProbeSeconds  int    `json:"probeSeconds"`
+		BaseURL      string `json:"baseUrl"`
+		Company      string `json:"company"`
+		TimeoutSec   int    `json:"timeoutSec"`
+		ProbeSeconds int    `json:"probeSeconds"`
 		// TDL overrides the built-in collection queries. Tally's TDL surface
 		// varies by version and configuration, so a site must be correctable
 		// from this file rather than by rebuilding the service.
@@ -261,9 +262,9 @@ func newLogger(level, file string) *slog.Logger {
 // healthAdapter narrows the Tally client to what the heartbeat needs.
 type healthAdapter struct{ c *tally.Client }
 
-func (h healthAdapter) Health() string       { return string(h.c.Health()) }
-func (h healthAdapter) LastSeen() time.Time  { return h.c.LastSeen() }
-func (h healthAdapter) LastError() string    { return h.c.LastError() }
+func (h healthAdapter) Health() string      { return string(h.c.Health()) }
+func (h healthAdapter) LastSeen() time.Time { return h.c.LastSeen() }
+func (h healthAdapter) LastError() string   { return h.c.LastError() }
 
 // makeSyncer reads the master data the relay caches and fans out to devices.
 func makeSyncer(tc *tally.Client) relayclient.Syncer {
@@ -299,7 +300,22 @@ func makeSyncer(tc *tally.Client) relayclient.Syncer {
 		}
 
 		out := &protocol.SyncPush{Company: tc.Company(), SyncedAt: time.Now()}
+		// Never nil: an empty list has to reach the relay as an empty list, or
+		// it cannot tell that everything has been deleted.
+		out.Items = []protocol.SyncItem{}
+		out.Balances = []protocol.SyncBalance{}
+		out.Orders = []protocol.SyncOrder{}
+
+		// Godowns read in their own right rather than inferred from balances,
+		// which a company holding no stock cannot provide.
+		out.Godowns = []string{}
+		if gs, err := tc.ListGodowns(ctx); err == nil {
+			out.Godowns = append(out.Godowns, gs...)
+		}
 		godowns := map[string]bool{}
+		for _, g := range out.Godowns {
+			godowns[g] = true
+		}
 
 		for _, i := range items {
 			out.Items = append(out.Items, protocol.SyncItem{
@@ -316,8 +332,12 @@ func makeSyncer(tc *tally.Client) relayclient.Syncer {
 				godowns[b.GodownName] = true
 			}
 		}
+		// A godown that only shows up on a balance, in case the godown list
+		// missed one.
 		for g := range godowns {
-			out.Godowns = append(out.Godowns, g)
+			if !slices.Contains(out.Godowns, g) {
+				out.Godowns = append(out.Godowns, g)
+			}
 		}
 		for _, o := range orders {
 			if o.IsFullyDelivered() {

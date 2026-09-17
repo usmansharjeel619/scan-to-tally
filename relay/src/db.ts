@@ -279,11 +279,26 @@ export interface SyncOrder {
 export function applySync(
   db: DB,
   data: { items?: SyncItem[]; godowns?: string[]; balances?: SyncBalance[]; orders?: SyncOrder[] },
-): void {
+): { items: number; bindings: number } | null {
   const at = nowIso();
+  let syncRemovals: { items: number; bindings: number } | null = null;
 
   const tx = db.transaction(() => {
-    if (data.items?.length) {
+    // Replaced wholesale, not merged.
+    //
+    // These were upserted and never cleared, so anything Tally stopped sending
+    // lived here for ever. A stock item deleted in Tally went on resolving
+    // here, and a scan against it was accepted for a product that no longer
+    // existed -- the voucher could only ever be refused.
+    //
+    // The connector aborts a sync if any of its queries fail, so an empty list
+    // means Tally genuinely holds nothing rather than that something went
+    // wrong. Absent (undefined) still means "not included", and is left alone.
+    if (Array.isArray(data.items)) {
+      const removed = db.prepare(
+        `DELETE FROM stock_items WHERE name NOT IN (SELECT value FROM json_each(?))`,
+      ).run(JSON.stringify(data.items.map((i) => i.name))).changes;
+
       const up = db.prepare(`
         INSERT INTO stock_items (name, alias, part_no, base_units, has_batches, synced_at)
         VALUES (?,?,?,?,?,?)
@@ -294,9 +309,23 @@ export function applySync(
       for (const i of data.items) {
         up.run(i.name, i.alias ?? '', i.partNo ?? '', i.baseUnits, i.hasBatches ? 1 : 0, at);
       }
+
+      // A binding is a shortcut to an item. When the item goes, the shortcut
+      // is a trap: it resolves a part number to something Tally cannot accept.
+      const orphaned = db.prepare(
+        `DELETE FROM pid_bindings
+          WHERE stock_item_name NOT IN (SELECT name FROM stock_items)`,
+      ).run().changes;
+
+      if (removed || orphaned) {
+        syncRemovals = { items: removed, bindings: orphaned };
+      }
     }
 
-    if (data.godowns?.length) {
+    if (Array.isArray(data.godowns)) {
+      db.prepare(
+        `DELETE FROM godowns WHERE name NOT IN (SELECT value FROM json_each(?))`,
+      ).run(JSON.stringify(data.godowns));
       const up = db.prepare(
         `INSERT INTO godowns (name, synced_at) VALUES (?,?)
          ON CONFLICT(name) DO UPDATE SET synced_at=excluded.synced_at`);
@@ -336,6 +365,7 @@ export function applySync(
   });
 
   tx();
+  return syncRemovals;
 }
 
 // --- PID resolution ---------------------------------------------------------

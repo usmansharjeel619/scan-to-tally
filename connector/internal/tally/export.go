@@ -68,8 +68,8 @@ const (
 
 // TDLOverrides lets a site correct a collection definition without a rebuild.
 type TDLOverrides struct {
-	Companies     string `json:"companies,omitempty"`
-	StockItems    string `json:"stockItems,omitempty"`
+	Companies       string `json:"companies,omitempty"`
+	StockItems      string `json:"stockItems,omitempty"`
 	BatchBalances   string `json:"batchBalances,omitempty"`
 	SalesOrders     string `json:"salesOrders,omitempty"`
 	OrderFulfilment string `json:"orderFulfilment,omitempty"`

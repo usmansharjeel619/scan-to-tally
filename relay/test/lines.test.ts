@@ -396,3 +396,64 @@ test('two boxes of one product post as ONE voucher line with two batches', async
     [['BOX-A', 2], ['BOX-B', 4]],
   );
 });
+
+test('an item deleted in Tally stops resolving here', async () => {
+  // It used to live on for ever: masters were upserted and never cleared, so a
+  // part number kept resolving to a product Tally no longer had, and the
+  // voucher built from it could only be refused.
+  const { applySync, resolvePid } = await import('../src/db.ts');
+
+  applySync(db, {
+    items: [
+      { name: KNOWN_ITEM, baseUnits: 'NO', hasBatches: true },
+      { name: '4190-0001 DOOMED PRODUCT', baseUnits: 'NO', hasBatches: true },
+    ],
+    godowns: [GODOWN],
+    balances: [],
+  } as any);
+  assert.ok(resolvePid(db, '4190-0001'), 'resolves while Tally has it');
+
+  // Tally now reports only the survivor.
+  const removed = applySync(db, {
+    items: [{ name: KNOWN_ITEM, baseUnits: 'NO', hasBatches: true }],
+    godowns: [GODOWN],
+    balances: [],
+  } as any);
+
+  assert.equal(resolvePid(db, '4190-0001'), null, 'must stop resolving once deleted');
+  assert.ok(resolvePid(db, KNOWN_PID), 'the survivor is untouched');
+  assert.equal(removed?.items, 1, 'the removal is reported, not silent');
+});
+
+test('a binding to a deleted item goes with it', async () => {
+  const { applySync, resolvePid } = await import('../src/db.ts');
+
+  applySync(db, {
+    items: [{ name: '4190-0002 ALSO DOOMED', baseUnits: 'NO', hasBatches: true }],
+    godowns: [GODOWN], balances: [],
+  } as any);
+  db.prepare(`INSERT INTO pid_bindings (pid, stock_item_name, description, source, bound_by, bound_at)
+              VALUES ('4190-0002','4190-0002 ALSO DOOMED','','AUTO_CREATED','test', ?)`).run(nowIso());
+  assert.ok(resolvePid(db, '4190-0002'));
+
+  // A binding outlives its item unless it is cleaned up, and then it resolves
+  // a part number straight to something Tally will refuse.
+  const removed = applySync(db, { items: [], godowns: [GODOWN], balances: [] } as any);
+
+  assert.equal(resolvePid(db, '4190-0002'), null);
+  assert.equal(removed?.bindings, 1);
+});
+
+test('a sync that carries no item list at all leaves the cache alone', async () => {
+  // Absent is not the same as empty: a message that says nothing about items
+  // must not be read as "Tally has none".
+  const { applySync, resolvePid } = await import('../src/db.ts');
+
+  applySync(db, {
+    items: [{ name: KNOWN_ITEM, baseUnits: 'NO', hasBatches: true }],
+    godowns: [GODOWN], balances: [],
+  } as any);
+
+  applySync(db, { balances: [] } as any);
+  assert.ok(resolvePid(db, KNOWN_PID), 'items must survive a message that omits them');
+});

@@ -1,6 +1,7 @@
 package com.acme.scantotally.data
 
 import android.content.Context
+import com.acme.scantotally.DeviceConfig
 import com.acme.scantotally.feedback.Beep
 import com.acme.scantotally.scan.BarcodeRegistry
 import com.acme.scantotally.scan.Outcome
@@ -11,6 +12,7 @@ import com.acme.scantotally.scan.rejectMessage
 import com.acme.scantotally.scan.tailOf
 import com.acme.scantotally.scan.wrongBarcodeMessage
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.max
@@ -93,6 +95,17 @@ class Repository(context: Context, private val api: RelayApi?) {
     private val dao = ScanDatabase.get(context).dao()
     private val registry = BarcodeRegistry.default
 
+    /**
+     * The Tally company this handset last synced against.
+     *
+     * Read from the device settings rather than held in memory, because the
+     * answer has to survive the app being killed with scans still on it.
+     */
+    private val config = DeviceConfig(context.applicationContext)
+
+    private suspend fun configCompany(): String = config.company.first()
+    private suspend fun setConfigCompany(name: String) = config.setCompany(name)
+
     // --- sessions ---
 
     /** The id is minted here so it survives being offline and never changes. */
@@ -108,7 +121,10 @@ class Repository(context: Context, private val api: RelayApi?) {
 
         val id = UUID.randomUUID().toString()
         dao.upsertSession(
-            SessionEntity(id = id, kind = kind, godown = godown, party = party, salesOrder = salesOrder),
+            SessionEntity(
+                id = id, kind = kind, godown = godown, party = party,
+                salesOrder = salesOrder, company = configCompany(),
+            ),
         )
         runCatching {
             api?.createSession(CreateSessionRequest(id, kind, party, salesOrder, godown))
@@ -711,6 +727,23 @@ class Repository(context: Context, private val api: RelayApi?) {
      * worker delivers it whenever there is signal again.
      */
     suspend fun submit(sessionId: String, scope: String = "PARTIAL"): SubmitResponse? {
+        // Counted against one company, posted into another, is stock appearing
+        // somewhere it never was. Refused rather than reconciled: nobody can
+        // say afterwards which company a box was really on.
+        val s = dao.session(sessionId)
+        val now = configCompany()
+        if (s != null && s.company.isNotBlank() && now.isNotBlank() && s.company != now) {
+            dao.setSessionResult(
+                sessionId, "DRAFT", "", "BUSINESS",
+                "This was counted against ${s.company}, but Tally now has $now open. " +
+                    "It cannot be posted into a different company.",
+            )
+            return SubmitResponse(
+                sessionId = sessionId, ok = false,
+                message = "Counted against ${s.company}; Tally now has $now open.",
+            )
+        }
+
         dao.setSessionState(sessionId, "QUEUED")
 
         // Never submit ahead of the scans. If the relay is missing even one
@@ -800,6 +833,21 @@ class Repository(context: Context, private val api: RelayApi?) {
     /** Pulls everything the device needs to keep working without a network. */
     suspend fun syncMasters(): Boolean = runCatching {
         val s = api?.sync() ?: return false
+
+        // Tally can move to another PC, or open a different company on the
+        // same one. Everything cached here describes ONE company: its items,
+        // its balances, its orders, and which of its boxes have been received
+        // before. None of it survives the change, and a box history that does
+        // would refuse a carton as a duplicate of one received by a different
+        // business entirely.
+        val previous = configCompany()
+        if (s.company.isNotBlank() && previous.isNotBlank() && previous != s.company) {
+            dao.clearReceivedBoxes()
+            dao.clearBalances()
+            dao.clearOrderLines()
+            dao.clearOrders()
+        }
+        if (s.company.isNotBlank()) setConfigCompany(s.company)
 
         // A product the operator described is bound here the moment they
         // describe it, so the rest of the pallet does not prompt again. Until

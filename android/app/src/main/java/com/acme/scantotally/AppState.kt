@@ -33,10 +33,25 @@ class DeviceConfig(private val context: Context) {
     private val keyGodown = stringPreferencesKey("godown")
     private val keyOperator = stringPreferencesKey("operator")
 
+    /**
+     * The Tally company this handset last synced against.
+     *
+     * Not something the operator sets: it is whatever the connector reports.
+     * It is kept so a change can be NOTICED -- moving Tally to another PC, or
+     * opening a different company on the same one, invalidates every cached
+     * item, balance and box history on this phone.
+     */
+    private val keyCompany = stringPreferencesKey("company")
+
     val relayUrl: Flow<String> = context.dataStore.data.map { it[keyRelayUrl] ?: "" }
     val token: Flow<String> = context.dataStore.data.map { it[keyToken] ?: "" }
     val godown: Flow<String> = context.dataStore.data.map { it[keyGodown] ?: "Main Store" }
     val operator: Flow<String> = context.dataStore.data.map { it[keyOperator] ?: "" }
+    val company: Flow<String> = context.dataStore.data.map { it[keyCompany] ?: "" }
+
+    suspend fun setCompany(name: String) {
+        context.dataStore.edit { it[keyCompany] = name.trim() }
+    }
 
     suspend fun isProvisioned(): Boolean =
         relayUrl.first().isNotBlank() && token.first().isNotBlank()

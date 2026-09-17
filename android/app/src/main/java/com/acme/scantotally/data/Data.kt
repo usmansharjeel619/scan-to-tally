@@ -119,6 +119,15 @@ data class SessionEntity(
     @PrimaryKey val id: String,
     val kind: String,              // INCOMING | OUTGOING | STOCKCHECK
     val godown: String,
+    /**
+     * The Tally company this receipt was raised against.
+     *
+     * Scans are held on the phone until there is signal, and Tally can move to
+     * another PC or open a different company in between. Without this, boxes
+     * counted against one company would post into another, which is stock
+     * appearing somewhere it never was.
+     */
+    val company: String = "",
     val party: String = "",
     val salesOrder: String = "",
     val scope: String = "PARTIAL", // stock check only
@@ -221,6 +230,9 @@ interface ScanDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertReceivedBoxes(boxes: List<ReceivedBoxEntity>)
+
+    @Query("DELETE FROM received_boxes")
+    suspend fun clearReceivedBoxes()
 
     @Query("DELETE FROM batch_balances")
     suspend fun clearBalances()
@@ -507,7 +519,7 @@ interface ScanDao {
     // Bumped to wipe the handset's local scan history for a clean test.
     // fallbackToDestructiveMigration drops the database on a version change,
     // and provisioning lives in DataStore, so the device stays set up.
-    version = 4,
+    version = 5,
     exportSchema = false,
 )
 abstract class ScanDatabase : RoomDatabase() {

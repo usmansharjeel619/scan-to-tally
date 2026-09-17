@@ -175,6 +175,30 @@ CREATE TABLE IF NOT EXISTS session_lines (
 CREATE INDEX IF NOT EXISTS idx_lines_session ON session_lines(session_id);
 CREATE INDEX IF NOT EXISTS idx_lines_box ON session_lines(pid, box_serial);
 
+-- Products an operator met on the dock that Tally has never heard of.
+--
+-- The operator fills these in once, with the carton in their hand and the
+-- description printed on the label. A supervisor then approves, and only then
+-- is anything written to Tally. A stock item cannot be deleted once it has
+-- transactions, so approval is the last point at which a mistake is cheap.
+CREATE TABLE IF NOT EXISTS proposed_items (
+  pid          TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,          -- "<PID> <DESCRIPTION>", the live convention
+  description  TEXT NOT NULL DEFAULT '',
+  base_units   TEXT NOT NULL DEFAULT '',
+  batchwise    INTEGER NOT NULL DEFAULT 1,
+  track_mfg    INTEGER NOT NULL DEFAULT 1,
+  state        TEXT NOT NULL DEFAULT 'PENDING',  -- PENDING|APPROVED|REJECTED|FAILED
+  proposed_by  TEXT NOT NULL DEFAULT '',
+  proposed_at  TEXT NOT NULL,
+  session_id   TEXT NOT NULL DEFAULT '',
+  raw_payload  TEXT NOT NULL DEFAULT '',
+  decided_by   TEXT NOT NULL DEFAULT '',
+  decided_at   TEXT,
+  error        TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_proposed_state ON proposed_items(state, proposed_at);
+
 CREATE TABLE IF NOT EXISTS audit_log (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
   at        TEXT NOT NULL,

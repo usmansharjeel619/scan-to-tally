@@ -359,6 +359,36 @@ class Repository(context: Context, private val api: RelayApi?) {
         return id
     }
 
+    /**
+     * Records a new product, and binds it locally straight away.
+     *
+     * The local binding matters: the next carton of the same product in the
+     * SAME session must resolve rather than prompting again. Nobody wants to be
+     * asked what a thing is eighteen times while unloading a pallet.
+     */
+    suspend fun proposeNewItem(
+        sessionId: String, pid: String, description: String,
+        unit: String, raw: String, operator: String,
+    ): Boolean {
+        val name = "$pid $description"
+        dao.upsertBindings(listOf(PidBindingEntity(pid, name, description)))
+        dao.upsertItems(listOf(StockItemEntity(name = name, baseUnits = unit, hasBatches = true)))
+        // Backfill the lines already scanned for this PID in this session.
+        for (l in dao.lines(sessionId)) {
+            if (l.pid == pid && l.stockItemName.isEmpty()) {
+                dao.setLineQty(l.id, l.qty, l.flags.replace("UNRESOLVED_PID", "PROPOSED").trim(','))
+            }
+        }
+        return runCatching {
+            api?.proposeItem(
+                ProposeItemRequest(
+                    pid = pid, description = description, baseUnits = unit,
+                    sessionId = sessionId, raw = raw, proposedBy = operator,
+                ),
+            )?.ok ?: false
+        }.getOrDefault(false)
+    }
+
     suspend fun updateLineQty(lineId: Long, qty: Double, flags: String) =
         dao.setLineQty(lineId, qty, flags)
 

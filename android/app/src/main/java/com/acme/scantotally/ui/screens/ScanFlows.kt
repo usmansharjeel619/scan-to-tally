@@ -89,12 +89,15 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>) {
     var sessionId by remember { mutableStateOf<String?>(null) }
     var last by remember { mutableStateOf<ScanDecision?>(null) }
     var pendingOverride by remember { mutableStateOf<RawScan?>(null) }
+    var newProduct by remember { mutableStateOf<ScanDecision?>(null) }
+    var operator by remember { mutableStateOf("") }
     var submitting by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
         val r = app.repository()
         repo = r
+        operator = app.config.operator.first()
         sessionId = r.openSession("INCOMING", app.config.godown.first())
     }
 
@@ -109,7 +112,15 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>) {
             last = d
             app.feedback.play(d.beep)
             if (d.outcome == Outcome2.ACCEPT || d.outcome == Outcome2.FLAGGED) {
+                // The box is counted FIRST. Whatever happens next, the count is
+                // safe -- the prompt below is only ever about the description.
                 r.commitLine(sid, d)
+
+                // Ask right now, while the carton is still in their hands and
+                // the description is printed on the label in front of them. By
+                // the end of the session the box is on a shelf and they would
+                // be recalling rather than reading.
+                if (d.flags.contains("UNRESOLVED_PID")) newProduct = d
             } else if (d.overridable) {
                 // The only place the operator is asked anything mid-flow, and
                 // only because receiving a returned box really does happen.
@@ -146,6 +157,21 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>) {
             }
         },
     )
+
+    newProduct?.let { d ->
+        NewProductDialog(
+            decision = d,
+            onSkip = { newProduct = null },
+            onSave = { description, unit ->
+                scope.launch {
+                    val r = repo ?: return@launch
+                    val sid = sessionId ?: return@launch
+                    r.proposeNewItem(sid, d.pid, description, unit, d.raw, operator)
+                    newProduct = null
+                }
+            },
+        )
+    }
 
     pendingOverride?.let { scan ->
         AlertDialog(
@@ -606,6 +632,88 @@ private fun Key(label: String, modifier: Modifier = Modifier, accent: Boolean = 
             color = if (accent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
         )
     }
+}
+
+/**
+ * Asked the moment an unrecognised product is scanned.
+ *
+ * The box has ALREADY been counted by the time this appears, so "Later" costs
+ * nothing but the description -- the receipt is still correct either way. That
+ * is what makes it safe to interrupt at all.
+ *
+ * Nothing here creates anything in Tally. It records what the operator can see
+ * on the carton; a supervisor decides afterwards whether it becomes a real
+ * stock item, because that cannot be undone once it has transactions.
+ */
+@Composable
+private fun NewProductDialog(
+    decision: ScanDecision,
+    onSkip: () -> Unit,
+    onSave: (description: String, unit: String) -> Unit,
+) {
+    var description by remember(decision.pid) { mutableStateOf("") }
+    var unit by remember(decision.pid) { mutableStateOf("NO") }
+
+    AlertDialog(
+        onDismissRequest = onSkip,
+        title = { Text("New product") },
+        text = {
+            Column {
+                Text(
+                    "Tally has not seen this part number before.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    decision.pid,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontFamily = FontFamily.Monospace,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "${fmtQty(decision.labelQty)} already counted - box ${tail(decision.boxSerial)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = AcceptGreen,
+                )
+
+                Spacer(Modifier.height(16.dp))
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    label = { Text("What is it?") },
+                    placeholder = { Text("SSD SENSOR BASE") },
+                    supportingText = { Text("Copy the DESCRIPTION line from the label") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = unit,
+                    onValueChange = { unit = it.uppercase().take(8) },
+                    label = { Text("Unit") },
+                    supportingText = { Text("NO for pieces, mts for metres") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "This goes to a supervisor to approve. Nothing is added to " +
+                        "Tally until they do.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(description.trim(), unit.trim().ifEmpty { "NO" }) },
+                enabled = description.trim().length >= 3,
+            ) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = onSkip) { Text("Later") } },
+    )
 }
 
 // --- shared scaffold --------------------------------------------------------

@@ -62,6 +62,14 @@ type Config struct {
 		MaxBytes int  `json:"maxBytes"`
 	} `json:"diagnostics"`
 
+	// Masters controls whether this connector may write to Tally's item
+	// master. OFF by default: a warehouse scanner creating accounting records
+	// is a decision a site makes, not something that arrives switched on.
+	Masters struct {
+		AllowCreate   bool   `json:"allowCreate"`
+		DefaultParent string `json:"defaultParent"`
+	} `json:"masters"`
+
 	DBPath string `json:"dbPath"`
 	// LogFile is where a service writes its log, since it has no console.
 	LogFile string `json:"logFile"`
@@ -145,6 +153,22 @@ func main() {
 		})
 		log.Warn("DIAGNOSTICS ENABLED -- the relay can run read-only Tally queries. " +
 			"Turn this off in the config file when Phase 0 is finished.")
+	}
+
+	if cfg.Masters.AllowCreate {
+		policy := tally.MasterPolicy{
+			AllowCreate:   true,
+			DefaultParent: cfg.Masters.DefaultParent,
+		}
+		rc.SetItemCreator(func(ctx context.Context, j protocol.CreateStockItemJob) (string, error) {
+			return tc.CreateStockItem(ctx, policy, tally.NewStockItem{
+				Name: j.Name, BaseUnits: j.BaseUnits,
+				Batchwise: j.Batchwise, TrackMfgDate: j.TrackMfgDate,
+			})
+		})
+		log.Warn("MASTER CREATION ENABLED -- an approved proposal can add a stock item "+
+			"to Tally. A stock item cannot be deleted once it has transactions.",
+			"company", cfg.Tally.Company, "defaultGroup", cfg.Masters.DefaultParent)
 	}
 
 	run := runner.New(st, tc, rc, log, runner.Options{})

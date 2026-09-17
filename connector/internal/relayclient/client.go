@@ -8,6 +8,7 @@
 package relayclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -73,9 +74,10 @@ type Client struct {
 	cfg    Config
 	st     *store.Store
 	health HealthSource
-	sync   Syncer
-	query  Querier
-	log    *slog.Logger
+	sync       Syncer
+	query      Querier
+	createItem ItemCreator
+	log        *slog.Logger
 
 	mu   sync.Mutex
 	conn *websocket.Conn
@@ -179,6 +181,12 @@ func (c *Client) session(ctx context.Context) error {
 
 		switch frame.Type {
 		case protocol.MsgJob:
+			// A master creation is administrative, not warehouse work, so it
+			// does not go through the durable voucher queue.
+			if bytes.Contains(frame.Payload, []byte(`"CREATE_STOCK_ITEM"`)) {
+				go c.handleCreateItem(sessCtx, frame.ID, frame.Payload)
+				continue
+			}
 			c.acceptJob(sessCtx, frame.ID, frame.Payload)
 		case protocol.MsgHelloAck:
 			// nothing to do
@@ -187,6 +195,42 @@ func (c *Client) session(ctx context.Context) error {
 		case protocol.MsgDiagReq:
 			go c.handleDiag(sessCtx, frame.Payload)
 		}
+	}
+}
+
+// ItemCreator creates a stock item in Tally. Nil means this connector is not
+// permitted to write to the item master, which is the default.
+type ItemCreator func(ctx context.Context, j protocol.CreateStockItemJob) (string, error)
+
+// SetItemCreator enables supervisor-approved master creation.
+func (c *Client) SetItemCreator(f ItemCreator) { c.createItem = f }
+
+// handleCreateItem runs a supervisor-approved stock item creation.
+//
+// Kept off the job queue deliberately: this is not warehouse work that must
+// survive a restart and drain in order. It is a one-off administrative act
+// that a human is waiting on, and if it fails they should be told now.
+func (c *Client) handleCreateItem(ctx context.Context, jobID string, payload json.RawMessage) {
+	var j protocol.CreateStockItemJob
+	if err := json.Unmarshal(payload, &j); err != nil {
+		c.log.Error("unreadable create-item job", "job", jobID, "err", err)
+		return
+	}
+	res := protocol.JobResult{SessionID: j.PID, JobID: jobID, CompletedAt: time.Now()}
+
+	if c.createItem == nil {
+		res.ErrorClass, res.ErrorCode = "BUSINESS", "MASTER_CREATE_DISABLED"
+		res.ErrorMessage = "This connector is not permitted to create stock items."
+		c.log.Warn("refused a create-item job: master creation is disabled", "pid", j.PID)
+	} else if name, err := c.createItem(ctx, j); err != nil {
+		res.ErrorClass, res.ErrorCode = "BUSINESS", "ITEM_CREATE_FAILED"
+		res.ErrorMessage = err.Error()
+	} else {
+		res.OK = true
+		res.TallyVoucherID = name
+	}
+	if err := c.send(ctx, protocol.Frame{Type: protocol.MsgJobResult, Payload: res}); err != nil {
+		c.log.Warn("could not report create-item result", "pid", j.PID, "err", err)
 	}
 }
 

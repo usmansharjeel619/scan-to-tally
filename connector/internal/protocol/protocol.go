@@ -91,7 +91,24 @@ const (
 	KindIncoming   JobKind = "INCOMING"
 	KindOutgoing   JobKind = "OUTGOING"
 	KindStockCheck JobKind = "STOCKCHECK"
+	// KindCreateStockItem adds a product to Tally's item master. Issued only
+	// after a supervisor has approved it; an operator cannot cause one.
+	KindCreateStockItem JobKind = "CREATE_STOCK_ITEM"
 )
+
+// CreateStockItemJob is a supervisor-approved new product.
+//
+// Typed rather than free-form XML on purpose: the connector builds the request
+// itself, so no caller can hand Tally a document. A stock item cannot be
+// deleted once it has transactions, so this is effectively permanent.
+type CreateStockItemJob struct {
+	PID          string `json:"pid"`
+	Name         string `json:"name"`
+	BaseUnits    string `json:"baseUnits"`
+	Batchwise    bool   `json:"batchwise"`
+	TrackMfgDate bool   `json:"trackMfgDate"`
+	Company      string `json:"company"`
+}
 
 // CountScope decides what an inventory check is allowed to write.
 //

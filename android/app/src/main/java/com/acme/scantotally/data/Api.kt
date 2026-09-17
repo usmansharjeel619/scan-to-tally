@@ -199,6 +199,29 @@ data class ApiUnresolvedPid(
 )
 
 @Serializable
+data class ProposeItemRequest(
+    val pid: String,
+    val description: String,
+    val baseUnits: String = "NO",
+    val batchwise: Boolean = true,
+    val trackMfgDate: Boolean = true,
+    val sessionId: String = "",
+    val raw: String = "",
+    val proposedBy: String = "",
+)
+
+@Serializable
+data class ProposeItemResponse(
+    val ok: Boolean = false,
+    val pid: String = "",
+    val name: String = "",
+    val state: String = "",
+    val error: String? = null,
+    val stockItemName: String? = null,
+    val message: String? = null,
+)
+
+@Serializable
 data class BindRequest(
     val pid: String,
     val stockItemName: String,
@@ -265,6 +288,16 @@ class RelayApi(
     suspend fun retry(sessionId: String) {
         client.post("$baseUrl/api/v1/sessions/$sessionId/retry") { setBody(SubmitRequest()) }
     }
+
+    /**
+     * Describes a product Tally has never seen.
+     *
+     * Sent the moment it is scanned, while the operator still has the carton in
+     * hand and the description printed on the label -- by the end of a session
+     * the box is on a shelf and they are recalling, not reading.
+     */
+    suspend fun proposeItem(req: ProposeItemRequest): ProposeItemResponse =
+        client.post("$baseUrl/api/v1/proposed-items") { setBody(req) }.body()
 
     suspend fun searchItems(q: String): List<ApiItem> =
         client.get("$baseUrl/api/v1/items?q=$q").body()

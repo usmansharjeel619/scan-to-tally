@@ -558,6 +558,133 @@ app.get('/api/v1/sessions/:id/variance', async (req, reply) => {
   return computeVariance(db, id, s.godown, scope);
 });
 
+// --- new products -----------------------------------------------------------
+
+/**
+ * An operator describing a product Tally has never seen.
+ *
+ * Captured at the END of a session, never mid-scan: the dock does not stop for
+ * data entry. The operator has the carton in hand and the description printed
+ * on the label, which makes them the right person to ask -- but at the right
+ * moment, not while they are holding a box.
+ */
+app.post('/api/v1/proposed-items', async (req, reply) => {
+  const d = requireDevice(req, reply);
+  if (!d) return;
+  const b = (req.body ?? {}) as any;
+
+  const pid = String(b.pid ?? '').trim();
+  const description = String(b.description ?? '').trim();
+  if (!pid || !description) {
+    return reply.code(400).send({ error: 'pid and description are required' });
+  }
+
+  // Already known? Then this is not a new product and nothing should be created.
+  const existing = resolvePid(db, pid);
+  if (existing) {
+    return reply.code(409).send({
+      error: 'already_known', stockItemName: existing.stockItemName,
+      message: `${pid} already resolves to "${existing.stockItemName}".`,
+    });
+  }
+
+  // The live catalogue names items "<PID> <DESCRIPTION>", and that convention
+  // is exactly what makes a scanned PID resolvable later. Compose it the same
+  // way rather than letting the name drift.
+  const name = `${pid} ${description}`;
+
+  db.prepare(`
+    INSERT INTO proposed_items
+      (pid, name, description, base_units, batchwise, track_mfg, state,
+       proposed_by, proposed_at, session_id, raw_payload)
+    VALUES (?,?,?,?,?,?,'PENDING',?,?,?,?)
+    ON CONFLICT(pid) DO UPDATE SET
+      name=excluded.name, description=excluded.description,
+      base_units=excluded.base_units, batchwise=excluded.batchwise,
+      track_mfg=excluded.track_mfg, state='PENDING',
+      proposed_by=excluded.proposed_by, proposed_at=excluded.proposed_at,
+      error=''`)
+    .run(pid, name, description, String(b.baseUnits ?? 'NO'),
+      b.batchwise === false ? 0 : 1, b.trackMfgDate === false ? 0 : 1,
+      b.proposedBy ?? d.operator, nowIso(), String(b.sessionId ?? ''),
+      String(b.raw ?? ''));
+
+  audit(db, `device:${d.id}`, 'ITEM_PROPOSED', pid, name);
+  return { ok: true, pid, name, state: 'PENDING' };
+});
+
+app.get('/api/v1/proposed-items', async (req, reply) => {
+  const d = requireDevice(req, reply);
+  if (!d) return;
+  return db.prepare(
+    `SELECT * FROM proposed_items WHERE state = 'PENDING' ORDER BY proposed_at`,
+  ).all();
+});
+
+/**
+ * The supervisor's tap. This is the only thing that causes a write to Tally's
+ * item master, and it is irreversible in practice -- Tally will not delete a
+ * stock item once it has transactions.
+ */
+app.post('/api/v1/proposed-items/:pid/approve', async (req, reply) => {
+  const d = requireDevice(req, reply);
+  if (!d) return;
+  const { pid } = req.params as { pid: string };
+  const b = (req.body ?? {}) as any;
+
+  const p = db.prepare(`SELECT * FROM proposed_items WHERE pid = ?`).get(pid) as any;
+  if (!p) return reply.code(404).send({ error: 'no_such_proposal' });
+  if (p.state === 'APPROVED') return { pid, state: 'APPROVED', alreadyDone: true };
+
+  // Last chance to notice it is not actually new.
+  const existing = resolvePid(db, pid);
+  if (existing) {
+    db.prepare(`UPDATE proposed_items SET state='REJECTED', decided_by=?, decided_at=?,
+                error='already resolves' WHERE pid=?`)
+      .run(d.operator || d.id, nowIso(), pid);
+    return reply.code(409).send({
+      error: 'already_known', stockItemName: existing.stockItemName,
+    });
+  }
+
+  // The supervisor may correct anything before it becomes permanent.
+  const name = String(b.name ?? p.name).trim();
+  const units = String(b.baseUnits ?? (p.base_units || 'NO')).trim();
+  const batchwise = b.batchwise === undefined ? !!p.batchwise : !!b.batchwise;
+
+  const sent = hub.dispatch(d.company, `mk-${pid}`, {
+    kind: 'CREATE_STOCK_ITEM',
+    pid, name, baseUnits: units, batchwise,
+    trackMfgDate: batchwise && !!p.track_mfg,
+    company: d.company,
+  });
+
+  if (!sent) {
+    return reply.code(503).send({
+      error: 'connector_offline',
+      message: 'The Tally connector is not connected, so nothing can be created yet. ' +
+        'The proposal is kept; approve again when it is back.',
+    });
+  }
+
+  db.prepare(`UPDATE proposed_items SET state='APPROVED', decided_by=?, decided_at=?,
+              name=?, base_units=?, batchwise=? WHERE pid=?`)
+    .run(d.operator || d.id, nowIso(), name, units, batchwise ? 1 : 0, pid);
+  audit(db, d.operator || `device:${d.id}`, 'ITEM_APPROVED', pid, name);
+
+  return { pid, name, state: 'APPROVED', dispatched: true };
+});
+
+app.post('/api/v1/proposed-items/:pid/reject', async (req, reply) => {
+  const d = requireDevice(req, reply);
+  if (!d) return;
+  const { pid } = req.params as { pid: string };
+  db.prepare(`UPDATE proposed_items SET state='REJECTED', decided_by=?, decided_at=? WHERE pid=?`)
+    .run(d.operator || d.id, nowIso(), pid);
+  audit(db, d.operator || `device:${d.id}`, 'ITEM_REJECTED', pid);
+  return { pid, state: 'REJECTED' };
+});
+
 // --- supervisor API ---------------------------------------------------------
 
 /** Everything waiting on a human. A failed post must never vanish. */
@@ -582,7 +709,11 @@ app.get('/api/v1/review', async (req, reply) => {
     SELECT sl.id, sl.session_id, sl.pid, sl.box_serial, sl.qty, sl.flags, sl.scanned_at
       FROM session_lines sl WHERE sl.flags != '' ORDER BY sl.id DESC LIMIT 200`).all();
 
-  return { failed, unresolvedPids: unresolved, flagged };
+  const proposed = db.prepare(
+    `SELECT pid, name, description, base_units, batchwise, proposed_by, proposed_at
+       FROM proposed_items WHERE state='PENDING' ORDER BY proposed_at`).all();
+
+  return { failed, unresolvedPids: unresolved, flagged, proposedItems: proposed };
 });
 
 /**

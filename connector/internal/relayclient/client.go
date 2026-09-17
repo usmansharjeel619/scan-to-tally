@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -81,13 +82,26 @@ type Client struct {
 
 	mu   sync.Mutex
 	conn *websocket.Conn
+
+	// Why master data last failed to refresh. Read by the heartbeat, so the
+	// relay and the handsets can say that figures have stopped moving instead
+	// of quietly serving stale ones.
+	lastSyncErr atomic.Value
+}
+
+// SyncError reports the most recent master sync failure, or empty.
+func (c *Client) SyncError() string {
+	v, _ := c.lastSyncErr.Load().(string)
+	return v
 }
 
 func New(cfg Config, st *store.Store, health HealthSource, sync Syncer, log *slog.Logger) *Client {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Client{cfg: cfg.withDefaults(), st: st, health: health, sync: sync, log: log}
+	c := &Client{cfg: cfg.withDefaults(), st: st, health: health, sync: sync, log: log}
+	c.lastSyncErr.Store("")
+	return c
 }
 
 // SetQuerier enables the Phase 0 read-only diagnostic channel. Leaving it unset
@@ -324,6 +338,7 @@ func (c *Client) heartbeatLoop(ctx context.Context) {
 		case <-t.C:
 			counts, _ := c.st.Counts(ctx)
 			hb := protocol.Heartbeat{
+				SyncError:  c.SyncError(),
 				Health:     c.health.Health(),
 				LastSeen:   c.health.LastSeen(),
 				LastError:  c.health.LastError(),
@@ -358,11 +373,15 @@ func (c *Client) pushSync(ctx context.Context) {
 	}
 	snap, err := c.sync(ctx)
 	if err != nil {
-		// Almost always "Tally is closed". Not worth more than a debug line;
-		// the heartbeat already tells the relay what state Tally is in.
-		c.log.Debug("master sync skipped", "err", err)
+		// Reported, not whispered. This was a debug line on the grounds that it
+		// is "almost always Tally is closed" -- and when it was not, master data
+		// silently stopped refreshing for hours with every figure on every
+		// handset frozen and nothing anywhere saying so.
+		c.lastSyncErr.Store(err.Error())
+		c.log.Warn("master sync failed", "err", err)
 		return
 	}
+	c.lastSyncErr.Store("")
 	if err := c.send(ctx, protocol.Frame{Type: protocol.MsgSyncPush, Payload: snap}); err != nil {
 		c.log.Warn("could not push master data", "err", err)
 		return

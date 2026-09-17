@@ -283,6 +283,10 @@ interface ScanDao {
     /**
      * Every receipt this device has made, saved ones included.
      *
+     * Receipts only: incoming and outgoing. A stock take is a check, not a
+     * receipt -- it is not a record of goods arriving or leaving, and listing
+     * it here made the list longer without making it more useful.
+     *
      * Deliberately not a queue of outstanding work. What an operator asks is
      * "did the delivery I scanned this morning go in?", and a list that drops
      * a receipt the moment it succeeds cannot answer that -- it only ever
@@ -294,8 +298,9 @@ interface ScanDao {
      */
     @Query(
         """SELECT s.* FROM sessions s
-           WHERE s.state != 'DRAFT'
-              OR EXISTS (SELECT 1 FROM session_lines l WHERE l.sessionId = s.id)
+           WHERE s.kind IN ('INCOMING', 'OUTGOING')
+             AND (s.state != 'DRAFT'
+                  OR EXISTS (SELECT 1 FROM session_lines l WHERE l.sessionId = s.id))
            ORDER BY s.createdAt DESC
            LIMIT 200"""
     )
@@ -314,10 +319,16 @@ interface ScanDao {
      * Anything not yet in Tally. The operator must always be able to see this
      * count -- work disappearing silently destroys trust faster than slow work.
      */
-    @Query("SELECT COUNT(*) FROM sessions WHERE state IN ('QUEUED','POSTING')")
+    @Query(
+        """SELECT COUNT(*) FROM sessions
+            WHERE state IN ('QUEUED','POSTING') AND kind IN ('INCOMING','OUTGOING')"""
+    )
     fun pendingCountFlow(): Flow<Int>
 
-    @Query("SELECT COUNT(*) FROM sessions WHERE state = 'FAILED'")
+    @Query(
+        """SELECT COUNT(*) FROM sessions
+            WHERE state = 'FAILED' AND kind IN ('INCOMING','OUTGOING')"""
+    )
     fun failedCountFlow(): Flow<Int>
 
     @Query("SELECT * FROM sessions WHERE state = :state ORDER BY createdAt")

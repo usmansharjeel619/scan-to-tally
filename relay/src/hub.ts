@@ -32,6 +32,8 @@ export interface ConnectorState {
    * nobody is watching.
    */
   canCreateItems: boolean;
+  /** Why master data last failed to refresh, as the connector reported it. */
+  syncError: string;
   connectedAt: string;
 }
 
@@ -116,6 +118,7 @@ export class ConnectorHub {
               queuedJobs: 0,
               failedJobs: 0,
               canCreateItems: !!p.canCreateItems,
+              syncError: '',
               connectedAt: nowIso(),
             },
           });
@@ -136,6 +139,7 @@ export class ConnectorHub {
           c.state.lastError = String(p.lastError ?? '');
           c.state.queuedJobs = Number(p.queuedJobs ?? 0);
           c.state.failedJobs = Number(p.failedJobs ?? 0);
+          c.state.syncError = String(p.syncError ?? '');
           break;
         }
 

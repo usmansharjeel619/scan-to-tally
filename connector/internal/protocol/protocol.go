@@ -80,6 +80,13 @@ type Hello struct {
 // they do not tolerate not knowing, so this is reported honestly rather than
 // smoothed over.
 type Heartbeat struct {
+	// SyncError is why master data last failed to refresh, or empty.
+	//
+	// Reported because a sync that fails forever in silence is indistinguishable
+	// from one that is working: stock figures simply stop moving, and the first
+	// anyone knows is a despatch checked against a balance from hours ago.
+	SyncError string `json:"syncError,omitempty"`
+
 	Health      string    `json:"health"` // ONLINE|BUSY|COMPANY_CLOSED|OFFLINE|UNKNOWN
 	LastSeen    time.Time `json:"lastSeen"`
 	LastError   string    `json:"lastError,omitempty"`

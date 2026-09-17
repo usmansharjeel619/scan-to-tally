@@ -504,7 +504,10 @@ interface ScanDao {
         SalesOrderEntity::class, SalesOrderLineEntity::class, ReceivedBoxEntity::class,
         SessionEntity::class, SessionLineEntity::class, CatalogueEntity::class,
     ],
-    version = 3,
+    // Bumped to wipe the handset's local scan history for a clean test.
+    // fallbackToDestructiveMigration drops the database on a version change,
+    // and provisioning lives in DataStore, so the device stays set up.
+    version = 4,
     exportSchema = false,
 )
 abstract class ScanDatabase : RoomDatabase() {

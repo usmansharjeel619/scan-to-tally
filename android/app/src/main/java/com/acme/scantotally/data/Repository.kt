@@ -84,6 +84,11 @@ data class StockLookup(
     val scannedBox: String = "",
     val raw: String = "",
     val message: String = "",
+    /**
+     * A receipt for this product has been sent but the figures predate it, so
+     * whatever is shown is already out of date. Not the same as zero.
+     */
+    val awaitingSync: Boolean = false,
 )
 
 private const val EPS = 1e-4
@@ -210,6 +215,8 @@ class Repository(context: Context, private val api: RelayApi?) {
         )
 
         val boxes = dao.balancesFor(resolved.stockItemName, godown)
+        val asOf = boxes.maxOfOrNull { it.syncedAt } ?: 0L
+
         return StockLookup(
             found = true,
             pid = pid,
@@ -219,7 +226,8 @@ class Repository(context: Context, private val api: RelayApi?) {
             total = boxes.sumOf { it.closingQty },
             godown = godown,
             boxes = boxes,
-            asOf = boxes.maxOfOrNull { it.syncedAt } ?: 0L,
+            asOf = asOf,
+            awaitingSync = dao.receivedSince(pid, asOf) > 0,
             scannedBox = fromCombined?.boxSerial.orEmpty(),
             raw = scan.data,
         )

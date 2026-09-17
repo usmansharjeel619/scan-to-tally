@@ -280,6 +280,25 @@ interface ScanDao {
     @Query("SELECT * FROM sales_order_lines WHERE voucherNumber = :order")
     suspend fun orderLines(order: String): List<SalesOrderLineEntity>
 
+    /**
+     * Whether this device has sent a receipt for a product that the stock
+     * figures cannot yet know about.
+     *
+     * Between posting a receipt and the next master sync there is a window
+     * where the product resolves -- it was created in Tally immediately -- but
+     * its quantity has not come back. Reporting zero there is not a delay, it
+     * is a wrong answer: zero means "none in stock".
+     */
+    @Query(
+        """SELECT COUNT(*) FROM session_lines l
+             JOIN sessions s ON s.id = l.sessionId
+            WHERE l.pid = :pid
+              AND s.kind = 'INCOMING'
+              AND s.state IN ('QUEUED','POSTING','POSTED')
+              AND s.createdAt > :since"""
+    )
+    suspend fun receivedSince(pid: String, since: Long): Int
+
     @Query("SELECT * FROM received_boxes WHERE pid = :pid AND boxSerial = :serial LIMIT 1")
     suspend fun receivedBox(pid: String, serial: String): ReceivedBoxEntity?
 

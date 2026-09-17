@@ -180,6 +180,20 @@ fun StockLookupScreen(nav: NavController, scans: Flow<RawScan>) {
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
                         )
+
+                        // A receipt has gone in that these figures predate, so
+                        // say so rather than presenting a stale number -- and
+                        // especially rather than presenting zero, which reads
+                        // as "none in stock" when it means "not counted yet".
+                        if (look.awaitingSync) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "A receipt for this product has not reached these " +
+                                    "figures yet. They refresh within two minutes.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                        }
                     }
                 }
 

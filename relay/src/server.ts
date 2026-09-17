@@ -311,6 +311,15 @@ app.post('/api/v1/sessions', async (req, reply) => {
   if (!d) return;
   const b = (req.body ?? {}) as any;
 
+  // A session exists from the moment a screen opens, so abandoned drafts
+  // accumulate. Clear the ones nobody scanned into, or the review and queue
+  // views fill with work that was never work.
+  db.prepare(`
+    DELETE FROM sessions
+     WHERE state = 'DRAFT'
+       AND created_at < datetime('now','-5 minutes')
+       AND NOT EXISTS (SELECT 1 FROM session_lines l WHERE l.session_id = sessions.id)`).run();
+
   const id = String(b.sessionId ?? randomUUID());
   const kind = b.kind === 'OUTGOING' ? 'OUTGOING'
     : b.kind === 'STOCKCHECK' ? 'STOCKCHECK' : 'INCOMING';

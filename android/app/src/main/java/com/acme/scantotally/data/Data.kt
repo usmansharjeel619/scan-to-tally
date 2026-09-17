@@ -224,8 +224,31 @@ interface ScanDao {
     @Query("SELECT * FROM sessions WHERE id = :id")
     fun sessionFlow(id: String): Flow<SessionEntity?>
 
-    @Query("SELECT * FROM sessions WHERE state != 'POSTED' ORDER BY createdAt DESC")
+    /**
+     * The queue: work that is actually waiting.
+     *
+     * A session exists from the moment someone taps Incoming, so an empty
+     * draft is somebody who opened a screen and backed out. Showing those as
+     * queued work is noise, and it teaches operators to ignore the queue --
+     * which is exactly the thing that must stay trustworthy.
+     */
+    @Query(
+        """SELECT s.* FROM sessions s
+           WHERE s.state != 'POSTED'
+             AND (s.state != 'DRAFT'
+                  OR EXISTS (SELECT 1 FROM session_lines l WHERE l.sessionId = s.id))
+           ORDER BY s.createdAt DESC"""
+    )
     fun openSessionsFlow(): Flow<List<SessionEntity>>
+
+    /** Drafts nobody scanned into. Cleared so they never reach the queue. */
+    @Query(
+        """DELETE FROM sessions
+           WHERE state = 'DRAFT'
+             AND NOT EXISTS (SELECT 1 FROM session_lines l WHERE l.sessionId = sessions.id)
+             AND createdAt < :olderThan"""
+    )
+    suspend fun purgeEmptyDrafts(olderThan: Long)
 
     /**
      * Anything not yet in Tally. The operator must always be able to see this

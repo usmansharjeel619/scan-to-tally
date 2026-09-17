@@ -72,6 +72,11 @@ class Repository(context: Context, private val api: RelayApi?) {
 
     /** The id is minted here so it survives being offline and never changes. */
     suspend fun openSession(kind: String, godown: String, party: String = "", salesOrder: String = ""): String {
+        // Clear out sessions someone opened and backed out of. Five minutes is
+        // longer than anyone spends deciding not to scan, and short enough that
+        // the queue stays honest.
+        runCatching { dao.purgeEmptyDrafts(System.currentTimeMillis() - 5 * 60_000) }
+
         val id = UUID.randomUUID().toString()
         dao.upsertSession(
             SessionEntity(id = id, kind = kind, godown = godown, party = party, salesOrder = salesOrder),

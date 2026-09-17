@@ -57,8 +57,9 @@ import com.acme.scantotally.data.Repository
 import com.acme.scantotally.data.SalesOrderEntity
 import com.acme.scantotally.data.SessionEntity
 import com.acme.scantotally.scan.RawScan
+import com.acme.scantotally.scan.SuspendScanCapture
 import com.acme.scantotally.ui.theme.AcceptGreen
-import com.acme.scantotally.ui.theme.AcceptGreenBg
+import com.acme.scantotally.ui.theme.LocalSemantics
 import kotlinx.coroutines.flow.Flow
 import com.acme.scantotally.ui.theme.FlagAmber
 import com.acme.scantotally.ui.theme.RejectRed
@@ -144,6 +145,7 @@ fun SetupScreen(nav: NavController, scans: Flow<RawScan>? = null) {
     var godown by remember { mutableStateOf("Main Store") }
     var operator by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    SuspendScanCapture()
     var error by remember { mutableStateOf<String?>(null) }
 
     var scanned by remember { mutableStateOf(false) }
@@ -207,7 +209,8 @@ fun SetupScreen(nav: NavController, scans: Flow<RawScan>? = null) {
 
             Card(
                 colors = CardDefaults.cardColors(
-                    containerColor = if (scanned) AcceptGreenBg else MaterialTheme.colorScheme.primaryContainer,
+                    containerColor = if (scanned) LocalSemantics.current.accept.bg
+                    else MaterialTheme.colorScheme.primaryContainer,
                 ),
                 modifier = Modifier.fillMaxWidth(),
             ) {
@@ -436,6 +439,7 @@ fun SalesOrderPickerScreen(nav: NavController) {
     val orders by (repo?.ordersFlow()?.collectAsState(emptyList())
         ?: remember { mutableStateOf(emptyList<SalesOrderEntity>()) })
     var filter by remember { mutableStateOf("") }
+    SuspendScanCapture()
 
     Scaffold(
         topBar = {

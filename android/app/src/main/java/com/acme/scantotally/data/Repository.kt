@@ -362,17 +362,66 @@ class Repository(context: Context, private val api: RelayApi?) {
                 flags = d.flags.joinToString(","),
             ),
         )
-        runCatching {
-            api?.addLine(
-                sessionId,
-                LineRequest(
-                    pid = d.pid, boxSerial = d.boxSerial, qty = qty, raw = d.raw,
-                    symbology = d.symbology, mfgDate = d.mfgDate,
-                    manual = d.flags.contains("MANUAL"),
-                ),
-            )
-        }
+        // Mirrored to the relay now if there is signal, and marked so that it
+        // does not need to be if there is not. The voucher is built from the
+        // relay's copy, so a line that never arrives is a carton that silently
+        // does not get received -- the outbox below is what prevents that.
+        val mirrored = runCatching {
+            api?.addLine(sessionId, lineRequest(d, qty)) == true
+        }.getOrDefault(false)
+        if (mirrored) dao.markLineSynced(id)
+
         return id
+    }
+
+    private fun lineRequest(d: ScanDecision, qty: Double) = LineRequest(
+        pid = d.pid, boxSerial = d.boxSerial, qty = qty, raw = d.raw,
+        symbology = d.symbology, mfgDate = d.mfgDate,
+        manual = d.flags.contains("MANUAL"),
+    )
+
+    private fun lineRequest(l: SessionLineEntity) = LineRequest(
+        pid = l.pid, boxSerial = l.boxSerial, qty = l.qty, raw = l.rawPayload,
+        symbology = l.symbology, mfgDate = l.mfgDate,
+        manual = l.flags.contains("MANUAL"),
+    )
+
+    /**
+     * Delivers every scan the relay has not acknowledged yet.
+     *
+     * The dock keeps working with no signal, which is the whole point, but it
+     * means the relay can be several cartons behind. Nothing may be submitted
+     * until it has caught up: a voucher built from a partial set of lines is
+     * worse than no voucher, because it looks like a successful receipt.
+     *
+     * Mirroring is idempotent on (part number, box number), so re-sending a
+     * line the relay already has is harmless.
+     */
+    suspend fun pushPendingLines(sessionId: String): Boolean {
+        val pending = dao.unsyncedLines(sessionId)
+        if (pending.isEmpty()) return true
+        val client = api ?: return false
+
+        // The session itself may never have reached the relay either -- the
+        // phone mints the id precisely so that it can be created late. Creating
+        // it again is a no-op there, so this is unconditional rather than
+        // guessing from local state.
+        val s = dao.session(sessionId) ?: return false
+        val created = runCatching {
+            client.createSession(
+                CreateSessionRequest(s.id, s.kind, s.party, s.salesOrder, s.godown),
+            )
+            true
+        }.getOrDefault(false)
+        if (!created) return false
+
+        for (l in pending) {
+            val ok = runCatching { client.addLine(sessionId, lineRequest(l)) }
+                .getOrDefault(false)
+            if (!ok) return false
+            dao.markLineSynced(l.id)
+        }
+        return true
     }
 
     /**
@@ -419,7 +468,30 @@ class Repository(context: Context, private val api: RelayApi?) {
      */
     suspend fun submit(sessionId: String, scope: String = "PARTIAL"): SubmitResponse? {
         dao.setSessionState(sessionId, "QUEUED")
+
+        // Never submit ahead of the scans. If the relay is missing even one
+        // line, leave the session queued and let the retry deliver the lot --
+        // the operator sees it waiting, which is honest, rather than a voucher
+        // posting short.
+        if (!pushPendingLines(sessionId)) return null
+
         return runCatching { api?.submit(sessionId, scope) }.getOrNull()
+    }
+
+    /**
+     * Pushes anything stranded on the device, for every queued session.
+     *
+     * Called whenever the app comes back to the foreground, which in practice
+     * is when a phone that was out of range at the far end of the warehouse
+     * comes back to the office.
+     */
+    suspend fun drainOutbox(): Int {
+        var delivered = 0
+        for (s in dao.sessionsInState("QUEUED")) {
+            if (!pushPendingLines(s.id)) continue
+            runCatching { api?.submit(s.id) }.getOrNull()?.let { delivered++ }
+        }
+        return delivered
     }
 
     suspend fun refreshSessionState(sessionId: String) {

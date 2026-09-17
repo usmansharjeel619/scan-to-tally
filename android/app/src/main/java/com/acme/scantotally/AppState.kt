@@ -97,7 +97,12 @@ class ScanToTallyApp : Application() {
 
     /** Pulls master data in the background; failure is silent by design. */
     fun syncInBackground() {
-        scope.launch { runCatching { repository().syncMasters() } }
+        scope.launch {
+            val repo = repository()
+            runCatching { repo.syncMasters() }
+            // And push anything the dock scanned while it was out of range.
+            runCatching { repo.drainOutbox() }
+        }
     }
 
     override fun onTerminate() {

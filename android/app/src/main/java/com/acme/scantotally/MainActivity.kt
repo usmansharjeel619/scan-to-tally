@@ -18,6 +18,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.acme.scantotally.scan.DataWedgeScanSource
+import com.acme.scantotally.scan.KeyboardInputGuard
 import com.acme.scantotally.scan.KeystrokeScanner
 import com.acme.scantotally.scan.RawScan
 import com.acme.scantotally.ui.screens.HomeScreen
@@ -89,7 +90,7 @@ class MainActivity : ComponentActivity() {
 
                 // Rugged scanners default to typing the barcode into whatever
                 // has focus. This catches that, alongside the intent path.
-                KeystrokeScanner { payload ->
+                KeystrokeScanner(enabled = !KeyboardInputGuard.suspended) { payload ->
                     rawSeen++
                     lastRaw = payload
                     scans.tryEmit(RawScan(payload, "KEYSTROKE", RawScan.Source.HARDWARE))

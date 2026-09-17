@@ -6,6 +6,9 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -21,6 +24,47 @@ import androidx.compose.ui.unit.sp
  * accepted, amber needs review, red is set-it-aside. Those three are never used
  * decoratively anywhere in the app.
  */
+
+/**
+ * Accept / review / reject, in both themes.
+ *
+ * These were defined for light mode only while the text colour followed the
+ * theme, so on a dark-themed device the scan result was near-white text on a
+ * pale pink card -- unreadable, on the one surface an operator has to read at
+ * a glance across a warehouse.
+ *
+ * Each pair now carries its own foreground, so the contrast holds whatever the
+ * device is set to and never depends on the surrounding scheme.
+ */
+data class Semantic(
+    val fg: Color,
+    val bg: Color,
+)
+
+@Immutable
+data class SemanticColors(
+    val accept: Semantic,
+    val review: Semantic,
+    val reject: Semantic,
+    val onCard: Color,
+)
+
+private val LightSemantics = SemanticColors(
+    accept = Semantic(Color(0xFF12603B), Color(0xFFD9F0E3)),
+    review = Semantic(Color(0xFF7A4E05), Color(0xFFFBEBCC)),
+    reject = Semantic(Color(0xFF8E2A22), Color(0xFFFBDFDB)),
+    onCard = Color(0xFF12171A),
+)
+
+private val DarkSemantics = SemanticColors(
+    accept = Semantic(Color(0xFF8BE0B2), Color(0xFF10301E)),
+    review = Semantic(Color(0xFFF0C070), Color(0xFF3A2A0E)),
+    reject = Semantic(Color(0xFFFFA79C), Color(0xFF3E1A16)),
+    onCard = Color(0xFFF2F5F6),
+)
+
+/** The semantic set matching the device's current theme. */
+val LocalSemantics = staticCompositionLocalOf { LightSemantics }
 
 val Teal = Color(0xFF0E5A6B)
 val TealLight = Color(0xFF4FB6CC)
@@ -99,9 +143,13 @@ fun ScanToTallyTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
-    MaterialTheme(
-        colorScheme = if (darkTheme) DarkColors else LightColors,
-        typography = WarehouseTypography,
-        content = content,
-    )
+    CompositionLocalProvider(
+        LocalSemantics provides if (darkTheme) DarkSemantics else LightSemantics,
+    ) {
+        MaterialTheme(
+            colorScheme = if (darkTheme) DarkColors else LightColors,
+            typography = WarehouseTypography,
+            content = content,
+        )
+    }
 }

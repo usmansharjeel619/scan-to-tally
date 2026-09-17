@@ -29,12 +29,7 @@ import androidx.compose.ui.unit.dp
 import com.acme.scantotally.data.Outcome2
 import com.acme.scantotally.data.ScanDecision
 import com.acme.scantotally.data.SessionLineEntity
-import com.acme.scantotally.ui.theme.AcceptGreen
-import com.acme.scantotally.ui.theme.AcceptGreenBg
-import com.acme.scantotally.ui.theme.FlagAmber
-import com.acme.scantotally.ui.theme.FlagAmberBg
-import com.acme.scantotally.ui.theme.RejectRed
-import com.acme.scantotally.ui.theme.RejectRedBg
+import com.acme.scantotally.ui.theme.LocalSemantics
 import kotlin.math.abs
 
 fun fmtQty(v: Double): String =
@@ -51,11 +46,12 @@ fun tail(serial: String): String = if (serial.length > 7) "…" + serial.takeLas
  */
 @Composable
 fun ConnectionBanner(health: String, pending: Int, failed: Int, modifier: Modifier = Modifier) {
+    val sem = LocalSemantics.current
     val (bg, fg, text) = when (health) {
-        "ONLINE" -> Triple(AcceptGreenBg, AcceptGreen, "Tally connected")
-        "BUSY" -> Triple(FlagAmberBg, FlagAmber, "Tally busy")
-        "COMPANY_CLOSED" -> Triple(FlagAmberBg, FlagAmber, "Company not open in Tally")
-        "OFFLINE" -> Triple(RejectRedBg, RejectRed, "Tally unreachable")
+        "ONLINE" -> Triple(sem.accept.bg, sem.accept.fg, "Tally connected")
+        "BUSY" -> Triple(sem.review.bg, sem.review.fg, "Tally busy")
+        "COMPANY_CLOSED" -> Triple(sem.review.bg, sem.review.fg, "Company not open in Tally")
+        "OFFLINE" -> Triple(sem.reject.bg, sem.reject.fg, "Tally unreachable")
         else -> Triple(
             MaterialTheme.colorScheme.surfaceVariant,
             MaterialTheme.colorScheme.onSurfaceVariant,
@@ -81,7 +77,7 @@ fun ConnectionBanner(health: String, pending: Int, failed: Int, modifier: Modifi
         }
         if (failed > 0) {
             Spacer(Modifier.width(12.dp))
-            Text("$failed need review", color = RejectRed, style = MaterialTheme.typography.labelLarge)
+            Text("$failed need review", color = sem.reject.fg, style = MaterialTheme.typography.labelLarge)
         }
     }
 }
@@ -110,12 +106,14 @@ fun ScanResultCard(decision: ScanDecision?, modifier: Modifier = Modifier) {
         return
     }
 
-    val (bg, fg) = when (decision.outcome) {
-        Outcome2.ACCEPT -> AcceptGreenBg to AcceptGreen
-        Outcome2.FLAGGED -> FlagAmberBg to FlagAmber
-        Outcome2.DUPLICATE -> FlagAmberBg to FlagAmber
-        Outcome2.WRONG_BARCODE, Outcome2.REJECT -> RejectRedBg to RejectRed
+    val sem = LocalSemantics.current
+    val tone = when (decision.outcome) {
+        Outcome2.ACCEPT -> sem.accept
+        Outcome2.FLAGGED, Outcome2.DUPLICATE -> sem.review
+        Outcome2.WRONG_BARCODE, Outcome2.REJECT -> sem.reject
     }
+    val bg = tone.bg
+    val fg = tone.fg
 
     Card(
         modifier = modifier.fillMaxWidth().heightIn(min = 108.dp),
@@ -138,7 +136,10 @@ fun ScanResultCard(decision: ScanDecision?, modifier: Modifier = Modifier) {
             Spacer(Modifier.height(6.dp))
             Text(
                 decision.message,
-                color = MaterialTheme.colorScheme.onSurface,
+                // Explicitly the card's own foreground, not the scheme's:
+                // the card has its own background, so the surrounding scheme
+                // says nothing useful about what is readable on it.
+                color = sem.onCard,
                 style = MaterialTheme.typography.titleLarge,
             )
             if (decision.boxSerial.isNotEmpty()) {
@@ -146,7 +147,7 @@ fun ScanResultCard(decision: ScanDecision?, modifier: Modifier = Modifier) {
                 Text(
                     "Box ${tail(decision.boxSerial)}" +
                         if (decision.available != null) "  ·  ${fmtQty(decision.available)} available" else "",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = sem.onCard.copy(alpha = 0.75f),
                     fontFamily = FontFamily.Monospace,
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -193,34 +194,34 @@ fun GroupRow(group: LineGroup, onClick: () -> Unit = {}) {
     Card(
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (group.hasFlags) FlagAmberBg else MaterialTheme.colorScheme.surface,
+            containerColor = if (group.hasFlags) LocalSemantics.current.review.bg
+            else MaterialTheme.colorScheme.surface,
         ),
     ) {
         Column(Modifier.padding(14.dp)) {
             Text(
                 group.description.ifEmpty { group.stockItemName.ifEmpty { "Unknown product ${group.pid}" } },
                 style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = if (group.hasFlags) LocalSemantics.current.onCard
+                else MaterialTheme.colorScheme.onSurface,
             )
             Spacer(Modifier.height(4.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                val gsem = LocalSemantics.current
+                val onGroup = if (group.hasFlags) gsem.onCard else MaterialTheme.colorScheme.onSurface
                 Text(
                     "${group.boxCount} ${if (group.boxCount == 1) "box" else "boxes"}",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = onGroup.copy(alpha = 0.75f),
                 )
                 Text(
                     "${fmtQty(group.totalQty)} ${group.unit}",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color = onGroup,
                 )
                 if (group.hasFlags) {
-                    Text(
-                        "needs review",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = FlagAmber,
-                    )
+                    Text("needs review", style = MaterialTheme.typography.bodyMedium, color = gsem.review.fg)
                 }
             }
         }

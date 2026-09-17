@@ -260,6 +260,9 @@ interface ScanDao {
     @Query("SELECT COUNT(*) FROM sessions WHERE state = 'FAILED'")
     fun failedCountFlow(): Flow<Int>
 
+    @Query("SELECT * FROM sessions WHERE state = :state ORDER BY createdAt")
+    suspend fun sessionsInState(state: String): List<SessionEntity>
+
     @Query("SELECT * FROM sessions WHERE state IN ('DRAFT','QUEUED','POSTING') ORDER BY createdAt")
     suspend fun sessionsToSync(): List<SessionEntity>
 
@@ -312,6 +315,15 @@ interface ScanDao {
 
     @Query("UPDATE session_lines SET synced = 1 WHERE sessionId = :sessionId")
     suspend fun markLinesSynced(sessionId: String)
+
+    @Query("UPDATE session_lines SET synced = 1 WHERE id = :id")
+    suspend fun markLineSynced(id: Long)
+
+    @Query("SELECT * FROM session_lines WHERE sessionId = :sessionId AND synced = 0 ORDER BY id")
+    suspend fun unsyncedLines(sessionId: String): List<SessionLineEntity>
+
+    @Query("SELECT COUNT(*) FROM session_lines WHERE sessionId = :sessionId AND synced = 0")
+    suspend fun unsyncedCount(sessionId: String): Int
 }
 
 @Database(

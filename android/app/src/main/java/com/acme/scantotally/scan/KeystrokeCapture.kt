@@ -10,6 +10,7 @@ import android.widget.EditText
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.unit.dp
@@ -135,4 +136,35 @@ fun KeystrokeScanner(
     )
 
     DisposableEffect(Unit) { onDispose { } }
+}
+
+/**
+ * Lets a real text field take the keyboard back.
+ *
+ * The hidden capture field above holds focus permanently and reclaims it the
+ * moment anything else takes it -- which is what makes a scanner work on a
+ * screen with no input, and what made manual entry impossible to type into:
+ * every tap on a real field handed focus straight back, with the soft keyboard
+ * suppressed for good measure.
+ *
+ * So any screen or dialog that asks a human to type declares it here, and the
+ * capture field steps aside for as long as that screen is composed. Hardware
+ * scanning continues through the DataWedge intent path regardless; only the
+ * keyboard-wedge fallback pauses.
+ */
+object KeyboardInputGuard {
+    private val holders = mutableIntStateOf(0)
+    val suspended: Boolean get() = holders.intValue > 0
+
+    fun acquire() { holders.intValue++ }
+    fun release() { if (holders.intValue > 0) holders.intValue-- }
+}
+
+/** Declares that this composable contains a field a human types into. */
+@Composable
+fun SuspendScanCapture() {
+    DisposableEffect(Unit) {
+        KeyboardInputGuard.acquire()
+        onDispose { KeyboardInputGuard.release() }
+    }
 }

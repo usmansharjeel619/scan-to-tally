@@ -406,9 +406,11 @@ app.post('/api/v1/sessions/:id/lines', async (req, reply) => {
   const lineId = b.lineId ? Number(b.lineId) : undefined;
 
   const resolved = resolvePid(db, pid);
-  if (!resolved) return reply.code(400).send({ error: 'unresolved_pid', pid });
 
   if (s.kind === 'OUTGOING') {
+    // Outgoing has to despatch something Tally already knows about: you cannot
+    // ship from a stock item that does not exist.
+    if (!resolved) return reply.code(400).send({ error: 'unresolved_pid', pid });
     const v = validateOutgoingQty(db, {
       sessionId: id, salesOrder: s.sales_order, godown: s.godown,
       pid, boxSerial, stockItemName: resolved.stockItemName, qty, excludeLineId: lineId,
@@ -431,14 +433,48 @@ app.post('/api/v1/sessions/:id/lines', async (req, reply) => {
     return { lineId: Number(info.lastInsertRowid), qty, ...v };
   }
 
-  // Incoming: correcting a short-shipped box (label says 18, box holds 16).
+  // Incoming and stock check.
   if (!(qty > 0)) return reply.code(400).send({ error: 'qty_rejected', message: 'Enter a quantity.' });
+
+  // Correcting a short-shipped box: label says 18, the box holds 16.
   if (lineId) {
     db.prepare(`UPDATE session_lines SET qty=?, flags=? WHERE id=? AND session_id=?`)
       .run(qty, appendFlag(lineId, 'QTY_EDITED'), lineId, id);
     return { lineId, qty };
   }
-  return reply.code(400).send({ error: 'no_line', message: 'Scan the box first.' });
+
+  // Otherwise this is the device mirroring a scan it has already decided and
+  // already stored locally. The phone owns the decision -- it must, because it
+  // has to beep before the network has been anywhere near this -- so the relay
+  // records the line rather than second-guessing it.
+  //
+  // It is NOT a rejection when the part number resolves to nothing: an unknown
+  // product is the start of the new-item flow, and the line is kept with the
+  // item name blank so submit blocks on it until a supervisor has approved it.
+  // Refusing here instead would have left the relay with no record of the scan
+  // at all, and a voucher with nothing on it.
+  const dup = db.prepare(
+    `SELECT id, qty FROM session_lines WHERE session_id=? AND pid=? AND box_serial=?`,
+  ).get(id, pid, boxSerial) as { id: number; qty: number } | undefined;
+
+  // The same box arriving twice is the device retrying, not a second carton:
+  // (part number, box number) is unique by definition, and the phone already
+  // refused a genuine re-scan with a beep. So this is idempotent.
+  if (dup) return { lineId: dup.id, qty: dup.qty, duplicate: true };
+
+  const flags: string[] = [];
+  if (!resolved) flags.push('UNRESOLVED_PID');
+  if (b.manual) flags.push('MANUAL');
+
+  const info = db.prepare(`
+    INSERT INTO session_lines (session_id, pid, box_serial, qty, unit, stock_item_name,
+                               description, mfg_date, raw_payload, symbology, flags, scanned_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, pid, boxSerial, qty, resolved?.unit ?? '', resolved?.stockItemName ?? '',
+      resolved?.description ?? '', b.mfgDate ?? null, String(b.raw ?? ''),
+      String(b.symbology ?? ''), flags.join(','), nowIso());
+
+  return { lineId: Number(info.lastInsertRowid), qty, flags };
 });
 
 function appendFlag(lineId: number, flag: string): string {
@@ -686,7 +722,29 @@ app.post('/api/v1/proposed-items/:pid/approve', async (req, reply) => {
   db.prepare(`UPDATE proposed_items SET state='APPROVED', decided_by=?, decided_at=?,
               name=?, base_units=?, batchwise=? WHERE pid=?`)
     .run(d.operator || d.id, nowIso(), name, units, batchwise ? 1 : 0, pid);
-  audit(db, d.operator || `device:${d.id}`, 'ITEM_APPROVED', pid, name);
+
+  // Bind it now rather than waiting for the next master sync, so the very next
+  // carton off the same pallet resolves instead of prompting again.
+  db.prepare(`INSERT INTO pid_bindings (pid, stock_item_name, description, source, bound_by, bound_at)
+              VALUES (?,?,?,'SUPERVISOR',?,?)
+              ON CONFLICT(pid) DO UPDATE SET stock_item_name=excluded.stock_item_name,
+                description=excluded.description, source='SUPERVISOR',
+                bound_by=excluded.bound_by, bound_at=excluded.bound_at`)
+    .run(pid, name, String(p.description || name.slice(pid.length).trim()), d.operator || d.id, nowIso());
+
+  // The cartons scanned BEFORE the supervisor tapped approve are the whole
+  // point of the flow -- the operator kept unloading while it waited. Without
+  // this they stay unresolved for ever and submit refuses the voucher.
+  const filled = db.prepare(`
+    UPDATE session_lines SET stock_item_name=?, unit=?,
+      description=CASE WHEN description='' THEN ? ELSE description END,
+      flags=TRIM(REPLACE(','||flags||',', ',UNRESOLVED_PID,', ','), ',')
+    WHERE pid=? AND stock_item_name=''
+      AND session_id IN (SELECT id FROM sessions WHERE state='DRAFT')`)
+    .run(name, units, String(p.description || ''), pid);
+
+  audit(db, d.operator || `device:${d.id}`, 'ITEM_APPROVED', pid,
+    `${name} (${filled.changes} line(s) filled in)`);
 
   return { pid, name, state: 'APPROVED', dispatched: true };
 });

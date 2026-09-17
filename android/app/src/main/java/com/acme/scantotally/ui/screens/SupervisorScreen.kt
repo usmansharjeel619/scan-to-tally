@@ -52,9 +52,10 @@ import com.acme.scantotally.data.RelayApi
 import com.acme.scantotally.data.ReviewResponse
 import com.acme.scantotally.ui.theme.AcceptGreen
 import com.acme.scantotally.ui.theme.FlagAmber
-import com.acme.scantotally.ui.theme.FlagAmberBg
+import com.acme.scantotally.scan.SuspendScanCapture
+import com.acme.scantotally.ui.theme.LocalSemantics
 import com.acme.scantotally.ui.theme.RejectRed
-import com.acme.scantotally.ui.theme.RejectRedBg
+
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -114,7 +115,7 @@ fun SupervisorScreen(nav: NavController) {
             error?.let {
                 Card(
                     Modifier.fillMaxWidth().padding(top = 12.dp),
-                    colors = CardDefaults.cardColors(containerColor = RejectRedBg),
+                    colors = CardDefaults.cardColors(containerColor = LocalSemantics.current.reject.bg),
                 ) { Text(it, Modifier.padding(14.dp), color = RejectRed) }
             }
 
@@ -140,7 +141,7 @@ fun SupervisorScreen(nav: NavController) {
                     items(r.unresolvedPids) { p ->
                         Card(
                             Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { binding = p },
-                            colors = CardDefaults.cardColors(containerColor = FlagAmberBg),
+                            colors = CardDefaults.cardColors(containerColor = LocalSemantics.current.review.bg),
                         ) {
                             Column(Modifier.padding(14.dp)) {
                                 Text(
@@ -199,7 +200,7 @@ fun SupervisorScreen(nav: NavController) {
 private fun FailedCard(f: ApiFailedSession, onRetry: () -> Unit) {
     Card(
         Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        colors = CardDefaults.cardColors(containerColor = RejectRedBg),
+        colors = CardDefaults.cardColors(containerColor = LocalSemantics.current.reject.bg),
     ) {
         Column(Modifier.padding(14.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -239,8 +240,10 @@ private fun BindPidDialog(
     var busy by remember { mutableStateOf(false) }
     var warning by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    SuspendScanCapture()
 
     LaunchedEffect(query) {
+    
         if (query.length < 2) { results = emptyList(); return@LaunchedEffect }
         results = runCatching { api?.searchItems(query) ?: emptyList() }.getOrDefault(emptyList())
     }

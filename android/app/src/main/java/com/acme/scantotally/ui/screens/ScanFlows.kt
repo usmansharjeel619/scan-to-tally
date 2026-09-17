@@ -60,6 +60,7 @@ import com.acme.scantotally.data.ScanDecision
 import com.acme.scantotally.data.SessionLineEntity
 import com.acme.scantotally.scan.ManualScanSource
 import com.acme.scantotally.scan.RawScan
+import com.acme.scantotally.scan.SuspendScanCapture
 import com.acme.scantotally.ui.theme.AcceptGreen
 import com.acme.scantotally.ui.theme.FlagAmber
 import com.acme.scantotally.ui.theme.RejectRed
@@ -659,6 +660,7 @@ private fun NewProductDialog(
     var description by remember(decision.pid) { mutableStateOf(known ?: "") }
     var unit by remember(decision.pid) { mutableStateOf("NO") }
     var batchwise by remember(decision.pid) { mutableStateOf(true) }
+    SuspendScanCapture()
 
     AlertDialog(
         onDismissRequest = onSkip,
@@ -846,6 +848,7 @@ private fun ScanScaffold(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ManualEntryScreen(nav: NavController, sessionId: String) {
+    SuspendScanCapture()
     val app = rememberApp()
     val scope = rememberCoroutineScope()
 

@@ -393,19 +393,21 @@ fun HomeScreen(nav: NavController) {
                 Spacer(Modifier.height(8.dp))
 
                 OutlinedButton(
-                    onClick = { nav.navigate("queue") },
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
-                ) {
-                    Text(if (pending > 0) "Queue ($pending waiting)" else "Queue")
-                }
-                OutlinedButton(
-                    onClick = { nav.navigate("supervisor") },
+                    onClick = { nav.navigate("receipts") },
                     modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
                     colors = if (failed > 0) {
-                        ButtonDefaults.outlinedButtonColors(contentColor = RejectRed)
+                        ButtonDefaults.outlinedButtonColors(
+                            contentColor = LocalSemantics.current.reject.fg,
+                        )
                     } else ButtonDefaults.outlinedButtonColors(),
                 ) {
-                    Text(if (failed > 0) "Supervisor ($failed need review)" else "Supervisor")
+                    Text(
+                        when {
+                            failed > 0 -> "Receipts ($failed did not save)"
+                            pending > 0 -> "Receipts ($pending sending)"
+                            else -> "Receipts"
+                        },
+                    )
                 }
                 OutlinedButton(
                     onClick = {
@@ -503,20 +505,36 @@ fun SalesOrderPickerScreen(nav: NavController) {
     }
 }
 
-// --- queue ------------------------------------------------------------------
+// --- receipts ---------------------------------------------------------------
 
 /**
- * Everything not yet in Tally.
+ * When it was scanned, in the terms the question is asked in.
  *
- * Mandatory, not optional. Operators must be able to see "3 receipts waiting to
- * sync" -- a queue that works silently is a queue nobody trusts, and a failed
- * post that vanishes is stock that quietly goes wrong.
+ * "This morning's delivery" is how an operator thinks about it, so today shows
+ * a time and anything older shows a date.
+ */
+private fun whenScanned(millis: Long): String {
+    val now = java.util.Calendar.getInstance()
+    val then = java.util.Calendar.getInstance().apply { timeInMillis = millis }
+    val sameDay = now.get(java.util.Calendar.YEAR) == then.get(java.util.Calendar.YEAR) &&
+        now.get(java.util.Calendar.DAY_OF_YEAR) == then.get(java.util.Calendar.DAY_OF_YEAR)
+    val fmt = if (sameDay) "HH:mm" else "d MMM HH:mm"
+    return java.text.SimpleDateFormat(fmt, java.util.Locale.getDefault()).format(java.util.Date(millis))
+}
+
+/**
+ * Every receipt this device has made.
+ *
+ * Saved ones included, with the Tally voucher number against them -- that is
+ * the thing an operator actually comes here to check, and a list that only
+ * ever shows problems cannot answer it. A receipt that failed to save never
+ * vanishes either: stock that quietly goes wrong is the worst outcome there is.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun QueueScreen(nav: NavController) {
+fun ReceiptsScreen(nav: NavController) {
     val repo = rememberRepo()
-    val sessions by (repo?.openSessionsFlow()?.collectAsState(emptyList())
+    val sessions by (repo?.recentSessionsFlow()?.collectAsState(emptyList())
         ?: remember { mutableStateOf(emptyList<SessionEntity>()) })
     val summaries by (repo?.lineSummariesFlow()?.collectAsState(emptyList())
         ?: remember { mutableStateOf(emptyList<SessionSummary>()) })
@@ -534,7 +552,7 @@ fun QueueScreen(nav: NavController) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Queue") },
+                title = { Text("Receipts") },
                 navigationIcon = {
                     IconButton(onClick = { nav.popBackStack() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
@@ -549,9 +567,9 @@ fun QueueScreen(nav: NavController) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
-                Text("Nothing waiting.", style = MaterialTheme.typography.headlineSmall)
+                Text("Nothing scanned yet.", style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    "Everything scanned has reached Tally.",
+                    "Receipts appear here as soon as you scan the first box.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -600,11 +618,13 @@ fun QueueScreen(nav: NavController) {
                                 style = MaterialTheme.typography.titleMedium,
                             )
                             Text(
-                                // "DRAFT" is warehouse-meaningless. Say what it
-                                // is: scanned, and not sent anywhere yet.
+                                // "DRAFT" and "POSTED" are warehouse-meaningless.
+                                // Say what actually happened to it.
                                 when (s.state) {
                                     "DRAFT" -> "NOT SAVED"
                                     "QUEUED", "POSTING" -> "SENDING"
+                                    "POSTED" -> "SAVED"
+                                    "FAILED" -> "DID NOT SAVE"
                                     else -> s.state
                                 },
                                 color = colour,
@@ -617,9 +637,10 @@ fun QueueScreen(nav: NavController) {
                         // nothing they can act on.
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            if (summary == null || summary.boxes == 0) "No boxes scanned"
+                            (if (summary == null || summary.boxes == 0) "No boxes scanned"
                             else "${summary.boxes} ${if (summary.boxes == 1) "box" else "boxes"}" +
-                                "  ·  ${fmtQty(summary.totalQty)} total",
+                                "  ·  ${fmtQty(summary.totalQty)} total") +
+                                "  ·  ${whenScanned(s.createdAt)}",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -686,9 +707,10 @@ fun QueueScreen(nav: NavController) {
                                 onClick = {
                                     scope.launch {
                                         busy = s.id
-                                        repo?.submit(s.id)
+                                        val ok = repo?.retry(s.id) == true
                                         busy = null
-                                        note = "Sent to Tally again."
+                                        note = if (ok) "Sent to Tally again."
+                                        else "Could not reach Tally. It will go again by itself."
                                     }
                                 },
                                 enabled = busy == null,

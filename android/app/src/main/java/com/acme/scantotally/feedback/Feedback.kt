@@ -77,7 +77,7 @@ class Feedback(context: Context) {
                     vibrate(longArrayOf(0, 180, 90, 180), -1)
                 }
 
-                // Short beep then a soft chirp: counted, but a supervisor will
+                // Short beep then a soft chirp: counted, but something will
                 // need to look at it later. Close enough to ACCEPT that the
                 // operator keeps moving, different enough to register.
                 Beep.FLAGGED -> {

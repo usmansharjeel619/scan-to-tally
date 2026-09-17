@@ -93,7 +93,7 @@ class Repository(context: Context, private val api: RelayApi?) {
 
     fun linesFlow(sessionId: String): Flow<List<SessionLineEntity>> = dao.linesFlow(sessionId)
     fun sessionFlow(sessionId: String): Flow<SessionEntity?> = dao.sessionFlow(sessionId)
-    fun openSessionsFlow(): Flow<List<SessionEntity>> = dao.openSessionsFlow()
+    fun recentSessionsFlow(): Flow<List<SessionEntity>> = dao.recentSessionsFlow()
     fun lineSummariesFlow(): Flow<List<SessionSummary>> = dao.lineSummariesFlow()
     fun pendingCountFlow(): Flow<Int> = dao.pendingCountFlow()
     fun failedCountFlow(): Flow<Int> = dao.failedCountFlow()
@@ -113,7 +113,7 @@ class Repository(context: Context, private val api: RelayApi?) {
      * Maps a scanned PID onto a Tally stock item.
      *
      * An explicit binding always wins: it is the one a human confirmed. The
-     * fallbacks below save a supervisor from confirming the obvious cases.
+     * fallbacks below settle the obvious cases without asking anyone.
      */
     private suspend fun resolve(pid: String): Resolved? {
         dao.binding(pid)?.let { b ->
@@ -236,7 +236,7 @@ class Repository(context: Context, private val api: RelayApi?) {
 
         val resolved = resolve(box.pid) ?: return ScanDecision(
             Outcome2.REJECT, Beep.REJECT,
-            "Product ${box.pid} is not mapped to a Tally item. A supervisor must map it first.",
+            "Product ${box.pid} is not in Tally, so it cannot be despatched.",
             raw = scan.data, symbology = scan.symbology,
         )
 
@@ -520,6 +520,21 @@ class Repository(context: Context, private val api: RelayApi?) {
             runCatching { api?.submit(s.id) }.getOrNull()?.let { delivered++ }
         }
         return delivered
+    }
+
+    /**
+     * Sends a receipt Tally refused, again.
+     *
+     * A separate call from submit, which treats an already-submitted session as
+     * a duplicate and answers without doing anything -- correct for a retry of
+     * the SUBMIT, useless for a retry of the POST. Getting these two confused
+     * makes the button look like it works while nothing happens.
+     */
+    suspend fun retry(sessionId: String): Boolean {
+        if (!pushPendingLines(sessionId)) return false
+        val ok = runCatching { api?.retry(sessionId); true }.getOrDefault(false)
+        if (ok) dao.setSessionState(sessionId, "QUEUED")
+        return ok
     }
 
     suspend fun refreshSessionState(sessionId: String) {

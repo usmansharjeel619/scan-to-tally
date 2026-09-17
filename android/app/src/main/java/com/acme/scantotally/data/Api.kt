@@ -184,30 +184,6 @@ data class VarianceReport(
 )
 
 @Serializable
-data class ReviewResponse(
-    val failed: List<ApiFailedSession> = emptyList(),
-    val unresolvedPids: List<ApiUnresolvedPid> = emptyList(),
-)
-
-@Serializable
-data class ApiFailedSession(
-    val id: String = "",
-    val kind: String = "",
-    @SerialName("created_at") val createdAt: String = "",
-    @SerialName("error_code") val errorCode: String = "",
-    @SerialName("error_message") val errorMessage: String = "",
-    val attempts: Int = 0,
-)
-
-@Serializable
-data class ApiUnresolvedPid(
-    val pid: String = "",
-    val lines: Int = 0,
-    val qty: Double = 0.0,
-    val sample: String = "",
-)
-
-@Serializable
 data class ProposeItemRequest(
     val pid: String,
     val description: String,
@@ -228,21 +204,6 @@ data class ProposeItemResponse(
     val error: String? = null,
     val stockItemName: String? = null,
     val message: String? = null,
-)
-
-@Serializable
-data class BindRequest(
-    val pid: String,
-    val stockItemName: String,
-    val description: String = "",
-    val boundBy: String = "",
-)
-
-@Serializable
-data class BindResponse(
-    val ok: Boolean = false,
-    val linesResolved: Int = 0,
-    val warning: String? = null,
 )
 
 class RelayApi(
@@ -289,10 +250,7 @@ class RelayApi(
     suspend fun variance(sessionId: String, scope: String): VarianceReport =
         client.get("$baseUrl/api/v1/sessions/$sessionId/variance?scope=$scope").body()
 
-    suspend fun review(): ReviewResponse = client.get("$baseUrl/api/v1/review").body()
 
-    suspend fun bind(req: BindRequest): BindResponse =
-        client.post("$baseUrl/api/v1/bindings") { setBody(req) }.body()
 
     suspend fun retry(sessionId: String) {
         client.post("$baseUrl/api/v1/sessions/$sessionId/retry") { setBody(SubmitRequest()) }
@@ -307,7 +265,4 @@ class RelayApi(
      */
     suspend fun proposeItem(req: ProposeItemRequest): ProposeItemResponse =
         client.post("$baseUrl/api/v1/proposed-items") { setBody(req) }.body()
-
-    suspend fun searchItems(q: String): List<ApiItem> =
-        client.get("$baseUrl/api/v1/items?q=$q").body()
 }

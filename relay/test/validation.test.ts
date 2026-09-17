@@ -177,7 +177,7 @@ test('an unmapped product cannot be despatched', () => {
     raw: label('9999-0000', '1124249900000003', 5), symbology: 'CODE128',
   });
   assert.equal(d.outcome, 'REJECT');
-  assert.ok(d.message.includes('not mapped'));
+  assert.ok(d.message.includes('not in Tally'), d.message);
 });
 
 test('rescanning a box on the same despatch re-opens its line instead of adding another', () => {
@@ -285,7 +285,7 @@ test('a PID matching several items never auto-resolves', () => {
   assert.ok(!d.flags.includes('UNRESOLVED_PID'), 'ambiguous is a different problem from unknown');
   assert.equal(d.box?.stockItemName, '', 'must NOT have silently picked one of the three');
   assert.equal(d.box?.labelQty, 18, 'the count is still right');
-  assert.ok(/matches 3 items/.test(d.message), `message should name the count: ${d.message}`);
+  assert.ok(/matches 3 products/.test(d.message), `message should name the count: ${d.message}`);
 });
 
 test('an ambiguous PID cannot be despatched', () => {
@@ -304,7 +304,7 @@ test('an ambiguous PID cannot be despatched', () => {
   assert.equal(d.outcome, 'REJECT', 'outgoing has nothing unambiguous to deduct from');
   assert.equal(d.beep, 'REJECT');
   assert.ok(/matches \d+ different items/.test(d.message), d.message);
-  assert.ok(/supervisor must decide/.test(d.message), d.message);
+  assert.ok(/cannot be despatched/.test(d.message), d.message);
 });
 
 test('a PID matching exactly one item still resolves by name prefix', () => {

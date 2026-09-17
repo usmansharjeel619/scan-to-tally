@@ -241,23 +241,27 @@ interface ScanDao {
     fun sessionFlow(id: String): Flow<SessionEntity?>
 
     /**
-     * The queue: work that is actually waiting.
+     * Every receipt this device has made, saved ones included.
+     *
+     * Deliberately not a queue of outstanding work. What an operator asks is
+     * "did the delivery I scanned this morning go in?", and a list that drops
+     * a receipt the moment it succeeds cannot answer that -- it only ever
+     * shows problems, so it looks broken even when everything worked.
      *
      * A session exists from the moment someone taps Incoming, so an empty
-     * draft is somebody who opened a screen and backed out. Showing those as
-     * queued work is noise, and it teaches operators to ignore the queue --
-     * which is exactly the thing that must stay trustworthy.
+     * draft is somebody who opened a screen and backed out. Those are the one
+     * thing left out.
      */
     @Query(
         """SELECT s.* FROM sessions s
-           WHERE s.state != 'POSTED'
-             AND (s.state != 'DRAFT'
-                  OR EXISTS (SELECT 1 FROM session_lines l WHERE l.sessionId = s.id))
-           ORDER BY s.createdAt DESC"""
+           WHERE s.state != 'DRAFT'
+              OR EXISTS (SELECT 1 FROM session_lines l WHERE l.sessionId = s.id)
+           ORDER BY s.createdAt DESC
+           LIMIT 200"""
     )
-    fun openSessionsFlow(): Flow<List<SessionEntity>>
+    fun recentSessionsFlow(): Flow<List<SessionEntity>>
 
-    /** Drafts nobody scanned into. Cleared so they never reach the queue. */
+    /** Drafts nobody scanned into. Cleared so they never reach the list. */
     @Query(
         """DELETE FROM sessions
            WHERE state = 'DRAFT'
@@ -268,7 +272,7 @@ interface ScanDao {
 
     /**
      * Anything not yet in Tally. The operator must always be able to see this
-     * count -- a silent queue destroys trust faster than a slow one.
+     * count -- work disappearing silently destroys trust faster than slow work.
      */
     @Query("SELECT COUNT(*) FROM sessions WHERE state IN ('QUEUED','POSTING')")
     fun pendingCountFlow(): Flow<Int>

@@ -27,11 +27,10 @@ import com.acme.scantotally.ui.screens.HomeScreen
 import com.acme.scantotally.ui.screens.IncomingScreen
 import com.acme.scantotally.ui.screens.ManualEntryScreen
 import com.acme.scantotally.ui.screens.OutgoingScreen
-import com.acme.scantotally.ui.screens.QueueScreen
+import com.acme.scantotally.ui.screens.ReceiptsScreen
 import com.acme.scantotally.ui.screens.SalesOrderPickerScreen
 import com.acme.scantotally.ui.screens.SetupScreen
 import com.acme.scantotally.ui.screens.StockCheckScreen
-import com.acme.scantotally.ui.screens.SupervisorScreen
 import com.acme.scantotally.ui.theme.ScanToTallyTheme
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -135,8 +134,7 @@ class MainActivity : ComponentActivity() {
                         composable("manual/{sessionId}") { entry ->
                             ManualEntryScreen(nav, entry.arguments?.getString("sessionId").orEmpty())
                         }
-                        composable("queue") { QueueScreen(nav) }
-                        composable("supervisor") { SupervisorScreen(nav) }
+                        composable("receipts") { ReceiptsScreen(nav) }
                     }
                 }
             }

@@ -3,7 +3,7 @@
  *
  * Three audiences:
  *   /api/v1/*        the warehouse device
- *   /api/v1/review/* the supervisor
+ *   /api/v1/proposed-items   products scanned that Tally does not have yet
  *   /connector/ws    the on-prem connector
  *
  * The relay owns IDENTITY -- PID resolution, duplicate rules, order ceilings --
@@ -569,7 +569,7 @@ app.post('/api/v1/sessions/:id/lines', async (req, reply) => {
   //
   // It is NOT a rejection when the part number resolves to nothing: an unknown
   // product is the start of the new-item flow, and the line is kept with the
-  // item name blank so submit blocks on it until a supervisor has approved it.
+  // item name blank so submit blocks on it until Tally has created it.
   // Refusing here instead would have left the relay with no record of the scan
   // at all, and a voucher with nothing on it.
   const dup = db.prepare(
@@ -685,7 +685,7 @@ app.post('/api/v1/sessions/:id/submit', async (req, reply) => {
     return reply.code(400).send({
       error: 'nothing_to_post',
       message: unresolved.n > 0
-        ? `All ${unresolved.n} line(s) need a supervisor to map the product first.`
+        ? `All ${unresolved.n} line(s) are waiting for Tally to create the product.`
         : 'This session has no lines.',
     });
   }
@@ -793,188 +793,8 @@ app.post('/api/v1/proposed-items', async (req, reply) => {
   };
 });
 
-app.get('/api/v1/proposed-items', async (req, reply) => {
-  const d = requireDevice(req, reply);
-  if (!d) return;
-  return db.prepare(
-    `SELECT * FROM proposed_items WHERE state = 'PENDING' ORDER BY proposed_at`,
-  ).all();
-});
+// --- failed receipts -------------------------------------------------------
 
-/**
- * The supervisor's tap. This is the only thing that causes a write to Tally's
- * item master, and it is irreversible in practice -- Tally will not delete a
- * stock item once it has transactions.
- */
-app.post('/api/v1/proposed-items/:pid/approve', async (req, reply) => {
-  const d = requireDevice(req, reply);
-  if (!d) return;
-  const { pid } = req.params as { pid: string };
-  const b = (req.body ?? {}) as any;
-
-  const p = db.prepare(`SELECT * FROM proposed_items WHERE pid = ?`).get(pid) as any;
-  if (!p) return reply.code(404).send({ error: 'no_such_proposal' });
-  if (p.state === 'APPROVED') return { pid, state: 'APPROVED', alreadyDone: true };
-
-  // Last chance to notice it is not actually new.
-  const existing = resolvePid(db, pid);
-  if (existing) {
-    db.prepare(`UPDATE proposed_items SET state='REJECTED', decided_by=?, decided_at=?,
-                error='already resolves' WHERE pid=?`)
-      .run(d.operator || d.id, nowIso(), pid);
-    return reply.code(409).send({
-      error: 'already_known', stockItemName: existing.stockItemName,
-    });
-  }
-
-  // The supervisor may correct anything before it becomes permanent.
-  const name = String(b.name ?? p.name).trim();
-  const units = String(b.baseUnits ?? (p.base_units || 'NO')).trim();
-  const batchwise = b.batchwise === undefined ? !!p.batchwise : !!b.batchwise;
-
-  const sent = hub.dispatch(d.company, `mk-${pid}`, {
-    kind: 'CREATE_STOCK_ITEM',
-    pid, name, baseUnits: units, batchwise,
-    trackMfgDate: batchwise && !!p.track_mfg,
-    company: d.company,
-  });
-
-  if (!sent) {
-    return reply.code(503).send({
-      error: 'connector_offline',
-      message: 'The Tally connector is not connected, so nothing can be created yet. ' +
-        'The proposal is kept; approve again when it is back.',
-    });
-  }
-
-  db.prepare(`UPDATE proposed_items SET state='APPROVED', decided_by=?, decided_at=?,
-              name=?, base_units=?, batchwise=? WHERE pid=?`)
-    .run(d.operator || d.id, nowIso(), name, units, batchwise ? 1 : 0, pid);
-
-  // Bind it now rather than waiting for the next master sync, so the very next
-  // carton off the same pallet resolves instead of prompting again.
-  db.prepare(`INSERT INTO pid_bindings (pid, stock_item_name, description, source, bound_by, bound_at)
-              VALUES (?,?,?,'SUPERVISOR',?,?)
-              ON CONFLICT(pid) DO UPDATE SET stock_item_name=excluded.stock_item_name,
-                description=excluded.description, source='SUPERVISOR',
-                bound_by=excluded.bound_by, bound_at=excluded.bound_at`)
-    .run(pid, name, String(p.description || name.slice(pid.length).trim()), d.operator || d.id, nowIso());
-
-  // The cartons scanned BEFORE the supervisor tapped approve are the whole
-  // point of the flow -- the operator kept unloading while it waited. Without
-  // this they stay unresolved for ever and submit refuses the voucher.
-  const filled = db.prepare(`
-    UPDATE session_lines SET stock_item_name=?, unit=?,
-      description=CASE WHEN description='' THEN ? ELSE description END,
-      flags=TRIM(REPLACE(','||flags||',', ',UNRESOLVED_PID,', ','), ',')
-    WHERE pid=? AND stock_item_name=''
-      AND session_id IN (SELECT id FROM sessions WHERE state='DRAFT')`)
-    .run(name, units, String(p.description || ''), pid);
-
-  audit(db, d.operator || `device:${d.id}`, 'ITEM_APPROVED', pid,
-    `${name} (${filled.changes} line(s) filled in)`);
-
-  return { pid, name, state: 'APPROVED', dispatched: true };
-});
-
-app.post('/api/v1/proposed-items/:pid/reject', async (req, reply) => {
-  const d = requireDevice(req, reply);
-  if (!d) return;
-  const { pid } = req.params as { pid: string };
-  db.prepare(`UPDATE proposed_items SET state='REJECTED', decided_by=?, decided_at=? WHERE pid=?`)
-    .run(d.operator || d.id, nowIso(), pid);
-  audit(db, d.operator || `device:${d.id}`, 'ITEM_REJECTED', pid);
-  return { pid, state: 'REJECTED' };
-});
-
-// --- supervisor API ---------------------------------------------------------
-
-/** Everything waiting on a human. A failed post must never vanish. */
-app.get('/api/v1/review', async (req, reply) => {
-  const d = requireDevice(req, reply);
-  if (!d) return;
-
-  const failed = db.prepare(
-    `SELECT id, kind, created_at, error_class, error_code, error_message, attempts
-       FROM sessions WHERE state='FAILED' ORDER BY completed_at DESC LIMIT 200`,
-  ).all();
-
-  // Unresolved PIDs, most frequent first: binding the commonest one clears the
-  // most lines.
-  const unresolved = db.prepare(`
-    SELECT pid, COUNT(*) AS lines, SUM(qty) AS qty, MAX(scanned_at) AS last_seen,
-           MIN(raw_payload) AS sample
-      FROM session_lines WHERE stock_item_name = ''
-     GROUP BY pid ORDER BY lines DESC LIMIT 200`).all();
-
-  const flagged = db.prepare(`
-    SELECT sl.id, sl.session_id, sl.pid, sl.box_serial, sl.qty, sl.flags, sl.scanned_at
-      FROM session_lines sl WHERE sl.flags != '' ORDER BY sl.id DESC LIMIT 200`).all();
-
-  const proposed = db.prepare(
-    `SELECT pid, name, description, base_units, batchwise, proposed_by, proposed_at
-       FROM proposed_items WHERE state='PENDING' ORDER BY proposed_at`).all();
-
-  return { failed, unresolvedPids: unresolved, flagged, proposedItems: proposed };
-});
-
-/**
- * Binds a PID to an existing Tally item.
- *
- * This is the common case and it creates nothing in Tally: the product is
- * usually already there, and it is the barcode mapping that was missing. The
- * binding is retroactively applied to every line waiting on it, so submitting
- * a stuck session needs no re-scan.
- */
-app.post('/api/v1/bindings', async (req, reply) => {
-  const d = requireDevice(req, reply);
-  if (!d) return;
-  const b = (req.body ?? {}) as any;
-
-  const pid = String(b.pid ?? '').trim();
-  const stockItemName = String(b.stockItemName ?? '').trim();
-  if (!pid || !stockItemName) {
-    return reply.code(400).send({ error: 'pid and stockItemName are required' });
-  }
-
-  const item = db.prepare(
-    `SELECT name, base_units, has_batches FROM stock_items WHERE name = ?`,
-  ).get(stockItemName) as { base_units: string; has_batches: number } | undefined;
-  if (!item) {
-    return reply.code(400).send({
-      error: 'unknown_stock_item',
-      message: `"${stockItemName}" is not in the synced Tally item master.`,
-    });
-  }
-
-  db.prepare(`
-    INSERT INTO pid_bindings (pid, stock_item_name, description, source, bound_by, bound_at)
-    VALUES (?,?,?,?,?,?)
-    ON CONFLICT(pid) DO UPDATE SET
-      stock_item_name=excluded.stock_item_name, description=excluded.description,
-      source=excluded.source, bound_by=excluded.bound_by, bound_at=excluded.bound_at`)
-    .run(pid, stockItemName, String(b.description ?? ''), 'SUPERVISOR',
-      b.boundBy ?? d.operator, nowIso());
-
-  const updated = db.prepare(`
-    UPDATE session_lines
-       SET stock_item_name=?, unit=?, description=?,
-           flags=REPLACE(REPLACE(flags,'UNRESOLVED_PID,',''),'UNRESOLVED_PID','')
-     WHERE pid=? AND stock_item_name=''`)
-    .run(stockItemName, item.base_units, String(b.description ?? ''), pid);
-
-  audit(db, d.operator || `device:${d.id}`, 'PID_BOUND', pid,
-    `-> ${stockItemName} (${updated.changes} line(s) resolved)`);
-
-  return {
-    ok: true, pid, stockItemName,
-    linesResolved: updated.changes,
-    warning: item.has_batches ? undefined
-      : `"${stockItemName}" is not batch-wise in Tally, so box numbers cannot be tracked on it.`,
-  };
-});
-
-/** Retries a failed session after the underlying problem was fixed. */
 app.post('/api/v1/sessions/:id/retry', async (req, reply) => {
   const d = requireDevice(req, reply);
   if (!d) return;
@@ -993,20 +813,6 @@ app.post('/api/v1/sessions/:id/retry', async (req, reply) => {
 
   audit(db, d.operator || `device:${d.id}`, 'SESSION_RETRIED', id);
   return { sessionId: id, state: sent ? 'POSTING' : 'QUEUED' };
-});
-
-app.get('/api/v1/items', async (req, reply) => {
-  const d = requireDevice(req, reply);
-  if (!d) return;
-  const q = String((req.query as any)?.q ?? '').trim();
-  if (!q) {
-    return db.prepare(`SELECT name, part_no, base_units, has_batches FROM stock_items
-                        ORDER BY name LIMIT 100`).all();
-  }
-  return db.prepare(`
-    SELECT name, part_no, base_units, has_batches FROM stock_items
-     WHERE name LIKE ? OR part_no LIKE ? OR alias LIKE ?
-     ORDER BY name LIMIT 100`).all(`%${q}%`, `%${q}%`, `%${q}%`);
 });
 
 /**

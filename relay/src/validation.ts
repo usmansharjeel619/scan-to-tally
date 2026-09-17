@@ -4,7 +4,7 @@
  * Two principles run through all of it:
  *
  *   Never block the dock. Anything unresolvable is accepted, counted and
- *   flagged for a supervisor. The one deliberate exception is outgoing: a box
+ *   flagged for review afterwards. The one exception is outgoing: a box
  *   that is not on the order, or has no stock left, IS refused, because
  *   catching that at the dock instead of at the customer is the whole point.
  *
@@ -167,7 +167,7 @@ export function decideIncomingScan(db: DB, input: IncomingScanInput): ScanDecisi
     message: resolved
       ? `${resolved.description || resolved.stockItemName} - ${fmt(qty)}`
       : ambiguous
-        ? `${pid} matches ${ambiguous.candidates.length} items in Tally - ${fmt(qty)} counted, a supervisor must pick which`
+        ? `${pid} matches ${ambiguous.candidates.length} products in Tally - ${fmt(qty)} counted, but which one is unclear`
         : cat
           ? `${cat.description} - ${fmt(qty)} counted, not yet a Tally item`
           : `Unknown product ${pid} - ${fmt(qty)} counted, needs review`,
@@ -220,8 +220,8 @@ export function decideOutgoingScan(db: DB, input: OutgoingScanInput): ScanDecisi
       outcome: 'REJECT', beep: 'REJECT', flags, parse,
       message: ambiguous
         ? `${pid} matches ${ambiguous.candidates.length} different items in Tally. ` +
-          `A supervisor must decide which one before this can be despatched.`
-        : `Product ${pid} is not mapped to a Tally item. A supervisor must map it first.`,
+          `It cannot be despatched until those names are sorted out in Tally.`
+        : `Product ${pid} is not in Tally, so it cannot be despatched.`,
     };
   }
 

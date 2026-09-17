@@ -223,7 +223,7 @@ export function computeVariance(
  *   MATCH rows, because writing back a figure Tally already holds is noise in
  *   the stock report for no gain.
  *   NOT_IN_BOOK rows, because they have no stock item to post against; they go
- *   to the supervisor instead.
+ *   for review instead.
  */
 export function varianceToLines(
   report: VarianceReport,

@@ -19,7 +19,7 @@ export type SessionState =
   | 'QUEUED'     // accepted by the relay, waiting for the connector
   | 'POSTING'    // handed to the connector
   | 'POSTED'     // in Tally
-  | 'FAILED'     // business error; needs a supervisor. NEVER disappears.
+  | 'FAILED'     // business error; needs a person. NEVER disappears.
   | 'CANCELLED';
 
 /**
@@ -64,7 +64,7 @@ CREATE INDEX IF NOT EXISTS idx_items_partno ON stock_items(part_no);
 
 -- The learned PID -> Tally stock item map. This is the heart of resolution:
 -- the product is usually already IN Tally; it is the barcode mapping that is
--- missing. A supervisor binds it once and every device learns it.
+-- missing. Creating the product binds it once and every device learns it.
 CREATE TABLE IF NOT EXISTS pid_bindings (
   pid             TEXT PRIMARY KEY,
   stock_item_name TEXT NOT NULL,
@@ -197,7 +197,7 @@ CREATE TABLE IF NOT EXISTS product_catalogue (
 -- Products an operator met on the dock that Tally has never heard of.
 --
 -- The operator fills these in once, with the carton in their hand and the
--- description printed on the label. A supervisor then approves, and only then
+-- description printed on the label. It is created in Tally straight away, and
 -- is anything written to Tally. A stock item cannot be deleted once it has
 -- transactions, so approval is the last point at which a mistake is cheap.
 CREATE TABLE IF NOT EXISTS proposed_items (
@@ -357,7 +357,7 @@ export interface Resolved {
  *
  * Picking one would post stock against the wrong item, and nothing downstream
  * would ever notice. So an ambiguous PID resolves to nothing and carries its
- * candidates to a supervisor, who decides once and binds it for good.
+ * candidates rather than guessing, because guessing wrong moves real stock.
  */
 /** A product the catalogue knows about but Tally does not. */
 export interface CatalogueEntry {
@@ -387,7 +387,7 @@ export interface Ambiguous {
  * Maps a scanned PID onto a Tally stock item.
  *
  * Order matters. An explicit binding always wins, because it is the one a human
- * confirmed. The fallbacks below it are conveniences that save a supervisor
+ * confirmed. The fallbacks below it are conveniences that save a person
  * from confirming the obvious cases, and each records how it matched so a
  * wrong auto-match is traceable later.
  */
@@ -398,7 +398,7 @@ export function resolvePid(db: DB, pid: string): Resolved | null {
 /**
  * Resolution, with the ambiguity made visible.
  *
- * Callers that can act on it (the scan path, the supervisor queue) use this;
+ * Callers that can act on it (the scan path) use this;
  * everything else uses resolvePid and treats ambiguity as simply unresolved.
  */
 export function resolvePidDetailed(

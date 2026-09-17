@@ -281,6 +281,13 @@ app.get('/api/v1/sync', async (req, reply) => {
   const orderLines = db.prepare(`SELECT * FROM sales_order_lines`).all() as any[];
   // The received-box index: what makes historical duplicate detection work
   // offline. A rolling window keeps it small enough to hold on a device.
+  // What products ARE, independent of Tally. Small enough to ship whole, and
+  // the device needs it offline: the prompt fires at the scan, which may be in
+  // a warehouse with no signal.
+  const catalogue = db.prepare(
+    `SELECT pid, description, alternates FROM product_catalogue`,
+  ).all();
+
   const receivedBoxes = db.prepare(
     `SELECT pid, box_serial, received_at FROM received_boxes
       WHERE received_at > datetime('now','-12 months')`,
@@ -290,7 +297,7 @@ app.get('/api/v1/sync', async (req, reply) => {
     syncedAt: nowIso(),
     godown: d.godown,
     company: d.company,
-    items, bindings, balances, receivedBoxes,
+    items, bindings, balances, receivedBoxes, catalogue,
     orders: orders.map((o) => ({
       ...o,
       lines: orderLines.filter((l) => l.voucher_number === o.voucher_number),

@@ -24,6 +24,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -651,8 +652,13 @@ private fun NewProductDialog(
     onSkip: () -> Unit,
     onSave: (description: String, unit: String) -> Unit,
 ) {
-    var description by remember(decision.pid) { mutableStateOf("") }
+    // Prefilled from the price list when it knows this part number, so the
+    // operator confirms rather than types. They supply only what the catalogue
+    // cannot know.
+    val known = decision.catalogueDescription
+    var description by remember(decision.pid) { mutableStateOf(known ?: "") }
     var unit by remember(decision.pid) { mutableStateOf("NO") }
+    var batchwise by remember(decision.pid) { mutableStateOf(true) }
 
     AlertDialog(
         onDismissRequest = onSkip,
@@ -660,7 +666,10 @@ private fun NewProductDialog(
         text = {
             Column {
                 Text(
-                    "Tally has not seen this part number before.",
+                    if (decision.catalogueDescription != null)
+                        "The price list knows this part, but Tally has no item for it yet."
+                    else
+                        "Neither Tally nor the price list has seen this part number.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -681,26 +690,47 @@ private fun NewProductDialog(
                 OutlinedTextField(
                     value = description,
                     onValueChange = { description = it },
-                    label = { Text("What is it?") },
+                    label = { Text(if (known != null) "Description" else "What is it?") },
                     placeholder = { Text("SSD SENSOR BASE") },
-                    supportingText = { Text("Copy the DESCRIPTION line from the label") },
+                    supportingText = {
+                        Text(
+                            if (known != null) "From the price list - change it only if wrong"
+                            else "Copy the DESCRIPTION line from the label",
+                        )
+                    },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+
                 Spacer(Modifier.height(10.dp))
                 OutlinedTextField(
                     value = unit,
-                    onValueChange = { unit = it.uppercase().take(8) },
+                    onValueChange = { unit = it.take(8) },
                     label = { Text("Unit") },
-                    supportingText = { Text("NO for pieces, mts for metres") },
+                    supportingText = { Text("NO for pieces, mts for metres, EA for each") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
 
                 Spacer(Modifier.height(12.dp))
+                // Cannot be changed later: Tally will not alter batch tracking
+                // on an item once it has transactions.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = batchwise, onCheckedChange = { batchwise = it })
+                    Spacer(Modifier.width(6.dp))
+                    Column {
+                        Text("Track box numbers", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "Cannot be changed once the item has movements",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
                 Text(
-                    "This goes to a supervisor to approve. Nothing is added to " +
-                        "Tally until they do.",
+                    "A supervisor approves this before anything is added to Tally.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

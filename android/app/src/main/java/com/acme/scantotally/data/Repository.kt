@@ -40,6 +40,12 @@ data class ScanDecision(
     val flags: List<String> = emptyList(),
     val raw: String = "",
     val symbology: String = "",
+    /**
+     * What the price list says this is, when Tally has no item for it. The
+     * operator confirms rather than types -- they supply only what the
+     * catalogue cannot know: unit and batch tracking.
+     */
+    val catalogueDescription: String? = null,
 )
 
 enum class Outcome2 { ACCEPT, FLAGGED, DUPLICATE, WRONG_BARCODE, REJECT }
@@ -162,12 +168,17 @@ class Repository(context: Context, private val api: RelayApi?) {
         if (resolved == null) flags += "UNRESOLVED_PID"
         else if (!resolved.hasBatches) flags += "NO_BATCH_SUPPORT"
 
+        // Not in Tally -- but the price list may still know what it is.
+        val cat = if (resolved == null) dao.catalogue(box.pid) else null
+
         val flagged = flags.any { it != "MANUAL" }
         return ScanDecision(
             outcome = if (flagged) Outcome2.FLAGGED else Outcome2.ACCEPT,
             beep = if (flagged) Beep.FLAGGED else Beep.ACCEPT,
             message = resolved?.let { "${it.description.ifEmpty { it.stockItemName }} - ${box.qty}" }
+                ?: cat?.let { "${it.description} - ${box.qty} counted, not yet a Tally item" }
                 ?: "Unknown product ${box.pid} - ${box.qty} counted, needs review",
+            catalogueDescription = cat?.description,
             pid = box.pid, boxSerial = box.boxSerial, labelQty = box.qty.toDouble(),
             stockItemName = resolved?.stockItemName ?: "",
             description = resolved?.description ?: "",
@@ -444,6 +455,7 @@ class Repository(context: Context, private val api: RelayApi?) {
         )
 
         dao.upsertReceivedBoxes(s.receivedBoxes.map { ReceivedBoxEntity(it.pid, it.boxSerial, it.receivedAt) })
+        dao.upsertCatalogue(s.catalogue.map { CatalogueEntity(it.pid, it.description, it.alternates) })
         true
     }.getOrDefault(false)
 

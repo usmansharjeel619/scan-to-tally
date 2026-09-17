@@ -14,7 +14,7 @@
  */
 
 import type { DB, LineFlag, Resolved } from './db.ts';
-import { resolvePid, resolvePidDetailed } from './db.ts';
+import { resolvePid, resolvePidDetailed, catalogueLookup } from './db.ts';
 import { registry, boxKey, type ParseResult } from './barcode.ts';
 
 /** What the device does with the scan. */
@@ -53,6 +53,12 @@ export interface ScanDecision {
   flags: LineFlag[];
   /** Can the operator deliberately override? Only ever for historical dupes. */
   overridable?: boolean;
+  /**
+   * What this product is, from the reference catalogue, when Tally has no item
+   * for it. The operator confirms rather than types -- they supply only what
+   * the catalogue cannot know: unit, group, batch tracking.
+   */
+  catalogue?: { description: string; alternates: string[]; source: string };
   parse: ParseResult;
 }
 
@@ -138,6 +144,9 @@ export function decideIncomingScan(db: DB, input: IncomingScanInput): ScanDecisi
   else if (!resolved) flags.push('UNRESOLVED_PID');
   if (resolved && !resolved.hasBatches) flags.push('NO_BATCH_SUPPORT');
 
+  // Not in Tally -- but the catalogue may still know what it is.
+  const cat = (!resolved && !ambiguous) ? catalogueLookup(db, pid) : null;
+
   const flagged = flags.some((f) => f === 'UNRESOLVED_PID' || f === 'AMBIGUOUS_PID'
     || f === 'NO_BATCH_SUPPORT' || f === 'DUPLICATE_OVERRIDE');
 
@@ -152,11 +161,16 @@ export function decideIncomingScan(db: DB, input: IncomingScanInput): ScanDecisi
       description: resolved?.description ?? '',
       unit: resolved?.unit ?? '',
     },
+    catalogue: cat
+      ? { description: cat.description, alternates: cat.alternates, source: cat.source }
+      : undefined,
     message: resolved
       ? `${resolved.description || resolved.stockItemName} - ${fmt(qty)}`
       : ambiguous
         ? `${pid} matches ${ambiguous.candidates.length} items in Tally - ${fmt(qty)} counted, a supervisor must pick which`
-        : `Unknown product ${pid} - ${fmt(qty)} counted, needs review`,
+        : cat
+          ? `${cat.description} - ${fmt(qty)} counted, not yet a Tally item`
+          : `Unknown product ${pid} - ${fmt(qty)} counted, needs review`,
   };
 }
 

@@ -35,6 +35,7 @@ data class SyncResponse(
     val bindings: List<ApiBinding> = emptyList(),
     val balances: List<ApiBalance> = emptyList(),
     val receivedBoxes: List<ApiReceivedBox> = emptyList(),
+    val catalogue: List<ApiCatalogue> = emptyList(),
     val orders: List<ApiOrder> = emptyList(),
 )
 
@@ -69,6 +70,14 @@ data class ApiReceivedBox(
     val pid: String,
     @SerialName("box_serial") val boxSerial: String,
     @SerialName("received_at") val receivedAt: String = "",
+)
+
+@Serializable
+data class ApiCatalogue(
+    val pid: String,
+    val description: String = "",
+    /** JSON array as stored; parsed on the device only when shown. */
+    val alternates: String = "",
 )
 
 @Serializable

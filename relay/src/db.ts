@@ -175,6 +175,25 @@ CREATE TABLE IF NOT EXISTS session_lines (
 CREATE INDEX IF NOT EXISTS idx_lines_session ON session_lines(session_id);
 CREATE INDEX IF NOT EXISTS idx_lines_box ON session_lines(pid, box_serial);
 
+-- What a product IS, independent of whether Tally has it.
+--
+-- Built from the Simplex price list and BOQ sheets: part number to
+-- description. This is reference data, deliberately separate from
+-- pid_bindings, which records what a PID resolves to IN TALLY.
+--
+-- When a scan finds no Tally item, this supplies the description so the
+-- operator does not have to type it -- they only supply what Tally needs and
+-- this cannot know: unit, stock group, batch tracking.
+CREATE TABLE IF NOT EXISTS product_catalogue (
+  pid         TEXT PRIMARY KEY,
+  description TEXT NOT NULL,
+  source      TEXT NOT NULL DEFAULT '',   -- where the wording came from
+  -- Some part numbers appear with more than one wording across sources. Those
+  -- are offered as choices rather than one being picked silently.
+  alternates  TEXT NOT NULL DEFAULT '',   -- JSON array
+  loaded_at   TEXT NOT NULL
+);
+
 -- Products an operator met on the dock that Tally has never heard of.
 --
 -- The operator fills these in once, with the carton in their hand and the
@@ -340,6 +359,25 @@ export interface Resolved {
  * would ever notice. So an ambiguous PID resolves to nothing and carries its
  * candidates to a supervisor, who decides once and binds it for good.
  */
+/** A product the catalogue knows about but Tally does not. */
+export interface CatalogueEntry {
+  pid: string;
+  description: string;
+  alternates: string[];
+  source: string;
+}
+
+/** Looks a part number up in the reference catalogue. */
+export function catalogueLookup(db: DB, pid: string): CatalogueEntry | null {
+  const row = db.prepare(
+    `SELECT pid, description, alternates, source FROM product_catalogue WHERE pid = ?`,
+  ).get(pid) as { pid: string; description: string; alternates: string; source: string } | undefined;
+  if (!row) return null;
+  let alternates: string[] = [];
+  try { alternates = JSON.parse(row.alternates || '[]'); } catch { /* ignore */ }
+  return { pid: row.pid, description: row.description, alternates, source: row.source };
+}
+
 export interface Ambiguous {
   pid: string;
   candidates: string[];

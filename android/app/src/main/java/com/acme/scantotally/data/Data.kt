@@ -87,6 +87,22 @@ data class ReceivedBoxEntity(
 )
 
 /**
+ * What a product IS, from the price list -- independent of whether Tally has an
+ * item for it.
+ *
+ * Kept on the device because the prompt fires at the scan, and the scan may
+ * happen in a warehouse with no signal. Without this the operator would have to
+ * type a description that was already known.
+ */
+@Entity(tableName = "product_catalogue")
+data class CatalogueEntity(
+    @PrimaryKey val pid: String,
+    val description: String,
+    /** Other wordings seen for this part number, offered as choices. */
+    val alternates: String = "",
+)
+
+/**
  * A scan session. The id is a UUID minted HERE, when the session opens, so it
  * survives being offline and is the same idempotency key end to end.
  */
@@ -192,6 +208,12 @@ interface ScanDao {
     @Query("SELECT * FROM received_boxes WHERE pid = :pid AND boxSerial = :serial LIMIT 1")
     suspend fun receivedBox(pid: String, serial: String): ReceivedBoxEntity?
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertCatalogue(entries: List<CatalogueEntity>)
+
+    @Query("SELECT * FROM product_catalogue WHERE pid = :pid LIMIT 1")
+    suspend fun catalogue(pid: String): CatalogueEntity?
+
     // --- sessions ---
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSession(session: SessionEntity)
@@ -273,9 +295,9 @@ interface ScanDao {
     entities = [
         StockItemEntity::class, PidBindingEntity::class, BatchBalanceEntity::class,
         SalesOrderEntity::class, SalesOrderLineEntity::class, ReceivedBoxEntity::class,
-        SessionEntity::class, SessionLineEntity::class,
+        SessionEntity::class, SessionLineEntity::class, CatalogueEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class ScanDatabase : RoomDatabase() {
@@ -287,7 +309,7 @@ abstract class ScanDatabase : RoomDatabase() {
         fun get(context: Context): ScanDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
                 context.applicationContext, ScanDatabase::class.java, "scan-to-tally.db",
-            ).build().also { instance = it }
+            ).fallbackToDestructiveMigration().build().also { instance = it }
         }
     }
 }

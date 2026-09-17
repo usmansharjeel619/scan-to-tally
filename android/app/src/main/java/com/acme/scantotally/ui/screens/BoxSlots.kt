@@ -34,6 +34,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.acme.scantotally.scan.BoxDraft
+import com.acme.scantotally.scan.FragmentKind
+import com.acme.scantotally.scan.classifyFragment
 import com.acme.scantotally.scan.SuspendScanCapture
 import com.acme.scantotally.ui.theme.LocalSemantics
 import com.acme.scantotally.ui.theme.TouchTarget
@@ -201,10 +203,22 @@ fun SlotEntryDialog(
     var value by remember(slot) { mutableStateOf(initial) }
 
     val numeric = slot == BoxDraft.Slot.QUANTITY
-    val valid = when (slot) {
-        BoxDraft.Slot.QUANTITY -> (value.toIntOrNull() ?: 0) > 0
-        else -> value.isNotBlank()
+
+    // A typed field is held to the same standard as a scanned one.
+    //
+    // Typing skipped the check that scanning applies, so "GGVVCCH" went in as a
+    // product code and sat in a receipt that could never post. A rule that
+    // applies to the scanner and not the keyboard is not a rule.
+    val problem = when (slot) {
+        BoxDraft.Slot.QUANTITY ->
+            if ((value.toIntOrNull() ?: 0) > 0) null else ""
+        BoxDraft.Slot.PRODUCT ->
+            if (value.isBlank()) ""
+            else if (classifyFragment(value).kind == FragmentKind.PRODUCT) null
+            else "Product codes look like 4098-9792."
+        BoxDraft.Slot.BOX -> if (value.isBlank()) "" else null
     }
+    val valid = problem == null
 
     AlertDialog(
         onDismissRequest = onCancel,
@@ -219,6 +233,7 @@ fun SlotEntryDialog(
             )
         },
         text = {
+            Column {
             OutlinedTextField(
                 value = value,
                 onValueChange = { v ->
@@ -231,8 +246,18 @@ fun SlotEntryDialog(
                     capitalization = if (numeric) KeyboardCapitalization.None
                     else KeyboardCapitalization.Characters,
                 ),
+                isError = !problem.isNullOrEmpty(),
                 modifier = Modifier.fillMaxWidth(),
             )
+            if (!problem.isNullOrEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    problem,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = LocalSemantics.current.reject.fg,
+                )
+            }
+            }
         },
         confirmButton = {
             Button(onClick = { onConfirm(value.trim()) }, enabled = valid) { Text("Done") }

@@ -1042,7 +1042,25 @@ if (DOWNLOAD_PATH) {
     if (!/^[A-Za-z0-9._-]+$/.test(file) || file.includes('..')) {
       return reply.code(400).send({ error: 'bad filename' });
     }
-    const full = join(DIST_DIR, file);
+    let full = join(DIST_DIR, file);
+
+    // A versioned name resolves to the file it names.
+    //
+    // Content-Disposition already asks for the download to be saved under its
+    // version, and plenty of Android downloaders ignore it and take the name
+    // straight off the URL -- so every release landed as another "app.apk" and
+    // nobody could tell four of them apart in a Downloads folder.
+    //
+    // So app-1.1.4.apk serves app.apk, and the version is in the part of the
+    // request no client can disregard. The bare name keeps working, because it
+    // is the link that gets written down and typed off a screen.
+    if (!existsSync(full)) {
+        const versioned = /^(.+?)-[0-9]+(?:\.[0-9]+)*(\.[A-Za-z0-9]+)$/.exec(file);
+        if (versioned) {
+            const bare = join(DIST_DIR, `${versioned[1]}${versioned[2]}`);
+            if (existsSync(bare)) full = bare;
+        }
+    }
     if (!existsSync(full)) return reply.code(404).send({ error: 'not found' });
 
     audit(db, 'download', 'CONNECTOR_DOWNLOAD', file, String(req.ip));

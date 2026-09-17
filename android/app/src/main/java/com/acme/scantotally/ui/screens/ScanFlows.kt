@@ -183,7 +183,10 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
     LaunchedEffect(repo) {
         val r = repo ?: return@LaunchedEffect
         scans.collect { scan ->
-            val sid = ensure(r)
+            // No receipt is opened yet. A scan that turns out to be a part no,
+            // or one refused as a duplicate, must not leave an empty receipt
+            // behind -- five of them appeared in a single afternoon that way.
+            // The receipt is created by the first box that commits.
 
             // A combined barcode is a whole box on its own. Unchanged: one
             // pull, one box, nothing typed. Only cartons without one fall
@@ -191,6 +194,7 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
             val whole = r.parseWholeBox(scan)
             if (whole != null) {
                 draft = BoxDraft()
+                val sid = ensure(r)
                 accept(r, sid, r.scanIncoming(sid, scan))
                 return@collect
             }
@@ -223,6 +227,7 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
 
             val d = draft
             if (d.isComplete) {
+                val sid = ensure(r)
                 accept(r, sid, r.receiveAssembled(sid, d.pid, d.boxSerial, d.qty!!, d.rawTrail))
             }
         }

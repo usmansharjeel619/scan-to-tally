@@ -1066,17 +1066,50 @@ if (DOWNLOAD_PATH) {
     reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
     reply.header('Pragma', 'no-cache');
 
-    // The size, declared.
+    const size = statSync(full).size;
+
+    // Ranges, actually honoured.
     //
-    // Streaming without it sends the body chunked with no length, and Android's
-    // download manager then shows a 44 MB APK as 0 KB and can sit there without
-    // finishing. A browser copes; a handset downloading its own update does
-    // not, which is the one client that matters here.
-    reply.header('Content-Length', statSync(full).size);
-    // Lets an interrupted download resume rather than start again, which over a
-    // warehouse connection is the difference between an update landing and not.
+    // Advertising Accept-Ranges and then ignoring Range is a lie a browser
+    // shrugs off and Android's download manager does not: it asks for a range
+    // while resuming, is handed the whole file with a 200, and sits at
+    // "44.06/44.06" without ever finishing. Either support it or do not claim
+    // to, and supporting it is what makes an interrupted download over a
+    // warehouse connection resume instead of starting again.
     reply.header('Accept-Ranges', 'bytes');
 
+    const rangeHeader = String(req.headers.range ?? '');
+    const m = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+
+    if (m) {
+      const hasStart = m[1] !== '';
+      const hasEnd = m[2] !== '';
+
+      // "bytes=-500" means the LAST 500 bytes, not the first.
+      let start = hasStart ? Number(m[1]) : size - Number(m[2]);
+      let end = hasStart ? (hasEnd ? Number(m[2]) : size - 1) : size - 1;
+
+      if (!Number.isFinite(start) || !Number.isFinite(end)) {
+        return reply.code(416).header('Content-Range', `bytes */${size}`).send();
+      }
+      start = Math.max(0, start);
+      end = Math.min(end, size - 1);
+      if (start > end || start >= size) {
+        return reply.code(416).header('Content-Range', `bytes */${size}`).send();
+      }
+
+      reply.code(206);
+      reply.header('Content-Range', `bytes ${start}-${end}/${size}`);
+      reply.header('Content-Length', end - start + 1);
+      return reply.send(createReadStream(full, { start, end }));
+    }
+
+    // The size, declared.
+    //
+    // Streaming without it sends the body chunked with no length, and the
+    // download manager shows a 44 MB APK as 0 KB and can sit there without
+    // finishing.
+    reply.header('Content-Length', size);
     return reply.send(createReadStream(full));
   });
   app.log.info(`installer download path enabled at /dl/${DOWNLOAD_PATH}/`);

@@ -53,3 +53,22 @@ test('every binary download declares a length and allows resuming', async () => 
   assert.match(body, /statSync/, 'the size must come from the file itself');
   assert.match(body, /Accept-Ranges/, 'an interrupted download must be resumable');
 });
+
+test('a partial download resumes from where it stopped', async () => {
+  // Advertising Accept-Ranges and then ignoring Range is a lie a browser
+  // shrugs off and Android's download manager does not: it asks for a range
+  // while resuming, is handed the whole file with a 200, and sits at
+  // "44.06/44.06" without ever finishing.
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../src/server.ts', import.meta.url), 'utf8');
+  const route = src.slice(src.indexOf('/dl/${DOWNLOAD_PATH}/:file'));
+  const body = route.slice(0, route.indexOf('// --- connector socket'));
+
+  assert.match(body, /Accept-Ranges/, 'ranges must be advertised');
+  assert.match(body, /req\.headers\.range/, 'and the request header actually read');
+  assert.match(body, /206/, 'a range must answer 206, not 200 with everything');
+  assert.match(body, /Content-Range/, 'and say which bytes it is sending');
+  assert.match(body, /416/, 'an impossible range must be refused, not silently ignored');
+  assert.match(body, /createReadStream\(full, \{ start, end \}\)/,
+    'and read only that slice of the file');
+});

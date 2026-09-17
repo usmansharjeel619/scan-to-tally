@@ -15,7 +15,7 @@
 import Fastify from 'fastify';
 import websocket from '@fastify/websocket';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
-import { createReadStream, existsSync, readFileSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { openDb, applySync, audit, nowIso, resolvePid, type DB } from './db.ts';
 import { decideIncomingScan, decideOutgoingScan, validateOutgoingQty } from './validation.ts';
@@ -1065,6 +1065,18 @@ if (DOWNLOAD_PATH) {
     // stale connector.exe long after a fix has shipped -- which it did.
     reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
     reply.header('Pragma', 'no-cache');
+
+    // The size, declared.
+    //
+    // Streaming without it sends the body chunked with no length, and Android's
+    // download manager then shows a 44 MB APK as 0 KB and can sit there without
+    // finishing. A browser copes; a handset downloading its own update does
+    // not, which is the one client that matters here.
+    reply.header('Content-Length', statSync(full).size);
+    // Lets an interrupted download resume rather than start again, which over a
+    // warehouse connection is the difference between an update landing and not.
+    reply.header('Accept-Ranges', 'bytes');
+
     return reply.send(createReadStream(full));
   });
   app.log.info(`installer download path enabled at /dl/${DOWNLOAD_PATH}/`);

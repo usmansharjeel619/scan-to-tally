@@ -34,3 +34,22 @@ test('only the last dot counts', () => {
   assert.equal(downloadName('bootstrap.ps1', '1.1.0'), 'bootstrap-1.1.0.ps1');
   assert.equal(downloadName('.hidden', '1.1.0'), '.hidden');
 });
+
+test('every binary download declares a length and allows resuming', async () => {
+  // Streaming without a Content-Length sends the body chunked with no length,
+  // and Android's download manager shows a 44 MB APK as 0 KB and can sit there
+  // never finishing. A browser copes; the handset downloading its own update
+  // does not, and that is the client that matters.
+  //
+  // Asserted against the source, because the route only exists when a download
+  // path is configured and this rule must not be able to regress unnoticed.
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../src/server.ts', import.meta.url), 'utf8');
+
+  const route = src.slice(src.indexOf('/dl/${DOWNLOAD_PATH}/:file'));
+  const body = route.slice(0, route.indexOf('createReadStream'));
+
+  assert.match(body, /Content-Length/, 'a download must declare its size');
+  assert.match(body, /statSync/, 'the size must come from the file itself');
+  assert.match(body, /Accept-Ranges/, 'an interrupted download must be resumable');
+});

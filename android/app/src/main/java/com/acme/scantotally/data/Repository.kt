@@ -424,6 +424,16 @@ class Repository(context: Context, private val api: RelayApi?) {
         }
     }
 
+    /**
+     * Tally's health, as the connector last reported it.
+     *
+     * Null when the relay cannot be reached at all, which is a different thing
+     * from Tally being down and is shown differently.
+     */
+    suspend fun tallyHealth(): String? = runCatching {
+        api?.status()?.connector?.health
+    }.getOrNull()
+
     // --- master sync ---
 
     /** Pulls everything the device needs to keep working without a network. */

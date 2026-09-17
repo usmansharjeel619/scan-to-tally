@@ -337,13 +337,17 @@ fun HomeScreen(nav: NavController) {
 
     LaunchedEffect(Unit) { godown = app.config.godown.first() }
 
-    // Poll the relay for connector health. Failure just leaves it UNKNOWN,
-    // which the banner shows honestly rather than pretending all is well.
+    // Poll the relay for connector health.
+    //
+    // This was declared and never wired up, so the banner sat on "Checking
+    // Tally..." forever -- the one thing on screen whose whole job is to be
+    // honest about the connection.
     LaunchedEffect(repo) {
         while (repo != null) {
-            runCatching {
-                val api = app.repository()
-                api.refreshPending()
+            val r = runCatching { app.repository() }.getOrNull()
+            if (r != null) {
+                health = r.tallyHealth() ?: "OFFLINE"
+                r.refreshPending()
             }
             delay(10_000)
         }

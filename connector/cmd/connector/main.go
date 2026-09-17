@@ -278,10 +278,24 @@ func makeSyncer(tc *tally.Client) relayclient.Syncer {
 		}
 		// A generous window: an order raised months ago can still be open, and
 		// an order the device cannot see is one the operator cannot despatch.
-		orders, err := tc.ListSalesOrders(ctx,
-			time.Now().AddDate(-1, 0, 0), time.Now().AddDate(0, 3, 0))
+		from, to := time.Now().AddDate(-1, 0, 0), time.Now().AddDate(0, 3, 0)
+		orders, err := tc.ListSalesOrders(ctx, from, to)
 		if err != nil {
 			return nil, err
+		}
+
+		// How much of each order has already gone out. Tally will not say on
+		// the order itself, so it is summed from the despatches that reference
+		// it. Without it every order looks entirely outstanding for ever.
+		fulfilled, err := tc.ListOrderFulfilment(ctx, from, to)
+		if err != nil {
+			return nil, err
+		}
+		for i := range orders {
+			done := fulfilled[orders[i].VoucherNumber]
+			for j := range orders[i].Lines {
+				orders[i].Lines[j].DeliveredQty = done[orders[i].Lines[j].StockItemName]
+			}
 		}
 
 		out := &protocol.SyncPush{Company: tc.Company(), SyncedAt: time.Now()}

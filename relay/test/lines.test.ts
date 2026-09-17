@@ -278,3 +278,45 @@ test('outgoing still refuses a part number Tally does not have', async () => {
   assert.equal(r.statusCode, 400);
   assert.equal(r.json().error, 'unresolved_pid');
 });
+
+test('a second despatch cannot exceed what the order still has outstanding', async () => {
+  // Six went out against an order for four: the box ceiling held, the order
+  // ceiling did not, because Tally's delivered figure is a sync behind and
+  // nothing counted what this relay had itself just sent.
+  const { validateOutgoingQty } = await import('../src/validation.ts');
+
+  db.prepare(`INSERT INTO sales_orders (voucher_number, party_name, order_date, synced_at)
+              VALUES ('SO-1','A Customer','2026-01-01', ?)`).run(nowIso());
+  db.prepare(`INSERT INTO sales_order_lines
+                (voucher_number, stock_item_name, ordered_qty, delivered_qty, unit)
+              VALUES ('SO-1', ?, 4, 0, 'NO')`).run(KNOWN_ITEM);
+  db.prepare(`INSERT INTO batch_balances
+                (stock_item_name, batch_name, godown_name, closing_qty, unit, synced_at)
+              VALUES (?, 'BOX-1', ?, 8, 'NO', ?)`).run(KNOWN_ITEM, GODOWN, nowIso());
+
+  // First despatch: the whole order, already submitted.
+  const first = 'sess-out-1';
+  db.prepare(`INSERT INTO sessions (id, kind, device_id, operator, company, godown, party,
+                                    sales_order, state, narration, created_at, submitted_at)
+              VALUES (?, 'OUTGOING','dock-1','Tester','New Test Company', ?, '', 'SO-1',
+                      'POSTED','', ?, ?)`)
+    .run(first, GODOWN, nowIso(), new Date(Date.now() + 1000).toISOString());
+  db.prepare(`INSERT INTO session_lines (session_id, pid, box_serial, qty, unit,
+                                         stock_item_name, description, raw_payload,
+                                         symbology, flags, scanned_at)
+              VALUES (?, ?, 'BOX-1', 4, 'NO', ?, '', '', '', '', ?)`)
+    .run(first, KNOWN_PID, KNOWN_ITEM, nowIso());
+
+  // Second despatch, before Tally has reported the first.
+  const v = validateOutgoingQty(db, {
+    sessionId: 'sess-out-2', salesOrder: 'SO-1', godown: GODOWN,
+    pid: KNOWN_PID, boxSerial: 'BOX-1', stockItemName: KNOWN_ITEM, qty: 2,
+  });
+
+  assert.equal(v.orderPending, 0, 'the order has nothing left outstanding');
+  assert.ok(v.warning, 'it must at least say the order is exceeded');
+  assert.match(String(v.warning), /outstanding/);
+
+  // The box itself still has room, so this is purely the order ceiling.
+  assert.equal(v.available, 8);
+});

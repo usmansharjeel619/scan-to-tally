@@ -47,6 +47,16 @@ const (
   <FETCH>BATCHALLOCATIONS.*</FETCH>
 </COLLECTION>`
 
+	// Everything that consumes a sales order: a delivery note, or a sales
+	// invoice raised directly against it.
+	tdlOrderFulfilment = `<COLLECTION NAME="STT_OrderFulfilment" ISMODIFY="No">
+  <TYPE>Voucher</TYPE>
+  <FILTER>STT_IsDespatch</FILTER>
+  <FETCH>VOUCHERNUMBER, VOUCHERTYPENAME</FETCH>
+  <FETCH>ALLINVENTORYENTRIES.*</FETCH>
+</COLLECTION>
+<SYSTEM TYPE="Formulae" NAME="STT_IsDespatch">$VOUCHERTYPENAME = "Delivery Note" OR $VOUCHERTYPENAME = "Sales"</SYSTEM>`
+
 	tdlSalesOrders = `<COLLECTION NAME="STT_SalesOrders" ISMODIFY="No">
   <TYPE>Voucher</TYPE>
   <FILTER>STT_IsSalesOrder</FILTER>
@@ -60,8 +70,9 @@ const (
 type TDLOverrides struct {
 	Companies     string `json:"companies,omitempty"`
 	StockItems    string `json:"stockItems,omitempty"`
-	BatchBalances string `json:"batchBalances,omitempty"`
-	SalesOrders   string `json:"salesOrders,omitempty"`
+	BatchBalances   string `json:"batchBalances,omitempty"`
+	SalesOrders     string `json:"salesOrders,omitempty"`
+	OrderFulfilment string `json:"orderFulfilment,omitempty"`
 }
 
 func pick(override, fallback string) string {
@@ -515,6 +526,101 @@ func parseStockSummary(body []byte, godown string, now time.Time) ([]BatchBalanc
 		}
 	}
 	return out, nil
+}
+
+// ListOrderFulfilment reports how much has already gone out against each sales
+// order, keyed by order number and then stock item.
+//
+// Tally does not put an outstanding figure on the order itself -- the order
+// line only ever reports what was ordered -- so fulfilment has to be summed
+// from the vouchers that reference it. Every despatch carries ORDERNO, which is
+// how they link back.
+//
+// Without this, delivered was always zero and every fresh session saw the whole
+// order still outstanding: two despatches against one order for four sent six.
+func (c *Client) ListOrderFulfilment(
+	ctx context.Context, from, to time.Time,
+) (map[string]map[string]float64, error) {
+	payload, err := buildExport(c.cfg.Company, "STT_OrderFulfilment",
+		pick(c.cfg.TDL.OrderFulfilment, tdlOrderFulfilment), &from, &to)
+	if err != nil {
+		return nil, business("BUILD_FAILED", err.Error())
+	}
+	body, err := c.post(ctx, payload)
+	if err != nil {
+		return nil, err
+	}
+	if le := extractTag(string(body), "LINEERROR"); le != "" {
+		return nil, c.noteAppError(classifyMessage(le))
+	}
+
+	out := map[string]map[string]float64{}
+	err = walk(body, "VOUCHER", func(d *xml.Decoder, se xml.StartElement) error {
+		var row struct {
+			Entries []struct {
+				StockItemName string `xml:"STOCKITEMNAME"`
+				ActualQty     string `xml:"ACTUALQTY"`
+				OrderNo       string `xml:"ORDERNO"`
+				Batches       []struct {
+					OrderNo   string `xml:"ORDERNO"`
+					ActualQty string `xml:"ACTUALQTY"`
+				} `xml:"BATCHALLOCATIONS.LIST"`
+			} `xml:"ALLINVENTORYENTRIES.LIST"`
+		}
+		if err := d.DecodeElement(&row, &se); err != nil {
+			return nil
+		}
+
+		for _, e := range row.Entries {
+			item := strings.TrimSpace(e.StockItemName)
+			if item == "" {
+				continue
+			}
+			// The order number sits on the entry, or on its batch allocations
+			// when the despatch was made box by box -- which is how this app
+			// makes every one of them.
+			for _, b := range e.Batches {
+				order := cleanOrderNo(b.OrderNo)
+				if order == "" {
+					continue
+				}
+				qty, _ := parseTallyQty(b.ActualQty)
+				addFulfilment(out, order, item, qty)
+			}
+			if order := cleanOrderNo(e.OrderNo); order != "" && len(e.Batches) == 0 {
+				qty, _ := parseTallyQty(e.ActualQty)
+				addFulfilment(out, order, item, qty)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, business("PARSE_FAILED", err.Error())
+	}
+	return out, nil
+}
+
+// cleanOrderNo drops Tally's "not applicable" placeholder, which means the line
+// is not against an order at all.
+func cleanOrderNo(s string) string {
+	v := strings.TrimSpace(s)
+	if v == "" || strings.EqualFold(v, "Not Applicable") {
+		return ""
+	}
+	return v
+}
+
+func addFulfilment(m map[string]map[string]float64, order, item string, qty float64) {
+	if qty < 0 {
+		qty = -qty // a despatch is negative in some voucher views
+	}
+	if qty == 0 {
+		return
+	}
+	if m[order] == nil {
+		m[order] = map[string]float64{}
+	}
+	m[order][item] += qty
 }
 
 // ListSalesOrders returns sales orders in the window, with delivered quantities

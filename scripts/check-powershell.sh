@@ -24,6 +24,11 @@ while IFS= read -r f; do
       \$errs | ForEach-Object { 'line {0}: {1}' -f \$_.Extent.StartLineNumber, \$_.Message }
       exit 1
     }") && echo "ok   $(basename "$f")" || { echo "FAIL $(basename "$f")"; echo "$out"; fail=1; }
-done < <(find "$ROOT/scripts" "$ROOT/dist" -name '*.ps1' 2>/dev/null | sort)
+# .ps1.template included deliberately. bootstrap.ps1.template is the installer
+# that runs as Administrator on the Tally machine, and it was the ONE script not
+# being checked -- the placeholders sit inside quoted strings, so it parses
+# exactly as the generated file does and there is no reason to skip it.
+done < <(find "$ROOT/scripts" "$ROOT/dist" \
+    \( -name '*.ps1' -o -name '*.ps1.template' \) 2>/dev/null | sort)
 
 exit $fail

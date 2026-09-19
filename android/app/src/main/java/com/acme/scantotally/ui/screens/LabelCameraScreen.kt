@@ -69,8 +69,11 @@ import java.util.concurrent.Executors
  */
 @Composable
 fun LabelCameraSheet(
-    onCancel: () -> Unit,
-    onRead: (product: String?, box: String?, qty: Int?) -> Unit,
+    onClose: () -> Unit,
+    /** What happened to the last carton added, shown until the next is read. */
+    lastResult: String?,
+    added: Int,
+    onAdd: (product: String?, box: String?, qty: Int?) -> Unit,
 ) {
     val context = LocalContext.current
     var granted by remember {
@@ -99,14 +102,25 @@ fun LabelCameraSheet(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(16.dp))
-            Button(onClick = onCancel) { Text("Back") }
+            Button(onClick = onClose) { Text("Back") }
         }
         return
     }
 
-    val consensus = remember { LabelConsensus(required = 4) }
+    var consensus by remember { mutableStateOf(LabelConsensus(required = 4)) }
     var seen by remember { mutableStateOf(LabelReading()) }
     var frames by remember { mutableStateOf(0) }
+
+    // Ready for the next carton, without leaving the camera.
+    //
+    // A pallet is many boxes, and closing the camera after each one means
+    // finding the button again every time. The receipt is posted from the scan
+    // screen when the operator decides they are finished -- never from here.
+    fun readyForNext() {
+        consensus = LabelConsensus(required = 4)
+        seen = LabelReading()
+        frames = 0
+    }
 
     Box(Modifier.fillMaxSize()) {
         CameraFeed { words ->
@@ -128,10 +142,35 @@ fun LabelCameraSheet(
                 ),
             ) {
                 Column(Modifier.padding(16.dp)) {
-                    Text(
-                        "Hold the label square on",
-                        style = MaterialTheme.typography.titleMedium,
-                    )
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            "Hold the label square on",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        if (added > 0) {
+                            Text(
+                                "$added on this receipt",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = LocalSemantics.current.accept.fg,
+                            )
+                        }
+                    }
+
+                    // What became of the carton just added, left up until the
+                    // next one is read. A refusal -- a duplicate box, say --
+                    // has to be seen before the operator moves on.
+                    lastResult?.let {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+
                     Spacer(Modifier.height(10.dp))
 
                     Found("PRODUCT", seen.product, consensus.product?.votes, frames)
@@ -143,13 +182,19 @@ fun LabelCameraSheet(
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 TextButton(
-                    onClick = onCancel,
+                    onClick = onClose,
                     modifier = Modifier.weight(1f).heightIn(min = TouchTarget),
-                ) { Text("Cancel") }
+                ) { Text("Done") }
 
                 val whole = seen.product != null && seen.box != null && seen.qty != null
                 Button(
-                    onClick = { onRead(seen.product, seen.box, seen.qty) },
+                    onClick = {
+                        onAdd(seen.product, seen.box, seen.qty)
+                        // Straight on to the next carton. Only a whole reading
+                        // has been added; a partial one has gone to the slots
+                        // behind, and the camera is finished with it either way.
+                        readyForNext()
+                    },
                     // Nothing read is nothing to offer. A partial reading fills
                     // what it found and leaves the rest showing as missing.
                     enabled = seen.product != null || seen.box != null || seen.qty != null,

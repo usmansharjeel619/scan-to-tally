@@ -105,6 +105,8 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
     var offeredQty by remember { mutableStateOf<Int?>(null) }
     /** The camera, off unless asked for. Scanning is unchanged and still first. */
     var reading by remember { mutableStateOf(false) }
+    /** What became of the last carton the camera added, shown until the next. */
+    var cameraResult by remember { mutableStateOf<String?>(null) }
     var operator by remember { mutableStateOf("") }
     var submitting by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<String?>(null) }
@@ -279,33 +281,34 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
 
     if (reading) {
         LabelCameraSheet(
-            onCancel = { reading = false },
-            onRead = { product, box, qty ->
-                reading = false
-
+            onClose = { reading = false; cameraResult = null },
+            lastResult = cameraResult,
+            added = lines.size,
+            onAdd = { product, box, qty ->
                 var next = draft
                 product?.let { next = next.withTypedProduct(it) }
                 box?.let { next = next.withTypedBox(it) }
                 qty?.let { next = next.withTypedQty(it) }
                 draft = next
 
-                // A complete reading commits, exactly as a complete scan does.
-                //
-                // The operator has already confirmed it -- the camera showed
-                // every field and how many frames agreed before they pressed
-                // Use these -- so stopping to tap three slots that are already
-                // filled is asking the same question twice. A partial reading
-                // still waits: the slots show what is missing.
-                if (next.isComplete) {
+                if (!next.isComplete) {
+                    // Not a whole carton: what was read goes to the slots and
+                    // the camera steps out of the way so the rest can be typed.
+                    reading = false
+                    cameraResult = null
+                } else {
+                    // A whole carton is added to the receipt, exactly as a
+                    // complete scan is -- and nothing is posted to Tally. The
+                    // receipt is sent when the operator says so, from the
+                    // button on the scan screen, never from here.
                     scope.launch {
                         val r = repo ?: return@launch
                         val sid = ensure(r)
-                        accept(
-                            r, sid,
-                            r.receiveAssembled(
-                                sid, next.pid, next.boxSerial, next.qty!!, next.rawTrail,
-                            ),
+                        val d = r.receiveAssembled(
+                            sid, next.pid, next.boxSerial, next.qty!!, next.rawTrail,
                         )
+                        accept(r, sid, d)
+                        cameraResult = d.message
                     }
                 }
             },

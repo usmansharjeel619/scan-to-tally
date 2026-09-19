@@ -855,7 +855,19 @@ class Repository(context: Context, private val api: RelayApi?) {
         // scanned out of range has not reached the relay yet, and "not there"
         // means nothing about it.
         if (look.gone) {
-            if (local.state != "POSTED" && dao.unsyncedCount(sessionId) == 0) {
+            // Posted receipts are cleared too, when the relay has explicitly
+            // forgotten them.
+            //
+            // They used to be kept as the record of what Tally was told, which
+            // is right while Tally still has the voucher. Once the relay has
+            // deliberately dropped the receipt there is nothing left for it to
+            // be a record OF -- and the box history it carries goes on refusing
+            // cartons as duplicates of a receipt that exists nowhere.
+            //
+            // Only ever on an explicit "no such receipt" with every line
+            // already delivered. A receipt scanned out of range has not reached
+            // the relay yet, and its silence means nothing.
+            if (dao.unsyncedCount(sessionId) == 0) {
                 dao.deleteLinesFor(sessionId)
                 dao.deleteSession(sessionId)
             }
@@ -955,7 +967,17 @@ class Repository(context: Context, private val api: RelayApi?) {
             },
         )
 
-        dao.upsertReceivedBoxes(s.receivedBoxes.map { ReceivedBoxEntity(it.pid, it.boxSerial, it.receivedAt) })
+        // Replaced wholesale, like balances and orders.
+        //
+        // It was merged in and never cleared, so a box stayed "already
+        // received" on this handset long after the receipt that recorded it had
+        // gone from Tally and the relay. Clearing the server cleared nothing
+        // here, and a carton was refused as a duplicate of a receipt that no
+        // longer exists anywhere.
+        dao.clearReceivedBoxes()
+        dao.upsertReceivedBoxes(
+            s.receivedBoxes.map { ReceivedBoxEntity(it.pid, it.boxSerial, it.receivedAt) },
+        )
         dao.upsertCatalogue(s.catalogue.map { CatalogueEntity(it.pid, it.description, it.alternates) })
         true
     }.getOrDefault(false)

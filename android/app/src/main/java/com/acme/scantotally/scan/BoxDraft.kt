@@ -42,10 +42,18 @@ data class BoxDraft(
     val rawTrail: String get() = raws.joinToString(" + ")
 
     fun withScan(fragment: Fragment): BoxDraft = when (fragment.kind) {
-        FragmentKind.PRODUCT -> copy(
-            pid = fragment.value,
-            scanned = scanned + Slot.PRODUCT,
-            raws = raws + fragment.raw,
+        // A different product means a different carton, so whatever was on the
+        // draft belonged to the last one.
+        //
+        // Without this a box number survives into the next box: a KAC carton
+        // was received carrying "HFE283", which is the box number printed on a
+        // Tyco carton scanned before it. The quantity would carry over the same
+        // way, and a receipt built from two cartons is stock recorded against a
+        // box that never held it.
+        FragmentKind.PRODUCT -> forProduct(fragment.value).copy(
+            scanned = scanned + Slot.PRODUCT - carriedOver(fragment.value),
+            raws = if (isDifferentProduct(fragment.value)) listOf(fragment.raw)
+            else raws + fragment.raw,
         )
         FragmentKind.BOX -> copy(
             boxSerial = fragment.value,
@@ -56,8 +64,23 @@ data class BoxDraft(
         FragmentKind.NOT_MINE -> this
     }
 
-    fun withTypedProduct(v: String) = copy(pid = v.trim(), scanned = scanned - Slot.PRODUCT)
+    fun withTypedProduct(v: String) =
+        forProduct(v.trim()).copy(scanned = scanned - Slot.PRODUCT - carriedOver(v.trim()))
     fun withTypedBox(v: String) = copy(boxSerial = v.trim(), scanned = scanned - Slot.BOX)
+
+    private fun isDifferentProduct(next: String) = pid.isNotEmpty() && pid != next
+
+    /** Which fields a change of product invalidates. */
+    private fun carriedOver(next: String): Set<Slot> =
+        if (isDifferentProduct(next)) setOf(Slot.BOX, Slot.QUANTITY) else emptySet()
+
+    /**
+     * The draft as it should be for this product: unchanged when it is the same
+     * one, emptied of the previous carton's box and quantity when it is not.
+     */
+    private fun forProduct(next: String): BoxDraft =
+        if (isDifferentProduct(next)) BoxDraft(pid = next)
+        else copy(pid = next)
     fun withTypedQty(v: Int) = copy(qty = v, scanned = scanned - Slot.QUANTITY)
 }
 

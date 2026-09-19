@@ -4,6 +4,7 @@ import com.acme.scantotally.scan.BoxDraft
 import com.acme.scantotally.scan.classifyFragment
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -93,5 +94,51 @@ class BoxDraftTest {
             .withScan(classifyFragment("4098-5220"))
             .withScan(classifyFragment("HFE283"))
         assertEquals("4098-5220 + HFE283", d.rawTrail)
+    }
+
+    /**
+     * A box number must never survive into the next carton.
+     *
+     * A KAC carton was received carrying "HFE283" -- the box number printed on
+     * a Tyco carton read just before it. Stock recorded against a box that
+     * never held it, and nothing on screen to show for it.
+     */
+    @Test
+    fun `a different product clears the previous carton`() {
+        val tyco = BoxDraft()
+            .withScan(classifyFragment("4098-5220"))
+            .withScan(classifyFragment("HFE283"))
+            .withTypedQty(35)
+        assertTrue(tyco.isComplete)
+
+        val kac = tyco.withScan(classifyFragment("4099-5208"))
+        assertEquals("4099-5208", kac.pid)
+        assertEquals("the Tyco box must not come with it", "", kac.boxSerial)
+        assertNull("nor its quantity", kac.qty)
+        assertFalse(kac.isComplete)
+    }
+
+    /** Typing the next product clears it just the same. */
+    @Test
+    fun `typing a different product clears the previous carton`() {
+        val first = BoxDraft()
+            .withScan(classifyFragment("4098-5220"))
+            .withScan(classifyFragment("HFE283"))
+        val second = first.withTypedProduct("4099-5208")
+
+        assertEquals("4099-5208", second.pid)
+        assertEquals("", second.boxSerial)
+    }
+
+    /** Re-reading the SAME product mid-carton keeps what is already there. */
+    @Test
+    fun `the same product again keeps the rest of the carton`() {
+        val d = BoxDraft()
+            .withScan(classifyFragment("4098-5220"))
+            .withScan(classifyFragment("HFE283"))
+            .withScan(classifyFragment("4098-5220"))
+
+        assertEquals("HFE283", d.boxSerial)
+        assertEquals("4098-5220", d.pid)
     }
 }

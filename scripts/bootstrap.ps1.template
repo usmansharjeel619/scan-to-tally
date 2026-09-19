@@ -129,8 +129,26 @@ if (-not $Company) {
     $names = @(Get-TallyCompanies ([ref] $raw))
 
     if ($names.Count -eq 1) {
+        # Confirmed out loud even though there is only one candidate.
+        #
+        # This is the single moment the company gets decided for the whole
+        # site: the handsets take it from here and then lock onto it. One
+        # company being open does not make it the RIGHT one -- a test company
+        # left open from a trial is exactly as unambiguous as the live one --
+        # and a wrong choice here is invisible afterwards, because every part
+        # of the system agrees with every other part about the wrong answer.
         $Company = [string]$names[0]
         Write-Host "   Found: $Company" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "   The warehouse will post EVERY receipt and delivery into this" -ForegroundColor Cyan
+        Write-Host "   company. Check the name is exactly right before continuing."
+        $ok = (Read-Host "   Is '$Company' the right company? (y/n)").Trim()
+        if ($ok -notmatch '^(y|yes)$') {
+            Write-Host ""
+            Write-Host "   Open the company you want in Tally, then run this again." -ForegroundColor Yellow
+            Write-Host "   (Alt+F3 > Select Company, in the Tally window.)"
+            exit 1
+        }
     }
     elseif ($names.Count -gt 1) {
         Write-Host "   More than one company is open:" -ForegroundColor Yellow

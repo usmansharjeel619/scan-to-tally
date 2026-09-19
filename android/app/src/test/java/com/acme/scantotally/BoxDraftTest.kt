@@ -141,4 +141,69 @@ class BoxDraftTest {
         assertEquals("HFE283", d.boxSerial)
         assertEquals("4098-5220", d.pid)
     }
+
+    /**
+     * The ordinary case: a pallet of the same product, box after box.
+     *
+     * Clearing the draft when the product CHANGES must not disturb this --
+     * several boxes of one product, each with its own number and its own
+     * count, is how a pallet arrives.
+     */
+    @Test
+    fun `several boxes of one product each keep their own number and count`() {
+        val received = mutableListOf<Triple<String, String, Int>>()
+
+        // Box one.
+        var d = BoxDraft()
+            .withScan(classifyFragment("4098-9788"))
+            .withScan(classifyFragment("HKT710"))
+            .withTypedQty(24)
+        assertTrue(d.isComplete)
+        received += Triple(d.pid, d.boxSerial, d.qty!!)
+
+        // Committing clears the draft, exactly as the screen does.
+        d = BoxDraft()
+
+        // Box two: same product, different number, different count.
+        d = d.withScan(classifyFragment("4098-9788"))
+            .withScan(classifyFragment("HKT711"))
+            .withTypedQty(18)
+        assertTrue(d.isComplete)
+        received += Triple(d.pid, d.boxSerial, d.qty!!)
+
+        assertEquals(
+            listOf(
+                Triple("4098-9788", "HKT710", 24),
+                Triple("4098-9788", "HKT711", 18),
+            ),
+            received,
+        )
+    }
+
+    /** The box may be read before the product; an empty draft carries nothing. */
+    @Test
+    fun `a box read before its product is kept`() {
+        val d = BoxDraft()
+            .withScan(classifyFragment("HKT710"))
+            .withScan(classifyFragment("4098-9788"))
+            .withTypedQty(24)
+
+        assertEquals("HKT710", d.boxSerial)
+        assertEquals("4098-9788", d.pid)
+        assertTrue(d.isComplete)
+    }
+
+    /** Correcting the box number mid-carton replaces it, and nothing else. */
+    @Test
+    fun `a second box number for the same product replaces the first`() {
+        val d = BoxDraft()
+            .withScan(classifyFragment("4098-9788"))
+            .withScan(classifyFragment("HKT710"))
+            .withTypedQty(24)
+            .withScan(classifyFragment("HKT711"))
+
+        assertEquals("HKT711", d.boxSerial)
+        assertEquals("the quantity is untouched", 24, d.qty)
+        assertEquals("4098-9788", d.pid)
+    }
 }

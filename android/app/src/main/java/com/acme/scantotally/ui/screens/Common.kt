@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
@@ -202,10 +205,61 @@ fun groupLines(lines: List<SessionLineEntity>): List<LineGroup> =
             )
         }
 
+/**
+ * The boxes of one product on this receipt, each removable.
+ *
+ * A wrong box had to be removable BEFORE the receipt is posted, and there was
+ * no way to do it: a misread box number or a quantity typed in error could only
+ * be fixed by discarding the whole receipt and scanning the pallet again.
+ */
+@Composable
+fun BoxesDialog(group: LineGroup, onRemove: (Long) -> Unit, onClose: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text(group.description.ifEmpty { group.stockItemName }) },
+        text = {
+            Column {
+                Text(
+                    "Remove a box that was read wrongly. This changes the receipt " +
+                        "only -- nothing has gone to Tally yet.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(10.dp))
+                group.lines.forEach { line ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                tail(line.boxSerial),
+                                fontFamily = FontFamily.Monospace,
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            Text(
+                                "${fmtQty(line.qty)} ${line.unit}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        TextButton(onClick = { onRemove(line.id) }) {
+                            Text("Remove", color = LocalSemantics.current.reject.fg)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onClose) { Text("Done") } },
+    )
+}
+
 @Composable
 fun GroupRow(group: LineGroup, onClick: () -> Unit = {}) {
     Card(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+            .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(
             containerColor = if (group.hasFlags) LocalSemantics.current.review.bg
             else MaterialTheme.colorScheme.surface,

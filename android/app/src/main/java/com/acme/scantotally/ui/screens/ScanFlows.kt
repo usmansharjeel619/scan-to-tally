@@ -107,6 +107,7 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
     var reading by remember { mutableStateOf(false) }
     /** What became of the last carton the camera added, shown until the next. */
     var cameraResult by remember { mutableStateOf<String?>(null) }
+    var openGroup by remember { mutableStateOf<LineGroup?>(null) }
     var operator by remember { mutableStateOf("") }
     var submitting by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<String?>(null) }
@@ -277,6 +278,7 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
             )
         },
         onReadLabel = { reading = true },
+        onOpenGroup = { openGroup = it },
     )
 
     if (reading) {
@@ -284,6 +286,17 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
             onClose = { reading = false; cameraResult = null },
             lastResult = cameraResult,
             added = lines.size,
+            onCorrect = { product, box, qty ->
+                // Out of the camera and into the slots, where each field can be
+                // edited. Nothing is committed on the way.
+                reading = false
+                cameraResult = null
+                var next = draft
+                product?.let { next = next.withTypedProduct(it) }
+                box?.let { next = next.withTypedBox(it) }
+                qty?.let { next = next.withTypedQty(it) }
+                draft = next
+            },
             onAdd = { product, box, qty ->
                 var next = draft
                 product?.let { next = next.withTypedProduct(it) }
@@ -314,6 +327,21 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
             },
         )
         return
+    }
+
+    openGroup?.let { group ->
+        // Re-read from the session each time, so a removal is reflected without
+        // reopening, and the dialog closes once the last box has gone.
+        val current = groupLines(lines).firstOrNull { it.pid == group.pid }
+        if (current == null) {
+            openGroup = null
+        } else {
+            BoxesDialog(
+                group = current,
+                onRemove = { id -> scope.launch { repo?.deleteLine(id) } },
+                onClose = { openGroup = null },
+            )
+        }
     }
 
     typing?.let { slot ->
@@ -1077,6 +1105,8 @@ private fun ScanScaffold(
     slots: (@Composable () -> Unit)? = null,
     /** Offered only where reading a printed label makes sense. */
     onReadLabel: (() -> Unit)? = null,
+    /** Opens a product's boxes, so a wrong one can be taken off the receipt. */
+    onOpenGroup: ((LineGroup) -> Unit)? = null,
 ) {
     Scaffold(
         topBar = {
@@ -1131,7 +1161,9 @@ private fun ScanScaffold(
                     )
                 } else {
                     LazyColumn {
-                        items(groupLines(lines)) { group -> GroupRow(group) }
+                        items(groupLines(lines)) { group ->
+                            GroupRow(group) { onOpenGroup?.invoke(group) }
+                        }
                     }
                 }
             }

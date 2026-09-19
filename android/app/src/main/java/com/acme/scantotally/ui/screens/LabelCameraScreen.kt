@@ -9,6 +9,7 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -74,6 +75,15 @@ fun LabelCameraSheet(
     lastResult: String?,
     added: Int,
     onAdd: (product: String?, box: String?, qty: Int?) -> Unit,
+    /**
+     * Take what has been read to the slots to be corrected by hand.
+     *
+     * OCR gets a digit wrong occasionally -- "4098-9783" for "4098-9788" in the
+     * measurement -- so a value that looks wrong has to be fixable before it
+     * becomes stock. Rather than a second editor in here, the reading goes to
+     * the slots, which already know how to edit each field.
+     */
+    onCorrect: (product: String?, box: String?, qty: Int?) -> Unit,
 ) {
     val context = LocalContext.current
     var granted by remember {
@@ -173,9 +183,19 @@ fun LabelCameraSheet(
 
                     Spacer(Modifier.height(10.dp))
 
-                    Found("PRODUCT", seen.product, consensus.product?.votes, frames)
-                    Found("BOX", seen.box, consensus.box?.votes, frames)
-                    Found("QUANTITY", seen.qty?.toString(), consensus.qty?.votes, frames)
+                    val correct = { onCorrect(seen.product, seen.box, seen.qty) }
+                    Found("PRODUCT", seen.product, consensus.product?.votes, frames, correct)
+                    Found("BOX", seen.box, consensus.box?.votes, frames, correct)
+                    Found("QUANTITY", seen.qty?.toString(), consensus.qty?.votes, frames, correct)
+
+                    if (seen.product != null || seen.box != null || seen.qty != null) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "Tap any of them to correct it.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
 
@@ -207,10 +227,19 @@ fun LabelCameraSheet(
 
 /** One field, with how many frames agreed -- which is how sure it is. */
 @Composable
-private fun Found(label: String, value: String?, votes: Int?, frames: Int) {
+private fun Found(
+    label: String,
+    value: String?,
+    votes: Int?,
+    frames: Int,
+    onCorrect: () -> Unit,
+) {
     val sem = LocalSemantics.current
     Row(
-        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        Modifier
+            .fillMaxWidth()
+            .let { if (value != null) it.clickable(onClick = onCorrect) else it }
+            .padding(vertical = 6.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Text(

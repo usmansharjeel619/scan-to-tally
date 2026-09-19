@@ -282,13 +282,32 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
             onCancel = { reading = false },
             onRead = { product, box, qty ->
                 reading = false
-                // Filled in, never committed: whatever the camera read lands
-                // in the slots and the operator confirms it against the carton.
-                // One digit wrong in a part number still looks like a part
-                // number, so nothing here is taken on trust.
-                product?.let { draft = draft.withTypedProduct(it) }
-                box?.let { draft = draft.withTypedBox(it) }
-                qty?.let { draft = draft.withTypedQty(it) }
+
+                var next = draft
+                product?.let { next = next.withTypedProduct(it) }
+                box?.let { next = next.withTypedBox(it) }
+                qty?.let { next = next.withTypedQty(it) }
+                draft = next
+
+                // A complete reading commits, exactly as a complete scan does.
+                //
+                // The operator has already confirmed it -- the camera showed
+                // every field and how many frames agreed before they pressed
+                // Use these -- so stopping to tap three slots that are already
+                // filled is asking the same question twice. A partial reading
+                // still waits: the slots show what is missing.
+                if (next.isComplete) {
+                    scope.launch {
+                        val r = repo ?: return@launch
+                        val sid = ensure(r)
+                        accept(
+                            r, sid,
+                            r.receiveAssembled(
+                                sid, next.pid, next.boxSerial, next.qty!!, next.rawTrail,
+                            ),
+                        )
+                    }
+                }
             },
         )
         return

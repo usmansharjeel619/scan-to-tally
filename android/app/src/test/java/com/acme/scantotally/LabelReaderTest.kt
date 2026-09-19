@@ -168,4 +168,87 @@ class LabelReaderTest {
         assertEquals(0, c.frames)
         assertNull(c.product)
     }
+
+    /**
+     * Simplex: the box number exists NOWHERE else on the carton.
+     *
+     * It sits inside "4100-3206|1120181448458237|1", printed under SERIAL#,
+     * between the part number and the quantity. There is no Box field to read,
+     * so a reader that only looks for a standalone box number finds nothing --
+     * which is exactly what happened on the real cartons.
+     */
+    @Test
+    fun `the box number is taken out of the long serial line`() {
+        val label = listOf(
+            w("PID:", 20, 20), w("4100-3206", 140, 20),
+            w("PART", 20, 100), w("NO.", 80, 100), w("742-949", 180, 100),
+            w("QTY:1", 500, 100),
+            w("SERIAL#:", 20, 180),
+            w("4100-3206|1120181448458237|1", 20, 220, width = 340),
+        )
+
+        val read = readLabel(label)
+        assertEquals("4100-3206", read.product)
+        assertEquals("1120181448458237", read.box)
+        assertEquals(1, read.qty)
+    }
+
+    /** OCR splits a long line into pieces; it is still one line. */
+    @Test
+    fun `a serial line broken across words is reassembled`() {
+        val label = listOf(
+            w("SERIAL#:", 20, 180),
+            w("4100-3206", 20, 220), w("|", 130, 220, width = 8),
+            w("1120181448458237", 145, 220, width = 190),
+            w("|", 340, 220, width = 8), w("1", 355, 220),
+        )
+
+        val read = readLabel(label)
+        assertEquals("1120181448458237", read.box)
+        assertEquals(1, read.qty)
+    }
+
+    /**
+     * A printed pipe comes back as I, l or a slash depending on the label, and
+     * those are allowed for.
+     *
+     * "1" deliberately is not: a digit separator cannot be told apart from the
+     * digits either side of it, and a serial read one character short would
+     * name a box that does not exist and then pass every check after it.
+     */
+    @Test
+    fun `a misread separator still yields the box number`() {
+        for (sep in listOf("|", "I", "l", "/")) {
+            val label = listOf(
+                w("SERIAL#:", 20, 180),
+                w("4098-9792${sep}1124241658336425${sep}18", 20, 220, width = 340),
+            )
+            val read = readLabel(label)
+            assertEquals("separator $sep", "1124241658336425", read.box)
+            assertEquals("separator $sep", 18, read.qty)
+            assertEquals("separator $sep", "4098-9792", read.product)
+        }
+    }
+
+    /** A digit separator is ambiguous, so nothing is claimed rather than guessed. */
+    @Test
+    fun `a digit separator is not guessed at`() {
+        val label = listOf(
+            w("SERIAL#:", 20, 180),
+            w("4098-9792" + "1" + "1124241658336425" + "1" + "18", 20, 220, width = 340),
+        )
+        assertNull("better nothing than a serial one character out", readLabel(label).box)
+    }
+
+    /** Nonsense between the pipes is not a box number. */
+    @Test
+    fun `a line that only looks like a serial is not accepted`() {
+        val label = listOf(
+            w("Made in Czech Republic 17", 20, 20, width = 300),
+            w("Quantity:", 20, 80), w("35", 160, 80),
+        )
+        val read = readLabel(label)
+        assertNull(read.box)
+        assertEquals(35, read.qty)
+    }
 }

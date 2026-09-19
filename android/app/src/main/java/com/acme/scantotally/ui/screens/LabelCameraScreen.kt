@@ -147,13 +147,14 @@ fun LabelCameraSheet(
                     modifier = Modifier.weight(1f).heightIn(min = TouchTarget),
                 ) { Text("Cancel") }
 
+                val whole = seen.product != null && seen.box != null && seen.qty != null
                 Button(
                     onClick = { onRead(seen.product, seen.box, seen.qty) },
-                    // Nothing read is nothing to offer. Anything read still has
-                    // to be confirmed on the slots behind this.
+                    // Nothing read is nothing to offer. A partial reading fills
+                    // what it found and leaves the rest showing as missing.
                     enabled = seen.product != null || seen.box != null || seen.qty != null,
                     modifier = Modifier.weight(2f).heightIn(min = TouchTarget),
-                ) { Text("Use these") }
+                ) { Text(if (whole) "Add this box" else "Use what was read") }
             }
         }
     }

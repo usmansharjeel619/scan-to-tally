@@ -58,6 +58,23 @@ private val SERIAL16_RE = Regex("^[0-9]{16}$")
 private val NUMBER_RE = Regex("^[0-9]{1,6}$")
 
 /**
+ * "4100-3206|1120181448458237|1", as OCR tends to return it.
+ *
+ * The separator allows for a printed pipe coming back as I, l, / or a
+ * backslash. It deliberately does NOT allow "1": a digit separator cannot be
+ * told apart from the digits either side of it, and a serial read one
+ * character short is far worse than one not read at all -- it would name a
+ * box that does not exist and pass every check afterwards.
+ *
+ * The serial is digits only, which is what these actually are, so a letter
+ * separator cannot be absorbed into it.
+ */
+private val COMBINED_RE = Regex(
+    "([0-9]{4}-[0-9]{4})[|Il/\\\\]([0-9]{10,20})[|Il/\\\\]([0-9]{1,5})",
+    RegexOption.IGNORE_CASE,
+)
+
+/**
  * Reads one frame.
  *
  * Fields are found by their name first and by their shape second, because the
@@ -66,11 +83,58 @@ private val NUMBER_RE = Regex("^[0-9]{1,6}$")
 fun readLabel(words: List<TextWord>): LabelReading {
     if (words.isEmpty()) return LabelReading()
 
+    // The combined line first, where there is one.
+    //
+    // On the Simplex cartons the box number is printed nowhere else: it lives
+    // inside "4100-3206|1120181448458237|1", between the part number and the
+    // quantity, and there is no separate Box or Serial field to read. Looking
+    // only for a standalone box number finds nothing on those labels.
+    combined(words)?.let { return it }
+
     return LabelReading(
         product = readProduct(words),
         box = readBox(words),
         qty = readQuantity(words),
     )
+}
+
+/**
+ * The whole box, printed as one line under SERIAL#.
+ *
+ * Read from the TEXT rather than the barcode, because that is all a camera
+ * sees. OCR breaks a long line into several words and is unreliable about the
+ * separator -- a pipe comes back as I, l, 1 or a space depending on the
+ * printing -- so the line is reassembled and the separators are treated
+ * loosely. The fields themselves are not: a part number must still look like
+ * one and a quantity must still be a number, or nothing is returned.
+ */
+private fun combined(words: List<TextWord>): LabelReading? {
+    for (line in lines(words)) {
+        val joined = line.joinToString("") { it.text }.replace(" ", "")
+        val m = COMBINED_RE.find(joined) ?: continue
+
+        val serial = m.groupValues[2]
+        val qty = m.groupValues[3].toIntOrNull() ?: continue
+        if (qty <= 0) continue
+
+        return LabelReading(
+            product = m.groupValues[1],
+            box = serial,
+            qty = qty,
+        )
+    }
+    return null
+}
+
+/** Words grouped into the lines they were printed on. */
+private fun lines(words: List<TextWord>): List<List<TextWord>> {
+    if (words.isEmpty()) return emptyList()
+    val height = words.map { it.height }.sorted()[words.size / 2]
+    return words
+        .sortedWith(compareBy({ it.centreY / (height.coerceAtLeast(1)) }, { it.left }))
+        .groupBy { it.centreY / (height.coerceAtLeast(1)) }
+        .values
+        .toList()
 }
 
 private fun anchors(words: List<TextWord>, names: Set<String>): List<TextWord> =

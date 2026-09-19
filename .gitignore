@@ -31,3 +31,10 @@ scripts/deploy.env
 *.local.json
 /relay/relay.db*
 /tmp-*/
+
+# Real data exported from the customer's Tally during Phase 0, and connector
+# logs. Kept on disk because the findings were drawn from them and they are
+# worth re-reading, but never committed: they hold a live product catalogue,
+# real customers and real amounts. This repository is public.
+phase0-direct/
+*.log

@@ -14,7 +14,24 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PART="${1:-patch}"
-BUILD_HOST="root@BUILD_HOST_REDACTED"
+
+# Where this deploys to lives outside the repository.
+#
+# The server address and the download path are not secrets in the cryptographic
+# sense, but the path is the only thing standing between a stranger and the
+# installer -- and the installer carries the connector secret. Neither belongs
+# in a file that gets pushed anywhere.
+ENV_FILE="$(dirname "$0")/deploy.env"
+if [ ! -f "$ENV_FILE" ]; then
+  echo "missing $ENV_FILE -- copy scripts/deploy.env.example and fill it in" >&2
+  exit 2
+fi
+# shellcheck source=/dev/null
+. "$ENV_FILE"
+: "${BUILD_HOST:?set BUILD_HOST in scripts/deploy.env}"
+: "${RELAY_ORIGIN:?set RELAY_ORIGIN in scripts/deploy.env}"
+: "${DOWNLOAD_PATH:?set DOWNLOAD_PATH in scripts/deploy.env}"
+
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o LogLevel=ERROR"
 : "${SSHPASS:?set SSHPASS before running}"
 
@@ -68,5 +85,5 @@ sshpass -e ssh $SSH_OPTS "$BUILD_HOST" \
    printf "  build %s\n" "$(grep -ah -oE "[0-9]+ [A-Z][a-z]+ [0-9]{2}:[0-9]{2}" classes*.dex | sort -u | head -1)" &&
    cd /tmp && rm -rf shipchk'
 
-curl -sSI "https://relay.example.com/dl/DOWNLOAD_PATH_REDACTED/app.apk" |
+curl -sSI "$RELAY_ORIGIN/dl/$DOWNLOAD_PATH/app.apk" |
   grep -i "content-disposition" | sed 's/^/  /'

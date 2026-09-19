@@ -17,3 +17,17 @@ local.properties
 /android/local.properties
 /dist/*.apk
 /dist/*.exe
+
+# Where this deploys to, and the path its downloads are served under.
+#
+# Not secrets in the cryptographic sense, but the download path is the only
+# thing between a stranger and the installer, and the installer carries the
+# connector secret once it is generated. scripts/deploy.env.example is the
+# tracked template; the filled-in copy never leaves the machine.
+scripts/deploy.env
+
+# Anything pulled off a live machine while debugging. These have held real
+# device tokens and company data.
+*.local.json
+/relay/relay.db*
+/tmp-*/

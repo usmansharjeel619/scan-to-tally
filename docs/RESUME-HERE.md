@@ -9,7 +9,7 @@ unverified. This is the five-minute version.
 
 | | |
 |---|---|
-| Relay | `https://relay.example.com` — live, systemd `scan-to-tally-relay` |
+| Relay | live, systemd `scan-to-tally-relay`; address in `scripts/deploy.env` |
 | Connector | Installed on `TALLY-PC`, auto-starting Windows service |
 | Android APK | Built, 3/3 tests, `dist/scan-to-tally-debug.apk` |
 | Test suites | Go + TypeScript + Kotlin, all green; `scripts/e2e.sh` passes end to end |
@@ -83,8 +83,13 @@ More detail in `PHASE0-FINDINGS.md`.
 It is read-only, but it is a capability and should not outlive Phase 0. On the
 Tally machine, as Administrator:
 
+Take `RELAY_ORIGIN` and `DOWNLOAD_PATH` from `scripts/deploy.env`, which is
+deliberately not in the repository — the download path is the only thing
+between a stranger and the installer, and the installer carries the connector
+secret.
+
 ```powershell
-irm https://relay.example.com/dl/DOWNLOAD_PATH_REDACTED/bootstrap.ps1 -OutFile $env:TEMP\stt.ps1
+irm <RELAY_ORIGIN>/dl/<DOWNLOAD_PATH>/bootstrap.ps1 -OutFile $env:TEMP\stt.ps1
 & $env:TEMP\stt.ps1 -NoDiagnostics
 ```
 
@@ -96,7 +101,7 @@ irm https://relay.example.com/dl/DOWNLOAD_PATH_REDACTED/bootstrap.ps1 -OutFile $
 - Relay host: `systemctl disable --now scan-to-tally-relay`, remove
   `/opt/scan-to-tally`, `/var/lib/scan-to-tally`, `/etc/scan-to-tally`
 - Build toolchain: `rm -rf /opt/stt-build` (~4 GB)
-- Cloudflare tunnel: remove the `relay.example.com` block from
+- Cloudflare tunnel: remove the relay hostname's block from
   `/opt/rgm-crm/cloudflared/config.yml` (backups alongside it) and **restart**
   the container — `docker restart rgm-crm-cloudflared-1`. Do **not** send it
   SIGHUP; that kills it and takes the CRM down with it.

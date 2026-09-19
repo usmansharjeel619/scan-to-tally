@@ -719,6 +719,55 @@ class Repository(context: Context, private val api: RelayApi?) {
     suspend fun deleteLine(lineId: Long) = dao.deleteLine(lineId)
 
     /**
+     * Corrects a box already on the receipt.
+     *
+     * The box number is the box's identity, so changing it is not an edit in
+     * place: it has to go through the duplicate and resolution checks as if it
+     * had just been scanned. The new line is taken FIRST and the old one
+     * removed only if it was accepted, so a correction that turns out to be a
+     * duplicate leaves the receipt exactly as it was rather than destroying the
+     * line it was trying to fix.
+     */
+    suspend fun correctLine(
+        sessionId: String,
+        lineId: Long,
+        pid: String,
+        boxSerial: String,
+        qty: Int,
+    ): ScanDecision {
+        val existing = dao.line(lineId)
+
+        // Nothing but the quantity has moved: no identity change, no re-check.
+        if (existing != null && existing.boxSerial == boxSerial.trim() && existing.pid == pid) {
+            dao.setLineQty(lineId, qty.toDouble(), existing.flags)
+            runCatching {
+                api?.addLine(sessionId, LineRequest(
+                    pid = pid, boxSerial = boxSerial.trim(), qty = qty.toDouble(),
+                    lineId = lineId, raw = existing.rawPayload, symbology = existing.symbology,
+                ))
+            }
+            return ScanDecision(
+                Outcome2.ACCEPT, Beep.ACCEPT,
+                "Changed to ${fmt(qty.toDouble())}.",
+                pid = pid, boxSerial = boxSerial, labelQty = qty.toDouble(),
+            )
+        }
+
+        dao.deleteLine(lineId)
+        val decision = receiveAssembled(
+            sessionId, pid, boxSerial, qty,
+            raw = existing?.rawPayload ?: "corrected",
+        )
+        if (decision.outcome == Outcome2.ACCEPT || decision.outcome == Outcome2.FLAGGED) {
+            commitLine(sessionId, decision)
+        } else if (existing != null) {
+            // Refused, so put back exactly what was there.
+            dao.insertLine(existing)
+        }
+        return decision
+    }
+
+    /**
      * Discards a receipt that never reached Tally.
      *
      * Deliberately impossible for one that did. Everything else is fair game:

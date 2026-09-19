@@ -108,6 +108,7 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
     /** What became of the last carton the camera added, shown until the next. */
     var cameraResult by remember { mutableStateOf<String?>(null) }
     var openGroup by remember { mutableStateOf<LineGroup?>(null) }
+    var editing by remember { mutableStateOf<SessionLineEntity?>(null) }
     var operator by remember { mutableStateOf("") }
     var submitting by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<String?>(null) }
@@ -338,10 +339,32 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
         } else {
             BoxesDialog(
                 group = current,
+                onEdit = { editing = it },
                 onRemove = { id -> scope.launch { repo?.deleteLine(id) } },
                 onClose = { openGroup = null },
             )
         }
+    }
+
+    editing?.let { line ->
+        EditBoxDialog(
+            line = line,
+            onCancel = { editing = null },
+            onSave = { boxSerial, qty ->
+                val target = line
+                editing = null
+                scope.launch {
+                    val r = repo ?: return@launch
+                    val sid = sessionId ?: return@launch
+                    // Through the same checks as a scan: changing a box number
+                    // changes which box it is, and a corrected box must not be
+                    // able to duplicate one already on the receipt.
+                    val d = r.correctLine(sid, target.id, target.pid, boxSerial, qty)
+                    last = d
+                    app.feedback.play(d.beep)
+                }
+            },
+        )
     }
 
     typing?.let { slot ->
@@ -1151,8 +1174,13 @@ private fun ScanScaffold(
                 }
             }
 
-            SectionLabel("This session")
-            Box(Modifier.weight(1f)) {
+            SectionLabel(
+                if (lines.isEmpty()) "On this receipt"
+                else "On this receipt · ${lines.size} " +
+                    (if (lines.size == 1) "box" else "boxes") +
+                    " · ${fmtQty(lines.sumOf { it.qty })} total",
+            )
+            Box(Modifier.weight(1f).fillMaxWidth()) {
                 if (lines.isEmpty()) {
                     Text(
                         "Nothing scanned yet.",
@@ -1160,7 +1188,7 @@ private fun ScanScaffold(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 } else {
-                    LazyColumn {
+                    LazyColumn(Modifier.fillMaxWidth()) {
                         items(groupLines(lines)) { group ->
                             GroupRow(group) { onOpenGroup?.invoke(group) }
                         }

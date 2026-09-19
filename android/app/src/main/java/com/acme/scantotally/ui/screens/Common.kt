@@ -17,6 +17,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.clickable
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
@@ -206,35 +215,42 @@ fun groupLines(lines: List<SessionLineEntity>): List<LineGroup> =
         }
 
 /**
- * The boxes of one product on this receipt, each removable.
+ * The boxes of one product on this receipt: each one editable, each removable.
  *
- * A wrong box had to be removable BEFORE the receipt is posted, and there was
- * no way to do it: a misread box number or a quantity typed in error could only
- * be fixed by discarding the whole receipt and scanning the pallet again.
+ * A wrong box has to be fixable before the receipt is posted. The camera reads
+ * a digit wrongly now and then, and a quantity can be typed wrongly too, and
+ * neither is a reason to discard a receipt and scan the whole pallet again.
  */
 @Composable
-fun BoxesDialog(group: LineGroup, onRemove: (Long) -> Unit, onClose: () -> Unit) {
+fun BoxesDialog(
+    group: LineGroup,
+    onEdit: (SessionLineEntity) -> Unit,
+    onRemove: (Long) -> Unit,
+    onClose: () -> Unit,
+) {
     AlertDialog(
         onDismissRequest = onClose,
         title = { Text(group.description.ifEmpty { group.stockItemName }) },
         text = {
             Column {
                 Text(
-                    "Remove a box that was read wrongly. This changes the receipt " +
-                        "only -- nothing has gone to Tally yet.",
+                    "Tap a box to change it. Nothing here has gone to Tally yet.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(10.dp))
                 group.lines.forEach { line ->
                     Row(
-                        Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onEdit(line) }
+                            .padding(vertical = 10.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text(
-                                tail(line.boxSerial),
+                                line.boxSerial,
                                 fontFamily = FontFamily.Monospace,
                                 style = MaterialTheme.typography.bodyLarge,
                             )
@@ -248,10 +264,56 @@ fun BoxesDialog(group: LineGroup, onRemove: (Long) -> Unit, onClose: () -> Unit)
                             Text("Remove", color = LocalSemantics.current.reject.fg)
                         }
                     }
+                    HorizontalDivider()
                 }
             }
         },
         confirmButton = { TextButton(onClick = onClose) { Text("Done") } },
+    )
+}
+
+/** Changing a box that is already on the receipt. */
+@Composable
+fun EditBoxDialog(
+    line: SessionLineEntity,
+    onCancel: () -> Unit,
+    onSave: (boxSerial: String, qty: Int) -> Unit,
+) {
+    var box by remember(line.id) { mutableStateOf(line.boxSerial) }
+    var qty by remember(line.id) { mutableStateOf(fmtQty(line.qty)) }
+
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text(line.description.ifEmpty { line.pid }) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = box,
+                    onValueChange = { box = it.trim().take(32) },
+                    label = { Text("Box number") },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = qty,
+                    onValueChange = { qty = it.filter { c -> c.isDigit() }.take(6) },
+                    label = { Text("Quantity") },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.titleMedium,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(box.trim(), qty.toIntOrNull() ?: 0) },
+                enabled = box.isNotBlank() && (qty.toIntOrNull() ?: 0) > 0,
+            ) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
     )
 }
 
@@ -290,6 +352,12 @@ fun GroupRow(group: LineGroup, onClick: () -> Unit = {}) {
                 if (group.hasFlags) {
                     Text("needs review", style = MaterialTheme.typography.bodyMedium, color = gsem.review.fg)
                 }
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "tap to change",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = onGroup.copy(alpha = 0.6f),
+                )
             }
         }
     }

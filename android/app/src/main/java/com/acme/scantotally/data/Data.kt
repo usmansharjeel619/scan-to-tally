@@ -476,6 +476,9 @@ interface ScanDao {
     @Query("UPDATE session_lines SET qty = :qty, flags = :flags WHERE id = :id")
     suspend fun setLineQty(id: Long, qty: Double, flags: String)
 
+    @Query("SELECT * FROM session_lines WHERE id = :id")
+    suspend fun line(id: Long): SessionLineEntity?
+
     @Query("DELETE FROM session_lines WHERE id = :id")
     suspend fun deleteLine(id: Long)
 

@@ -47,6 +47,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -158,11 +159,14 @@ fun SetupScreen(nav: NavController, scans: Flow<RawScan>? = null) {
     // else, and wiping the app to edit one field would lose every unsent scan.
     var loaded by remember { mutableStateOf(false) }
     var confirmWipe by remember { mutableStateOf(false) }
+    var confirmMove by remember { mutableStateOf(false) }
+    var pinnedCompany by remember { mutableStateOf("") }
     LaunchedEffect(Unit) {
         url = app.config.relayUrl.first()
         token = app.config.token.first()
         godown = app.config.godown.first()
         operator = app.config.operator.first()
+        pinnedCompany = app.config.company.first()
         loaded = true
     }
     var error by remember { mutableStateOf<String?>(null) }
@@ -310,6 +314,49 @@ fun SetupScreen(nav: NavController, scans: Flow<RawScan>? = null) {
                 modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
             ) { Text(if (loaded && token.isNotBlank()) "Cancel" else "Skip for now") }
 
+            // The company is a setting like the others, but it is the one that
+            // must never be changed by accident, so it is shown rather than
+            // typed and moving it is its own deliberate act.
+            if (pinnedCompany.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "This phone counts for",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(pinnedCompany, style = MaterialTheme.typography.titleMedium)
+                TextButton(onClick = { confirmMove = true }) {
+                    Text("Move this phone to another company")
+                }
+            }
+
+            if (confirmMove) {
+                MoveCompanyDialog(
+                    from = pinnedCompany,
+                    onCancel = { confirmMove = false },
+                    onMove = {
+                        scope.launch {
+                            val repository = app.repository()
+                            // Whatever Tally is actually set to now. Taken from
+                            // the connector rather than typed, because a company
+                            // name spelled by hand is a company name spelled
+                            // wrong, and Tally treats the two as different.
+                            val to = repository.companyCheck().open
+                            if (to.isBlank()) {
+                                error = "Cannot reach the relay, so there is no way to " +
+                                    "tell which company Tally has open. Try again on Wi-Fi."
+                            } else {
+                                repository.repinCompany(to)
+                                pinnedCompany = to
+                                repository.syncMasters()
+                                error = null
+                            }
+                            confirmMove = false
+                        }
+                    },
+                )
+            }
+
             // Starting a test from nothing, without losing the settings. The
             // alternative is clearing the app's storage, which takes the relay
             // address and token with it.
@@ -345,15 +392,23 @@ fun SetupScreen(nav: NavController, scans: Flow<RawScan>? = null) {
 
 @Composable
 private fun BigAction(
-    title: String, subtitle: String, icon: ImageVector, onClick: () -> Unit,
+    title: String, subtitle: String, icon: ImageVector,
+    enabled: Boolean = true, onClick: () -> Unit,
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp).clickable(onClick = onClick),
+        modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp)
+            .clickable(enabled = enabled, onClick = onClick),
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        // Greyed rather than hidden: an action that vanishes reads as a broken
+        // app, one that is visibly unavailable reads as a decision somebody made.
+        colors = CardDefaults.cardColors(
+            containerColor = if (enabled) MaterialTheme.colorScheme.surface
+            else MaterialTheme.colorScheme.surfaceVariant,
+        ),
     ) {
+        val dim = if (enabled) 1f else 0.38f
         Row(
-            Modifier.fillMaxWidth().padding(20.dp),
+            Modifier.fillMaxWidth().padding(20.dp).alpha(dim),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(18.dp),
         ) {
@@ -368,6 +423,36 @@ private fun BigAction(
             }
         }
     }
+}
+
+/**
+ * Asked before a handset is moved between companies.
+ *
+ * Separate from the wipe dialog on purpose, even though it also clears the
+ * phone. The thing being confirmed is not "lose some scans", it is "this
+ * handset now belongs to a different business", and the two deserve different
+ * words. Everything local goes because none of it means anything in the new
+ * company: its products, its stock figures, and above all its record of which
+ * boxes have already been received, which would otherwise start refusing
+ * perfectly good cartons as duplicates of another company's deliveries.
+ */
+@Composable
+private fun MoveCompanyDialog(from: String, onCancel: () -> Unit, onMove: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Move this phone?") },
+        text = {
+            Text(
+                "This phone currently counts for \u201C$from\u201D. Moving it clears " +
+                    "everything scanned here, including anything not yet sent to " +
+                    "Tally, and it will start counting for whichever company Tally " +
+                    "has open now. Only do this if the handset really is changing " +
+                    "company.",
+            )
+        },
+        confirmButton = { Button(onClick = onMove) { Text("Move it") } },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Keep it here") } },
+    )
 }
 
 /** Asked before anything is thrown away, and told plainly what goes. */
@@ -401,6 +486,7 @@ fun HomeScreen(nav: NavController) {
     var godown by remember { mutableStateOf("") }
     var syncing by remember { mutableStateOf(false) }
     var syncNote by remember { mutableStateOf<String?>(null) }
+    var company by remember { mutableStateOf(Repository.CompanyCheck("", "")) }
 
     LaunchedEffect(Unit) { godown = app.config.godown.first() }
 
@@ -414,6 +500,7 @@ fun HomeScreen(nav: NavController) {
             val r = runCatching { app.repository() }.getOrNull()
             if (r != null) {
                 health = r.tallyHealth() ?: "OFFLINE"
+                company = r.companyCheck()
                 r.refreshPending()
             }
             delay(10_000)
@@ -436,7 +523,10 @@ fun HomeScreen(nav: NavController) {
         },
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
-            ConnectionBanner(health, pending, failed)
+            ConnectionBanner(health, pending, failed, company = company.pinned)
+            if (company.mismatch) {
+                WrongCompanyBanner(company.pinned, company.open)
+            }
 
             Column(
                 // Scrollable: five actions plus the footer do not fit a rugged
@@ -446,12 +536,17 @@ fun HomeScreen(nav: NavController) {
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                BigAction("Incoming", "Scan boxes off a delivery", Icons.Default.MoveToInbox) {
-                    nav.navigate("incoming")
-                }
-                BigAction("Outgoing", "Pick against a sales order", Icons.Default.LocalShipping) {
-                    nav.navigate("orders")
-                }
+                // Both writing flows are shut while the company is wrong. Check
+                // stock stays open below: it only reads, and an operator who
+                // has just been stopped will want to see what is actually there.
+                BigAction(
+                    "Incoming", "Scan boxes off a delivery",
+                    Icons.Default.MoveToInbox, enabled = !company.mismatch,
+                ) { nav.navigate("incoming") }
+                BigAction(
+                    "Outgoing", "Pick against a sales order",
+                    Icons.Default.LocalShipping, enabled = !company.mismatch,
+                ) { nav.navigate("orders") }
                 BigAction("Check stock", "Scan a box, see what Tally has", Icons.Default.Search) {
                     nav.navigate("lookup")
                 }
@@ -492,10 +587,15 @@ fun HomeScreen(nav: NavController) {
                             // Said out loud either way: a sync that quietly
                             // fails leaves the handset working from stale
                             // figures with no sign that it is.
-                            val ok = app.repository().syncMasters()
+                            val repository = app.repository()
+                            val ok = repository.syncMasters()
+                            company = repository.companyCheck()
                             syncing = false
-                            syncNote = if (ok) "Up to date with Tally."
-                            else "Could not reach the relay. Still using the figures already here."
+                            syncNote = when {
+                                ok -> "Up to date with Tally."
+                                company.mismatch -> null // the banner already says it, at length
+                                else -> "Could not reach the relay. Still using the figures already here."
+                            }
                         }
                     },
                     enabled = !syncing,

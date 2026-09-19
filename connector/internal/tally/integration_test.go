@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -293,5 +294,56 @@ func TestIntegrationVoucherValidationCatchesQtyMismatch(t *testing.T) {
 	}
 	if err := v.Validate(); err == nil {
 		t.Fatal("expected validation to catch line total != sum of boxes")
+	}
+}
+
+// TestProbeCatchesAMisconfiguredCompany covers the failure that used to be
+// invisible: this connector configured against a company Tally does not have
+// open.
+//
+// Tally answers such a request perfectly happily -- it is running, the port is
+// open, the XML is well formed -- so the old probe, which asked for the company
+// list and discarded it, reported ONLINE. The warehouse's status bar said all
+// was well while every single job failed further down, one at a time, with an
+// error that never pointed back at the cause.
+//
+// The name is checked against what is actually loaded, and the message says
+// what IS open so whoever reads it can see the mistake immediately. It is
+// transient, not permanent: opening the company fixes it with no restart.
+func TestProbeCatchesAMisconfiguredCompany(t *testing.T) {
+	setFault(t, "none")
+	url := os.Getenv("STT_TALLY_URL")
+	if url == "" {
+		t.Skip("set STT_TALLY_URL to run integration tests against tallysim")
+	}
+
+	c := NewClient(Config{
+		BaseURL: url,
+		Company: "ACME FIRE SYSTEM", // one character short of the real name
+		Timeout: 10 * time.Second,
+	}, nil)
+
+	err := c.Probe(context.Background())
+	if err == nil {
+		t.Fatal("probe accepted a company Tally does not have open")
+	}
+	var te *Error
+	if !errors.As(err, &te) || te.Code != "COMPANY_NOT_OPEN" {
+		t.Fatalf("want COMPANY_NOT_OPEN, got %v", err)
+	}
+	if !IsTransient(err) {
+		t.Error("must be transient: opening the company should fix it without a restart")
+	}
+	if !strings.Contains(te.Message, simCompany) {
+		t.Errorf("message should say what IS open, got: %s", te.Message)
+	}
+	if c.Health() != HealthCompanyClosed {
+		t.Errorf("health should report the closed company, got %s", c.Health())
+	}
+
+	// And the correctly-spelled one still passes, so this is a real check and
+	// not a probe that now rejects everything.
+	if err := simClient(t).Probe(context.Background()); err != nil {
+		t.Fatalf("probe rejected the company that IS open: %v", err)
 	}
 }

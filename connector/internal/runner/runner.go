@@ -218,6 +218,27 @@ func (r *Runner) processOne(ctx context.Context, job store.Job) {
 // somebody may have invoiced that stock in Tally directly. Catching it here
 // turns a confusing partial failure into a clean business error.
 func (r *Runner) preflight(ctx context.Context, pj protocol.PostVoucherJob) error {
+	// A voucher is posted into the company THIS connector is configured for,
+	// and every job says which company it was raised against. Normally they
+	// agree. When they do not, somebody has moved this connector to a different
+	// company -- or a handset is still working from an older one -- and posting
+	// anyway would file a warehouse's count into another company's books.
+	//
+	// Nothing about that is recoverable by looking at it later: the voucher
+	// looks perfectly ordinary in the wrong ledger, and the right ledger simply
+	// never hears about the delivery. So it is refused, permanently, and named.
+	if mine := r.tc.Company(); pj.Company != "" && !strings.EqualFold(pj.Company, mine) {
+		return &tally.Error{
+			Class: tally.Business,
+			Code:  "WRONG_COMPANY",
+			Message: fmt.Sprintf(
+				"This was counted against %q, but this PC posts into %q. "+
+					"Nothing has been written. Check which company Tally is set "+
+					"to before sending it again.",
+				pj.Company, mine),
+		}
+	}
+
 	if pj.Kind != protocol.KindOutgoing {
 		return nil
 	}

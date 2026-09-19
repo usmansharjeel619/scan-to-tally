@@ -57,7 +57,13 @@ fun tail(serial: String): String = if (serial.length > 7) "…" + serial.takeLas
  * waiting because a laptop is asleep is fine, as long as it says so.
  */
 @Composable
-fun ConnectionBanner(health: String, pending: Int, failed: Int, modifier: Modifier = Modifier) {
+fun ConnectionBanner(
+    health: String,
+    pending: Int,
+    failed: Int,
+    modifier: Modifier = Modifier,
+    company: String = "",
+) {
     val sem = LocalSemantics.current
     val (bg, fg, text) = when (health) {
         "ONLINE" -> Triple(sem.accept.bg, sem.accept.fg, "Tally connected")
@@ -91,6 +97,62 @@ fun ConnectionBanner(health: String, pending: Int, failed: Int, modifier: Modifi
             Spacer(Modifier.width(12.dp))
             Text("$failed need review", color = sem.reject.fg, style = MaterialTheme.typography.labelLarge)
         }
+    }
+
+    // The company is shown on every screen that can write to Tally, even when
+    // nothing is wrong.
+    //
+    // A name that is only displayed when it is wrong is a name nobody learns to
+    // read. Keeping it visible all the time is what makes the wrong one
+    // noticeable at a glance, rather than something discovered a week later in
+    // the ledger.
+    if (company.isNotBlank()) {
+        Text(
+            company,
+            color = fg,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(bg)
+                .padding(start = 36.dp, end = 16.dp, bottom = 8.dp),
+        )
+    }
+}
+
+/**
+ * Shown when Tally is posting into a company this phone was not set up for.
+ *
+ * Deliberately not a toast and not a colour change: it takes the whole width,
+ * says both names, and the buttons behind it stop working. A warning that can
+ * be scanned past is worse than none, because it creates the impression that
+ * somebody is checking.
+ */
+@Composable
+fun WrongCompanyBanner(pinned: String, open: String, modifier: Modifier = Modifier) {
+    val sem = LocalSemantics.current
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(sem.reject.bg)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            "Wrong company — scanning is stopped",
+            color = sem.reject.fg,
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Text(
+            "This phone counts for \u201C$pinned\u201D, but Tally is set to " +
+                "\u201C$open\u201D. Nothing will be sent until they match.",
+            color = sem.reject.fg,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            "Open the right company in Tally on the office PC, then press Sync now.",
+            color = sem.reject.fg,
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
 

@@ -319,6 +319,12 @@ function recordBoxHistory(sessionId: string, kind: string): void {
  * Only ever with ONE connector attached. With several the company is the only
  * thing telling them apart, and adopting one over the others would be guessing
  * at exactly the moment guessing is worst.
+ *
+ * This is about ROUTING, and it is not the safeguard against counting into the
+ * wrong company. That lives in three places which do not depend on it: the
+ * handset pins its company and refuses a sync from any other, the session
+ * route above refuses a count raised against a different one, and the
+ * connector refuses to post a job whose company is not the one it serves.
  */
 function reconcileDeviceCompanies(company: string): void {
   if (!company) return;
@@ -556,6 +562,26 @@ app.post('/api/v1/sessions', async (req, reply) => {
 
   const existing = db.prepare(`SELECT id, state FROM sessions WHERE id = ?`).get(id);
   if (existing) return { sessionId: id, resumed: true, ...(existing as object) };
+
+  // The handset says which company it counted for, and it has to be the one
+  // this device is registered against.
+  //
+  // The phone already refuses to scan when it can see a mismatch -- but it can
+  // only see one while it has signal, and a loading dock is exactly where it
+  // does not. A phone that scanned a pallet offline, against the company it
+  // last knew about, drains its outbox later into whatever this relay now
+  // thinks it is. That is the one path where the operator gets no warning at
+  // all, so it is refused here, where the session is actually created.
+  const claimed = String(b.company ?? '').trim();
+  if (claimed && d.company && claimed.toLowerCase() !== d.company.toLowerCase()) {
+    audit(db, `device:${d.id}`, 'SESSION_REFUSED_WRONG_COMPANY', id,
+      `${claimed} -> ${d.company}`);
+    return reply.code(409).send({
+      error: 'wrong_company',
+      message: `This was counted for "${claimed}", but this phone is now ` +
+        `registered to "${d.company}". Nothing has been saved.`,
+    });
+  }
 
   db.prepare(`
     INSERT INTO sessions (id, kind, device_id, operator, company, godown, party,

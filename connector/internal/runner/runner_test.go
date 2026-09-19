@@ -348,3 +348,64 @@ func TestTransientErrorRetriesQuietly(t *testing.T) {
 		t.Fatalf("job should succeed once the company reopens: %+v", res)
 	}
 }
+
+// TestWrongCompanyIsRefusedAndPostsNothing is the guard against the worst
+// silent failure this system can have.
+//
+// A receipt is raised on a handset against one company. Somebody then points
+// this connector at a different one -- a second Northwind entity, a test company,
+// last year's books. The voucher would post perfectly happily into whichever
+// company the connector is configured for, look entirely ordinary there, and
+// never appear in the company the warehouse actually counted against. Nobody
+// would find it by looking at either ledger.
+//
+// So it must be refused, and refused PERMANENTLY: a retry cannot help, because
+// the connector is not going to change its mind.
+func TestWrongCompanyIsRefusedAndPostsNothing(t *testing.T) {
+	setFault(t, "none")
+	r, st, cap := newHarness(t)
+	before := simVoucherCount(t)
+
+	job := incomingJob("sess-wrong-co", protocol.Box{BoxSerial: "BX-1", Qty: 10})
+	job.Company = "NORTHWIND TRADING LLC" // not the company this connector serves
+	enqueue(t, st, "job-wrong-co", job)
+	drain(t, r)
+
+	res, ok := cap.last()
+	if !ok {
+		t.Fatal("no result reported")
+	}
+	if res.OK {
+		t.Fatal("a voucher for another company was accepted")
+	}
+	if res.ErrorCode != "WRONG_COMPANY" {
+		t.Fatalf("want WRONG_COMPANY, got %s: %s", res.ErrorCode, res.ErrorMessage)
+	}
+	// The message has to name BOTH companies: whoever reads it needs to know
+	// which way round the mistake is before they can fix it.
+	for _, want := range []string{"NORTHWIND TRADING LLC", "ACME FIRE SYSTEMS"} {
+		if !strings.Contains(res.ErrorMessage, want) {
+			t.Errorf("message does not name %q: %s", want, res.ErrorMessage)
+		}
+	}
+	if got := simVoucherCount(t); got != before {
+		t.Fatalf("Tally was written to: %d vouchers before, %d after", before, got)
+	}
+}
+
+// A job that does not name a company at all is an older relay, not a mistake,
+// and must keep working.
+func TestMissingCompanyOnJobStillPosts(t *testing.T) {
+	setFault(t, "none")
+	r, st, cap := newHarness(t)
+
+	job := incomingJob("sess-no-co", protocol.Box{BoxSerial: "BX-2", Qty: 4})
+	job.Company = ""
+	enqueue(t, st, "job-no-co", job)
+	drain(t, r)
+
+	res, ok := cap.last()
+	if !ok || !res.OK {
+		t.Fatalf("a job with no company should still post: %+v", res)
+	}
+}

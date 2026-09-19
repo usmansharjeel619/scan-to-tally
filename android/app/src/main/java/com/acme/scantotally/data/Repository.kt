@@ -110,6 +110,24 @@ class Repository(context: Context, private val api: RelayApi?) {
     private val config = DeviceConfig(context.applicationContext)
 
     private suspend fun configCompany(): String = config.company.first()
+
+    /**
+     * The company Tally has open, when it is not the one this phone is for.
+     *
+     * Null when all is well. Read by the home screen, which stops the operator
+     * scanning into books that are not theirs.
+     */
+    var wrongCompany: String? = null
+        private set
+
+    /** The company this handset is set up for. */
+    suspend fun pinnedCompany(): String = configCompany()
+
+    /** Deliberately moves this handset to another company, and forgets the old. */
+    suspend fun repinCompany(name: String) {
+        wipeLocalData()
+        setConfigCompany(name.trim())
+    }
     private suspend fun setConfigCompany(name: String) = config.setCompany(name)
 
     // --- sessions ---
@@ -133,7 +151,10 @@ class Repository(context: Context, private val api: RelayApi?) {
             ),
         )
         runCatching {
-            api?.createSession(CreateSessionRequest(id, kind, party, salesOrder, godown))
+            api?.createSession(
+                CreateSessionRequest(id, kind, party, salesOrder, godown,
+                    company = configCompany()),
+            )
         }
         return id
     }
@@ -647,9 +668,9 @@ class Repository(context: Context, private val api: RelayApi?) {
         val s = dao.session(sessionId) ?: return false
         val created = runCatching {
             client.createSession(
-                CreateSessionRequest(s.id, s.kind, s.party, s.salesOrder, s.godown),
+                CreateSessionRequest(s.id, s.kind, s.party, s.salesOrder, s.godown,
+                    company = s.company),
             )
-            true
         }.getOrDefault(false)
         if (!created) return false
 
@@ -944,26 +965,58 @@ class Repository(context: Context, private val api: RelayApi?) {
         api?.status()?.connector?.health
     }.getOrNull()
 
+    /**
+     * Which company this handset is feeding, and whether that is the right one.
+     *
+     * [pinned] is the company this phone was set up against. [open] is what the
+     * connector is actually posting into. They agree in every ordinary case;
+     * when they do not, something has been repointed and the two are shown side
+     * by side rather than quietly reconciled.
+     */
+    data class CompanyCheck(val pinned: String, val open: String) {
+        val mismatch: Boolean get() =
+            pinned.isNotBlank() && open.isNotBlank() && !pinned.equals(open, ignoreCase = true)
+    }
+
+    /**
+     * Reads the company situation, preferring the live answer.
+     *
+     * A refused sync already recorded the offending name, and that is used when
+     * the relay cannot be reached, so the warning does not disappear the moment
+     * the signal does -- which is exactly when it matters most.
+     */
+    suspend fun companyCheck(): CompanyCheck {
+        val pinned = configCompany()
+        val live = runCatching { api?.status()?.connector?.company }.getOrNull()
+        return CompanyCheck(pinned, live?.takeIf { it.isNotBlank() } ?: wrongCompany.orEmpty())
+    }
+
     // --- master sync ---
 
     /** Pulls everything the device needs to keep working without a network. */
     suspend fun syncMasters(): Boolean = runCatching {
         val s = api?.sync() ?: return false
 
-        // Tally can move to another PC, or open a different company on the
-        // same one. Everything cached here describes ONE company: its items,
-        // its balances, its orders, and which of its boxes have been received
-        // before. None of it survives the change, and a box history that does
-        // would refuse a carton as a duplicate of one received by a different
-        // business entirely.
-        val previous = configCompany()
-        if (s.company.isNotBlank() && previous.isNotBlank() && previous != s.company) {
-            dao.clearReceivedBoxes()
-            dao.clearBalances()
-            dao.clearOrderLines()
-            dao.clearOrders()
+        // This handset belongs to ONE company, and will not quietly follow
+        // Tally to another.
+        //
+        // Somebody opening the wrong company in Tally is an ordinary slip, and
+        // it used to be invisible: the phone adopted whatever was open, cached
+        // that company's products, and every carton scanned afterwards went
+        // into the wrong books with nothing on screen to suggest it. Stock in
+        // two companies, both wrong, and no way to tell which receipts to undo.
+        //
+        // So the company is pinned the first time it is seen, and a sync from
+        // any other company is REFUSED ENTIRELY -- not merged, not partially
+        // applied. Nothing about the wrong company reaches this phone.
+        val pinned = configCompany()
+        if (pinned.isBlank()) {
+            if (s.company.isNotBlank()) setConfigCompany(s.company)
+        } else if (s.company.isNotBlank() && s.company != pinned) {
+            wrongCompany = s.company
+            return false
         }
-        if (s.company.isNotBlank()) setConfigCompany(s.company)
+        wrongCompany = null
 
         // A product the operator described is bound here the moment they
         // describe it, so the rest of the pallet does not prompt again. Until

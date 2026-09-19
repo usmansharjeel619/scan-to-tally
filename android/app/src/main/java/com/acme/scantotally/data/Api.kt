@@ -136,6 +136,15 @@ data class CreateSessionRequest(
     val salesOrder: String = "",
     val godown: String = "",
     val narration: String = "",
+    /**
+     * The company this count was raised against.
+     *
+     * Sent so the relay can refuse a count that belongs somewhere else. It
+     * matters most for work scanned with no signal, where the phone had no way
+     * to notice the change itself and would otherwise drain its outbox into
+     * whichever company the relay had moved on to.
+     */
+    val company: String = "",
 )
 
 @Serializable
@@ -260,9 +269,15 @@ class RelayApi(
 
     suspend fun sync(): SyncResponse = client.get("$baseUrl/api/v1/sync").body()
 
-    suspend fun createSession(req: CreateSessionRequest) {
-        client.post("$baseUrl/api/v1/sessions") { setBody(req) }
-    }
+    /**
+     * Opens a session on the relay, reporting whether it was actually accepted.
+     *
+     * The status used to be discarded. A refusal -- a count raised against
+     * another company, most importantly -- looked exactly like success, so the
+     * lines went up afterwards regardless and attached themselves to nothing.
+     */
+    suspend fun createSession(req: CreateSessionRequest): Boolean =
+        client.post("$baseUrl/api/v1/sessions") { setBody(req) }.status.isSuccess()
 
     suspend fun addLine(sessionId: String, req: LineRequest): Boolean {
         val resp = client.post("$baseUrl/api/v1/sessions/$sessionId/lines") { setBody(req) }

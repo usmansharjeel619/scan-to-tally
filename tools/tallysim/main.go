@@ -27,6 +27,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -255,6 +256,53 @@ func (s *sim) export(w http.ResponseWriter, id string) {
 					esc(k.Batch), esc(k.Godown), trimNum(s.balances[k]), s.units[itemName])
 			}
 			b.WriteString("</STOCKITEM>\n")
+		}
+
+	// The Stock Summary report, which is where batch closing balances really
+	// come from.
+	//
+	// The obvious-looking source -- BATCHALLOCATIONS on the stock item master,
+	// served as STT_BatchBalances above -- is the OPENING allocation, and it
+	// does not move when a voucher posts. Reading it meant the app showed a
+	// product it had just received as having none. This report is what the
+	// connector asks for now, so the simulator has to answer it or the two
+	// integration tests that check stock actually moves cannot run at all.
+	//
+	// The shape matters as much as the numbers: a flat stream of item, then
+	// that item's own total, then each batch followed by ITS total. The item
+	// total has to be here even though the parser skips it, because skipping it
+	// correctly is the whole reason the parser is written the way it is.
+	case "Stock Summary":
+		byItem := map[string][]batchKey{}
+		for k := range s.balances {
+			byItem[k.Item] = append(byItem[k.Item], k)
+		}
+		// Sorted so a run is reproducible; Go randomises map order and a test
+		// that passes four times in five is worse than one that fails.
+		items := make([]string, 0, len(byItem))
+		for name := range byItem {
+			items = append(items, name)
+		}
+		sort.Strings(items)
+
+		for _, itemName := range items {
+			keys := byItem[itemName]
+			sort.Slice(keys, func(i, j int) bool { return keys[i].Batch < keys[j].Batch })
+
+			total := 0.0
+			for _, k := range keys {
+				total += s.balances[k]
+			}
+			unit := s.units[itemName]
+			fmt.Fprintf(&b, "<STOCKSUMMARY><DSPDISPNAME>%s</DSPDISPNAME>"+
+				"<DSPSTKINFO><DSPSTKCL><DSPCLQTY>%s %s</DSPCLQTY></DSPSTKCL></DSPSTKINFO>\n",
+				esc(itemName), trimNum(total), unit)
+			for _, k := range keys {
+				fmt.Fprintf(&b, " <SSBATCH>%s</SSBATCH>"+
+					"<DSPSTKINFO><DSPSTKCL><DSPCLQTY>%s %s</DSPCLQTY></DSPSTKCL></DSPSTKINFO>\n",
+					esc(k.Batch), trimNum(s.balances[k]), unit)
+			}
+			b.WriteString("</STOCKSUMMARY>\n")
 		}
 
 	case "STT_SalesOrders":

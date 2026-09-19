@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -246,9 +247,45 @@ func (c *Client) Import(ctx context.Context, v Voucher) (*ImportResult, error) {
 
 // Probe asks Tally for something cheap to establish whether it is alive and has
 // the company open.
+//
+// It checks the NAME, not merely that Tally answered. The list was fetched and
+// thrown away before, so a connector configured against a company nobody had
+// loaded -- or against a name that is one character off the real one, which is
+// the same thing to Tally -- reported ONLINE and went on reporting it. Every
+// job then failed one at a time, far from the cause, and the status bar the
+// warehouse actually looks at said all was well.
 func (c *Client) Probe(ctx context.Context) error {
-	_, err := c.ListCompanies(ctx)
-	return err
+	companies, err := c.ListCompanies(ctx)
+	if err != nil {
+		return err
+	}
+
+	want := strings.TrimSpace(c.cfg.Company)
+	if want == "" {
+		return nil // unconfigured; nothing to check against
+	}
+	open := make([]string, 0, len(companies))
+	for _, co := range companies {
+		name := strings.TrimSpace(co.Name)
+		if strings.EqualFold(name, want) {
+			return nil
+		}
+		open = append(open, name)
+	}
+
+	// Transient by deliberate choice: opening the company fixes it, and the
+	// next probe will see that without anybody restarting the service.
+	return c.noteAppError(transient("COMPANY_NOT_OPEN", fmt.Sprintf(
+		"Tally is running but %q is not open. Open now: %s.",
+		want, joinOr(open, "nothing")), nil))
+}
+
+// joinOr lists names for a person to read, or a stand-in when there are none.
+func joinOr(names []string, empty string) string {
+	if len(names) == 0 {
+		return empty
+	}
+	return strings.Join(names, ", ")
 }
 
 // Run drives the health heartbeat until ctx is cancelled.

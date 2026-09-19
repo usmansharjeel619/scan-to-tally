@@ -1167,7 +1167,27 @@ private fun ScanScaffold(
             )
         },
     ) { pad ->
+        // Which company this count is going into, kept on screen throughout.
+        //
+        // The home screen refuses to open this flow against the wrong company
+        // and the receipt is refused again on submit, but neither of those
+        // helps somebody already standing at the dock halfway through a pallet.
+        // Naming it here is what lets them notice before the pallet is done
+        // rather than after.
+        val app = LocalContext.current.applicationContext as ScanToTallyApp
+        var company by remember { mutableStateOf("") }
+        LaunchedEffect(Unit) { company = app.config.company.first() }
+
         Column(Modifier.padding(pad).fillMaxSize().padding(16.dp)) {
+            if (company.isNotBlank()) {
+                Text(
+                    company,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+
             slots?.let {
                 it()
                 Spacer(Modifier.height(10.dp))

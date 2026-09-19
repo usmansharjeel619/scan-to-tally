@@ -251,4 +251,50 @@ class LabelReaderTest {
         assertNull(read.box)
         assertEquals(35, read.qty)
     }
+
+    /**
+     * A product in neither Tally nor the price list has to be named by hand,
+     * and its name is printed on the carton the camera is already reading.
+     */
+    @Test
+    fun `the printed description is read`() {
+        val label = listOf(
+            w("PID:", 20, 20), w("4098-9788", 140, 20),
+            w("DESCRIPTION:", 20, 90),
+            w("2", 20, 130), w("WIRE", 45, 130), w("BASE", 110, 130),
+            w("W/REMOTE", 180, 130), w("LED", 290, 130),
+            w("PART", 20, 200), w("NO.", 80, 200), w("0677104", 180, 200),
+            w("QTY", 600, 160), w("24", 700, 160),
+        )
+
+        val read = readLabel(label)
+        assertEquals("2 WIRE BASE W/REMOTE LED", read.description)
+        assertEquals("4098-9788", read.product)
+        assertEquals(24, read.qty)
+    }
+
+    /** It must stop where the description does, or it swallows the next field. */
+    @Test
+    fun `the description stops at the next field`() {
+        val label = listOf(
+            w("Description:", 20, 20),
+            w("LP", 20, 60), w("SOUNDER", 50, 60), w("BASE", 160, 60),
+            w("Date", 20, 110), w("code:", 80, 110), w("26154", 160, 110),
+            w("Quantity:", 20, 160), w("35", 160, 160),
+        )
+
+        val read = readLabel(label)
+        assertEquals("LP SOUNDER BASE", read.description)
+        assertEquals("the quantity is still its own", 35, read.qty)
+    }
+
+    /** A carton with no description printed offers none. */
+    @Test
+    fun `no description is invented`() {
+        val label = listOf(
+            w("Type:", 20, 20), w("4098-5266", 120, 20),
+            w("Quantity:", 20, 80), w("20", 160, 80),
+        )
+        assertNull(readLabel(label).description)
+    }
 }

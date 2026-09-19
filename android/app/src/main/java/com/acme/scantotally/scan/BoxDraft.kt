@@ -24,6 +24,15 @@ data class BoxDraft(
 
     /** Every payload that went into this box, kept for the audit trail. */
     val raws: List<String> = emptyList(),
+
+    /**
+     * What the carton calls the product, if the camera could read it.
+     *
+     * Carried only so an unknown product arrives at its prompt already named.
+     * It is never part of what makes a box complete: a description is a label
+     * for humans, and a box with no name is still a box with a count.
+     */
+    val description: String? = null,
 ) {
     enum class Slot { PRODUCT, BOX, QUANTITY }
 
@@ -82,6 +91,9 @@ data class BoxDraft(
         if (isDifferentProduct(next)) BoxDraft(pid = next)
         else copy(pid = next)
     fun withTypedQty(v: Int) = copy(qty = v, scanned = scanned - Slot.QUANTITY)
+
+    fun withDescription(v: String?) =
+        if (v.isNullOrBlank()) this else copy(description = v.trim())
 }
 
 /**

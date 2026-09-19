@@ -235,7 +235,13 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
             val d = draft
             if (d.isComplete) {
                 val sid = ensure(r)
-                accept(r, sid, r.receiveAssembled(sid, d.pid, d.boxSerial, d.qty!!, d.rawTrail))
+                accept(
+                    r, sid,
+                    r.receiveAssembled(
+                        sid, d.pid, d.boxSerial, d.qty!!, d.rawTrail,
+                        labelDescription = d.description,
+                    ),
+                )
             }
         }
     }
@@ -287,7 +293,7 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
             onClose = { reading = false; cameraResult = null },
             lastResult = cameraResult,
             added = lines.size,
-            onCorrect = { product, box, qty ->
+            onCorrect = { product, box, qty, description ->
                 // Out of the camera and into the slots, where each field can be
                 // edited. Nothing is committed on the way.
                 reading = false
@@ -296,13 +302,14 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                 product?.let { next = next.withTypedProduct(it) }
                 box?.let { next = next.withTypedBox(it) }
                 qty?.let { next = next.withTypedQty(it) }
-                draft = next
+                draft = next.withDescription(description)
             },
-            onAdd = { product, box, qty ->
+            onAdd = { product, box, qty, description ->
                 var next = draft
                 product?.let { next = next.withTypedProduct(it) }
                 box?.let { next = next.withTypedBox(it) }
                 qty?.let { next = next.withTypedQty(it) }
+                next = next.withDescription(description)
                 draft = next
 
                 if (!next.isComplete) {
@@ -320,6 +327,7 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                         val sid = ensure(r)
                         val d = r.receiveAssembled(
                             sid, next.pid, next.boxSerial, next.qty!!, next.rawTrail,
+                            labelDescription = next.description,
                         )
                         accept(r, sid, d)
                         cameraResult = d.message

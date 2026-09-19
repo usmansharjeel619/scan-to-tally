@@ -36,6 +36,15 @@ data class LabelReading(
     val product: String? = null,
     val box: String? = null,
     val qty: Int? = null,
+    /**
+     * What the carton calls the product, for one nobody has met before.
+     *
+     * A product that is in neither Tally nor the price list has to be named by
+     * hand, and the name is printed on the label the camera is already reading.
+     * Advisory only: it fills the prompt in so the operator confirms a name
+     * rather than composing one.
+     */
+    val description: String? = null,
 )
 
 private val ANCHOR_PRODUCT = setOf("pid", "type", "part")
@@ -51,6 +60,20 @@ private val ANCHOR_BOX = setOf("box", "serial", "boxid")
  * received as a carton of 17 with nothing on screen to say so.
  */
 private val ANCHOR_NOT_QTY = setOf("week", "issue", "date", "code", "mfd", "exp")
+
+private val ANCHOR_DESCRIPTION = setOf("description", "desc")
+
+/**
+ * The words that end a description.
+ *
+ * A description runs to the end of its line or two, and then the next field
+ * begins. Without knowing where to stop, "2 WIRE BASE W/REMOTE LED" acquires
+ * "PART NO 0677104" and becomes a name nobody would recognise.
+ */
+private val DESCRIPTION_ENDS = setOf(
+    "part", "pid", "type", "qty", "quantity", "date", "code", "issue", "week",
+    "serial", "box", "tlnr", "software", "made", "coo", "no", "no.",
+)
 
 private val PRODUCT_RE = Regex("^[0-9]{4}-[0-9]{4}$")
 private val BOXID_RE = Regex("^[A-Z]{2,4}[0-9]{3,6}$")
@@ -89,12 +112,13 @@ fun readLabel(words: List<TextWord>): LabelReading {
     // inside "4100-3206|1120181448458237|1", between the part number and the
     // quantity, and there is no separate Box or Serial field to read. Looking
     // only for a standalone box number finds nothing on those labels.
-    combined(words)?.let { return it }
+    combined(words)?.let { return it.copy(description = readDescription(words)) }
 
     return LabelReading(
         product = readProduct(words),
         box = readBox(words),
         qty = readQuantity(words),
+        description = readDescription(words),
     )
 }
 
@@ -124,6 +148,43 @@ private fun combined(words: List<TextWord>): LabelReading? {
         )
     }
     return null
+}
+
+/**
+ * The product's name, as printed under "Description".
+ *
+ * Taken from the line or two beneath the word, stopping at whatever field comes
+ * next. It is never used to decide anything -- it only fills in the prompt for
+ * a product nobody has named yet, and the operator confirms or replaces it.
+ */
+private fun readDescription(words: List<TextWord>): String? {
+    val anchor = anchors(words, ANCHOR_DESCRIPTION).firstOrNull() ?: return null
+    val rows = lines(words)
+
+    val collected = mutableListOf<String>()
+    for (row in rows) {
+        val top = row.minOf { it.top }
+        // The line the word sits on (the name may follow it) and the two below.
+        if (top < anchor.top - anchor.height / 2) continue
+        if (top > anchor.top + anchor.height * 4) break
+
+        for (word in row.sortedBy { it.left }) {
+            if (word === anchor) continue
+            val lower = word.clean.lowercase()
+            if (lower in ANCHOR_DESCRIPTION) continue
+            // The next field has started, so the description has finished.
+            if (lower in DESCRIPTION_ENDS) {
+                return collected.takeIf { it.isNotEmpty() }?.joinToString(" ")
+            }
+            if (word.clean.isNotEmpty()) collected += word.clean
+        }
+    }
+
+    return collected
+        .joinToString(" ")
+        .trim()
+        .take(48)
+        .takeIf { it.length >= 3 }
 }
 
 /** Words grouped into the lines they were printed on. */

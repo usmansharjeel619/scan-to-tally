@@ -74,7 +74,7 @@ fun LabelCameraSheet(
     /** What happened to the last carton added, shown until the next is read. */
     lastResult: String?,
     added: Int,
-    onAdd: (product: String?, box: String?, qty: Int?) -> Unit,
+    onAdd: (product: String?, box: String?, qty: Int?, description: String?) -> Unit,
     /**
      * Take what has been read to the slots to be corrected by hand.
      *
@@ -83,7 +83,7 @@ fun LabelCameraSheet(
      * becomes stock. Rather than a second editor in here, the reading goes to
      * the slots, which already know how to edit each field.
      */
-    onCorrect: (product: String?, box: String?, qty: Int?) -> Unit,
+    onCorrect: (product: String?, box: String?, qty: Int?, description: String?) -> Unit,
 ) {
     val context = LocalContext.current
     var granted by remember {
@@ -140,6 +140,9 @@ fun LabelCameraSheet(
                 product = consensus.product?.value,
                 box = consensus.box?.value,
                 qty = consensus.qty?.value,
+                // Not put to a vote: a name is advisory, and the operator sees
+                // it in the prompt before it becomes anything.
+                description = readLabel(words).description ?: seen.description,
             )
         }
 
@@ -183,7 +186,7 @@ fun LabelCameraSheet(
 
                     Spacer(Modifier.height(10.dp))
 
-                    val correct = { onCorrect(seen.product, seen.box, seen.qty) }
+                    val correct = { onCorrect(seen.product, seen.box, seen.qty, seen.description) }
                     Found("PRODUCT", seen.product, consensus.product?.votes, frames, correct)
                     Found("BOX", seen.box, consensus.box?.votes, frames, correct)
                     Found("QUANTITY", seen.qty?.toString(), consensus.qty?.votes, frames, correct)
@@ -209,7 +212,7 @@ fun LabelCameraSheet(
                 val whole = seen.product != null && seen.box != null && seen.qty != null
                 Button(
                     onClick = {
-                        onAdd(seen.product, seen.box, seen.qty)
+                        onAdd(seen.product, seen.box, seen.qty, seen.description)
                         // Straight on to the next carton. Only a whole reading
                         // has been added; a partial one has gone to the slots
                         // behind, and the camera is finished with it either way.

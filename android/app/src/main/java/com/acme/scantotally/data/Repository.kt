@@ -268,6 +268,8 @@ class Repository(context: Context, private val api: RelayApi?) {
         boxSerial: String,
         qty: Int,
         raw: String,
+        /** What the carton calls it, when the camera could read it. */
+        labelDescription: String? = null,
     ): ScanDecision = decideIncoming(
         sessionId,
         ParsedBox(
@@ -279,6 +281,7 @@ class Repository(context: Context, private val api: RelayApi?) {
         raw = raw,
         symbology = "ASSEMBLED",
         manual = true,
+        labelDescription = labelDescription,
     )
 
     private suspend fun decideIncoming(
@@ -287,6 +290,7 @@ class Repository(context: Context, private val api: RelayApi?) {
         raw: String,
         symbology: String,
         manual: Boolean,
+        labelDescription: String? = null,
     ): ScanDecision {
         val scan = RawScan(raw, symbology, RawScan.Source.HARDWARE)
 
@@ -363,7 +367,10 @@ class Repository(context: Context, private val api: RelayApi?) {
             message = resolved?.let { "${it.description.ifEmpty { it.stockItemName }} - ${box.qty}" }
                 ?: cat?.let { "${it.description} - ${box.qty} counted, adding to Tally" }
                 ?: "New product ${box.pid} - ${box.qty} counted, tell me what it is",
-            catalogueDescription = cat?.description,
+            // The price list first: it is the business's own naming and is
+            // what every other carton of this product will be called. The
+            // label is the fallback for a product nobody has listed at all.
+            catalogueDescription = cat?.description ?: labelDescription,
             pid = box.pid, boxSerial = box.boxSerial, labelQty = box.qty.toDouble(),
             stockItemName = resolved?.stockItemName ?: "",
             description = resolved?.description ?: "",

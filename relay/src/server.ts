@@ -30,6 +30,17 @@ const CONNECTOR_SECRET = process.env.STT_CONNECTOR_SECRET ?? '';
 const DOWNLOAD_PATH = process.env.STT_DOWNLOAD_PATH ?? '';
 const DIST_DIR = process.env.STT_DIST_DIR ?? '/opt/scan-to-tally/dist';
 
+/**
+ * Base unit given to a stock item the app creates.
+ *
+ * Tally refuses to create an item against a unit the company has not defined
+ * ("Unit 'NO' does not exist!"), and the symbol differs between companies --
+ * one live set of books uses "NO", another "Nos". Hardcoding it meant every
+ * receipt of a new product failed the moment the relay was pointed at
+ * different books, with the failure looking like a hang.
+ */
+const DEFAULT_UNIT = process.env.STT_DEFAULT_UNIT ?? 'NO';
+
 const db: DB = openDb(DB_PATH);
 
 const app = Fastify({
@@ -204,7 +215,7 @@ function dispatchItemCreation(pid: string, company: string): boolean {
     kind: 'CREATE_STOCK_ITEM',
     pid,
     name: p.name,
-    baseUnits: p.base_units || 'NO',
+    baseUnits: p.base_units || DEFAULT_UNIT,
     batchwise: !!p.batchwise,
     trackMfgDate: !!p.batchwise && !!p.track_mfg,
     company,
@@ -251,7 +262,7 @@ function applyItemCreationResult(r: JobResult): void {
                 VALUES (?,'',?,?,?)
                 ON CONFLICT(name) DO UPDATE SET base_units=excluded.base_units,
                   has_batches=excluded.has_batches, synced_at=excluded.synced_at`)
-      .run(name, p.base_units || 'NO', p.batchwise ? 1 : 0, nowIso());
+      .run(name, p.base_units || DEFAULT_UNIT, p.batchwise ? 1 : 0, nowIso());
 
     db.prepare(`INSERT INTO pid_bindings (pid, stock_item_name, description, source, bound_by, bound_at)
                 VALUES (?,?,?,'AUTO_CREATED','scanner',?)
@@ -269,7 +280,7 @@ function applyItemCreationResult(r: JobResult): void {
         flags=TRIM(REPLACE(','||flags||',', ',UNRESOLVED_PID,', ','), ',')
       WHERE pid=? AND stock_item_name=''
         AND session_id IN (SELECT id FROM sessions WHERE state IN ('DRAFT','QUEUED','FAILED'))`)
-      .run(name, p.base_units || 'NO', String(p.description || ''), pid);
+      .run(name, p.base_units || DEFAULT_UNIT, String(p.description || ''), pid);
   });
   tx();
 
@@ -963,7 +974,7 @@ app.post('/api/v1/proposed-items', async (req, reply) => {
       track_mfg=excluded.track_mfg, state='PENDING',
       proposed_by=excluded.proposed_by, proposed_at=excluded.proposed_at,
       error=''`)
-    .run(pid, name, description, String(b.baseUnits ?? 'NO'),
+    .run(pid, name, description, String(b.baseUnits ?? DEFAULT_UNIT),
       b.batchwise === false ? 0 : 1, b.trackMfgDate === false ? 0 : 1,
       b.proposedBy ?? d.operator, nowIso(), String(b.sessionId ?? ''),
       String(b.raw ?? ''));

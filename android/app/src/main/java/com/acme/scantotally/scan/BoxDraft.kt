@@ -69,7 +69,16 @@ data class BoxDraft(
             scanned = scanned + Slot.BOX,
             raws = raws + fragment.raw,
         )
-        // Never placed. A week number and a quantity are the same shape.
+        // Only ever produced by a TARGETED scan, where the operator said which
+        // field they were pointing at. A blind scan can never reach here: a
+        // week number and a quantity are the same shape, so shape alone can
+        // never place one.
+        FragmentKind.QUANTITY -> copy(
+            qty = fragment.value.toIntOrNull() ?: qty,
+            scanned = scanned + Slot.QUANTITY,
+            raws = raws + fragment.raw,
+        )
+        // Never placed.
         FragmentKind.NOT_MINE -> this
     }
 

@@ -13,6 +13,7 @@ type fragmentVector struct {
 	Kind  string `json:"kind"`
 	Value string `json:"value"`
 	Hint  string `json:"hint"`
+	Want  string `json:"want"`
 }
 
 // Runs the SAME file as the TypeScript and Kotlin suites. If one of them
@@ -36,6 +37,9 @@ func TestFragmentGoldenVectors(t *testing.T) {
 	for _, v := range doc.Fragments {
 		t.Run(v.Name, func(t *testing.T) {
 			got := ClassifyFragment(v.Raw)
+			if v.Want != "" {
+				got = ClassifyFragmentFor(v.Raw, Slot(v.Want))
+			}
 
 			if string(got.Kind) != v.Kind {
 				t.Fatalf("kind = %q, want %q (raw %q)", got.Kind, v.Kind, v.Raw)

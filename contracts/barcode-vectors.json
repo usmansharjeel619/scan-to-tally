@@ -24,7 +24,20 @@
     "             above: part no, date code, week no, issue no, bare quantity.",
     "             Refused with a hint -- NEVER guessed into a slot, because a",
     "             week number and a quantity are the same shape and taking one",
-    "             for the other puts stock wrong with nothing on screen."
+    "             for the other puts stock wrong with nothing on screen.",
+    "",
+    "want: the slot the OPERATOR asked for before scanning. Absent means a",
+    "blind scan, where the classifier must place the barcode by shape alone and",
+    "refuses anything ambiguous. Present means the operator tapped \"scan the",
+    "product number\" (or box, or quantity) first, so the slot is known and only",
+    "the shape has to fit. That is what makes an 8-digit part number and a",
+    "scanned quantity safe: neither can be placed by shape, both can be placed",
+    "when the operator has said which field they are pointing at.",
+    "",
+    "An 8-digit part number is the same number as nnnn-nnnn with the dash",
+    "dropped, so it is normalised to the dashed form and resolves to one product",
+    "either way. It is NEVER accepted blind: 8 digits is also the shape of a",
+    "date code."
   ],
   "version": 1,
   "vectors": [
@@ -304,6 +317,19 @@
       "symbology": "EAN13",
       "outcome": "UNKNOWN",
       "expect": {}
+    },
+    {
+      "name": "long barcode whose part number has no dash",
+      "raw": "40989792|1124241658336425|18|",
+      "symbology": "CODE128",
+      "outcome": "ACCEPT",
+      "expect": {
+        "pid": "4098-9792",
+        "boxSerial": "1124241658336425",
+        "qty": 18,
+        "firmware": null,
+        "mfgDate": "2024-11-24"
+      }
     }
   ],
   "fragments": [
@@ -441,6 +467,83 @@
       "raw": "5012345678900",
       "kind": "NOT_MINE",
       "hint": "PART_NO"
+    },
+    {
+      "name": "8-digit part number is ambiguous when scanned blind",
+      "raw": "40989792",
+      "kind": "NOT_MINE",
+      "hint": "PART_NO"
+    },
+    {
+      "name": "8-digit date code, the reason the above is refused",
+      "raw": "21092026",
+      "kind": "NOT_MINE",
+      "hint": "PART_NO"
+    },
+    {
+      "name": "asked for the product, given a dashed part number",
+      "raw": "4098-9792",
+      "want": "PRODUCT",
+      "kind": "PRODUCT",
+      "value": "4098-9792"
+    },
+    {
+      "name": "asked for the product, given it without the dash",
+      "raw": "40989792",
+      "want": "PRODUCT",
+      "kind": "PRODUCT",
+      "value": "4098-9792"
+    },
+    {
+      "name": "asked for the product, given a box serial",
+      "raw": "1124241658336425",
+      "want": "PRODUCT",
+      "kind": "NOT_MINE"
+    },
+    {
+      "name": "asked for the product, given a quantity",
+      "raw": "18",
+      "want": "PRODUCT",
+      "kind": "NOT_MINE"
+    },
+    {
+      "name": "asked for the box, given a Simplex serial",
+      "raw": "1124241658336425",
+      "want": "BOX",
+      "kind": "BOX",
+      "value": "1124241658336425"
+    },
+    {
+      "name": "asked for the box, given a Tyco box id",
+      "raw": "HFE283",
+      "want": "BOX",
+      "kind": "BOX",
+      "value": "HFE283"
+    },
+    {
+      "name": "asked for the box, given a part number",
+      "raw": "4098-9792",
+      "want": "BOX",
+      "kind": "NOT_MINE"
+    },
+    {
+      "name": "asked for the quantity, given a small number",
+      "raw": "18",
+      "want": "QUANTITY",
+      "kind": "QUANTITY",
+      "value": "18"
+    },
+    {
+      "name": "asked for the quantity, given a box serial",
+      "raw": "1124241658336425",
+      "want": "QUANTITY",
+      "kind": "NOT_MINE"
+    },
+    {
+      "name": "asked for the quantity, given zero",
+      "raw": "0",
+      "want": "QUANTITY",
+      "kind": "NOT_MINE"
     }
   ]
 }

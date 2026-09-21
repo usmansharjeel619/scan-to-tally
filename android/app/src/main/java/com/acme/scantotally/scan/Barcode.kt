@@ -128,7 +128,10 @@ object SimplexPipeParser : BarcodeParser {
         return ParseResult(
             outcome = Outcome.ACCEPT, raw = raw, symbology = symbology, parser = name,
             confidence = 0.9,
-            box = ParsedBox(pid, serial, qty, firmware, mfgDateFromSerial(serial)),
+            // Some cartons drop the dash from the part number. Its position in the
+            // payload makes it unambiguous here, so it is normalised to the canonical
+            // dashed form and resolves to one catalogue entry either way.
+            box = ParsedBox(normalisePid(pid), serial, qty, firmware, mfgDateFromSerial(serial)),
         )
     }
 }
@@ -156,6 +159,21 @@ fun mfgDateFromSerial(serial: String): LocalDate? {
     // exactly the behaviour wanted here.
     return runCatching { LocalDate.of(2000 + yy, mm, dd) }.getOrNull()
 }
+
+/**
+ * Puts a part number in its canonical dashed form.
+ *
+ * Some cartons drop the dash from the part number. It is the same product, so
+ * it is normalised to nnnn-nnnn and resolves to one catalogue entry however it
+ * was printed. Anything that is not exactly 8 digits is returned untouched --
+ * this widens nothing and invents nothing.
+ */
+fun normalisePid(v: String): String {
+    val s = v.trim()
+    return if (RE_EIGHT_DIGITS.matches(s)) s.substring(0, 4) + "-" + s.substring(4) else s
+}
+
+private val RE_EIGHT_DIGITS = Regex("""^[0-9]{8}$""")
 
 private val RE_PID = Regex("""^\d{4}-\d{4}$""")
 private val RE_PART_NO = Regex("""^\d{6,8}[A-Z]{2}$""")

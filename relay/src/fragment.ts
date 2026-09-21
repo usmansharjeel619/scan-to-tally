@@ -6,7 +6,7 @@
  * barcode means two different things in two places and stock drifts.
  */
 
-export type FragmentKind = 'PRODUCT' | 'BOX' | 'NOT_MINE';
+export type FragmentKind = 'PRODUCT' | 'BOX' | 'QUANTITY' | 'NOT_MINE';
 export type FragmentHint = 'PART_NO' | 'QTY' | undefined;
 
 export interface Fragment {
@@ -56,4 +56,83 @@ export function classifyFragment(raw: string): Fragment {
   if (/[0-9]/.test(v)) return { kind: 'NOT_MINE', hint: 'PART_NO', raw };
 
   return { kind: 'NOT_MINE', raw };
+}
+
+// --- targeted scanning ------------------------------------------------------
+
+/**
+ * The field the operator asked for BEFORE scanning.
+ *
+ * Blind scanning must place a barcode by shape alone, which is why so much of a
+ * label is refused: a quantity, a week number and an issue number are the same
+ * shape, and an 8-digit part number is the same shape as a date code.
+ *
+ * When the operator taps "scan the product number" first, the slot stops being
+ * a guess. Only the shape has to fit, and fields that can never be placed
+ * blind become safe to scan.
+ */
+export type Slot = 'PRODUCT' | 'BOX' | 'QUANTITY';
+
+const EIGHT_DIGITS = /^[0-9]{8}$/;
+
+/** A scanned carton count beyond this is a misread or a serial. */
+const MAX_SCANNED_QTY = 9999;
+
+/**
+ * Puts a part number in its canonical dashed form.
+ *
+ * Some cartons drop the dash. It is the same product, so it normalises to
+ * nnnn-nnnn and resolves to one catalogue entry however it was printed.
+ * Anything that is not exactly 8 digits is returned untouched.
+ */
+export function normalisePid(v: string): string {
+  const s = String(v ?? '').trim();
+  return EIGHT_DIGITS.test(s) ? `${s.slice(0, 4)}-${s.slice(4)}` : s;
+}
+
+/**
+ * Places a barcode into a slot the operator named.
+ *
+ * A payload that does not fit is still refused rather than coerced: scanning a
+ * box serial into the quantity slot must fail, not become a quantity of
+ * 1124241658336425.
+ */
+export function classifyFragmentFor(raw: string, want: Slot): Fragment {
+  const v = String(raw ?? '').trim().toUpperCase();
+  if (v === '') return { kind: 'NOT_MINE', raw };
+
+  switch (want) {
+    case 'PRODUCT':
+      if (PRODUCT.test(v) || EIGHT_DIGITS.test(v)) {
+        return { kind: 'PRODUCT', value: normalisePid(v), raw };
+      }
+      return { kind: 'NOT_MINE', hint: 'PART_NO', raw };
+
+    case 'BOX':
+      if (SERIAL16.test(v) || BOX_ID.test(v)) return { kind: 'BOX', value: v, raw };
+      return { kind: 'NOT_MINE', raw };
+
+    case 'QUANTITY': {
+      // Deliberately narrow: a quantity is a small positive number, and
+      // anything longer is a serial or a date pointed at by mistake.
+      if (!DIGITS.test(v) || v.length > 4) return { kind: 'NOT_MINE', hint: 'QTY', raw };
+      const n = Number(v);
+      if (!(n > 0) || n > MAX_SCANNED_QTY) return { kind: 'NOT_MINE', hint: 'QTY', raw };
+      return { kind: 'QUANTITY', value: v, raw };
+    }
+
+    default:
+      // An unknown slot falls back to blind rather than accepting on a typo.
+      return classifyFragment(raw);
+  }
+}
+
+/** Why a targeted scan did not fit the field the operator asked for. */
+export function refusedForSlot(want: Slot): string {
+  switch (want) {
+    case 'PRODUCT': return 'That is not a part number. Scan the code printed under PID, Type or Part.';
+    case 'BOX': return 'That is not a box number. Scan the long serial, or the box id.';
+    case 'QUANTITY': return 'That is not a quantity. Scan the number printed under QTY, or type it.';
+    default: return 'That barcode does not belong in this field.';
+  }
 }

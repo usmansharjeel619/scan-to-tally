@@ -1,7 +1,9 @@
 package com.acme.scantotally
 
 import com.acme.scantotally.scan.FragmentKind
+import com.acme.scantotally.scan.ScanSlot
 import com.acme.scantotally.scan.classifyFragment
+import com.acme.scantotally.scan.classifyFragmentFor
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
@@ -40,7 +42,14 @@ class FragmentVectorsTest {
             val v = element.jsonObject
             val name = str(v, "name").orEmpty()
             val raw = str(v, "raw").orEmpty()
-            val got = classifyFragment(raw)
+            // A vector that names a slot is a TARGETED scan: the operator said
+            // which field they were pointing at before scanning.
+            val want = str(v, "want")
+            val got = if (want != null) {
+                classifyFragmentFor(raw, ScanSlot.valueOf(want))
+            } else {
+                classifyFragment(raw)
+            }
 
             assertEquals("$name: kind", str(v, "kind"), got.kind.name)
             str(v, "value")?.let { assertEquals("$name: value", it, got.value) }

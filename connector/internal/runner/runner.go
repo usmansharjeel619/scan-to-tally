@@ -317,9 +317,26 @@ func buildVoucher(pj protocol.PostVoucherJob) (tally.Voucher, error) {
 
 	switch pj.Kind {
 	case protocol.KindIncoming:
-		v := tally.NewReceiptNote(pj.SessionID, narration, pj.Party, pj.Date, entries)
+		// Incoming posts a PHYSICAL STOCK voucher, not a Receipt Note.
+		//
+		// A Receipt Note is a goods-inward document that an accounts team is
+		// expected to settle against a Purchase invoice later. The warehouse is
+		// not doing that: it is recording what is physically on the shelf. A
+		// Physical Stock voucher says exactly that and carries no accounting
+		// weight and no party.
+		//
+		// Physical Stock SETS a batch quantity rather than adding to it. That is
+		// equivalent here only because a box is its own batch and a box is
+		// received once -- if that ever stops being true, this is the line that
+		// makes a second receipt overwrite the first instead of adding to it.
+		v := tally.NewPhysicalStock(pj.SessionID, narration, pj.Date, entries)
 		if pj.VoucherType != "" {
 			v.Type = tally.VoucherType(pj.VoucherType)
+			// Only a party-bearing type should carry the supplier; Physical
+			// Stock has no party field at all.
+			if v.Type != tally.PhysicalStock {
+				v.PartyLedgerName = pj.Party
+			}
 		}
 		return v, v.Validate()
 	case protocol.KindOutgoing:

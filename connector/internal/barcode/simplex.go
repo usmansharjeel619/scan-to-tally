@@ -66,7 +66,10 @@ func (p SimplexPipe) Parse(symbology, raw string) Result {
 		return res
 	}
 
-	box := ParsedBox{PID: pid, BoxSerial: serial, Qty: qty, MfgDate: mfgDateFromSerial(serial)}
+	// Some cartons drop the dash from the part number. Its position in the
+	// payload makes it unambiguous here, so it is normalised to the canonical
+	// dashed form and resolves to one catalogue entry either way.
+	box := ParsedBox{PID: NormalisePID(pid), BoxSerial: serial, Qty: qty, MfgDate: mfgDateFromSerial(serial)}
 	if len(fields) == 4 && fields[3] != "" {
 		fw := fields[3]
 		box.Firmware = &fw

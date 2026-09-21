@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { classifyFragment } from '../src/fragment.ts';
+import { classifyFragment, classifyFragmentFor } from '../src/fragment.ts';
 
 const contract = JSON.parse(
   readFileSync(new URL('../../contracts/barcode-vectors.json', import.meta.url), 'utf8'),
@@ -15,7 +15,7 @@ test('fragment golden vectors', () => {
   assert.ok(contract.fragments?.length, 'no fragment vectors; the contract is not being read');
 
   for (const v of contract.fragments) {
-    const got = classifyFragment(v.raw);
+    const got = v.want ? classifyFragmentFor(v.raw, v.want) : classifyFragment(v.raw);
     assert.equal(got.kind, v.kind, `${v.name}: kind for ${JSON.stringify(v.raw)}`);
     if (v.value) assert.equal(got.value, v.value, `${v.name}: value`);
     if (v.kind !== 'NOT_MINE') assert.ok(got.value, `${v.name}: a placed fragment must carry its value`);

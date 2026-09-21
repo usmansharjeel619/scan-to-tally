@@ -102,3 +102,111 @@ func ClassifyFragment(raw string) Fragment {
 
 	return Fragment{Kind: FragmentNotMine, Raw: raw}
 }
+
+// --- targeted scanning ------------------------------------------------------
+
+// Slot is the field the operator asked for BEFORE scanning.
+//
+// Blind scanning has to place a barcode by shape alone, which is why so much of
+// a label is refused: a quantity, a week number and an issue number are the
+// same shape, and an 8-digit part number is the same shape as a date code.
+//
+// When the operator taps "scan the product number" first, the slot stops being
+// a guess. Only the shape has to fit, and fields that can never be placed
+// blind become safe to scan.
+type Slot string
+
+const (
+	SlotProduct  Slot = "PRODUCT"
+	SlotBox      Slot = "BOX"
+	SlotQuantity Slot = "QUANTITY"
+)
+
+// FragmentQuantity is a quantity the operator explicitly asked to scan.
+//
+// It is never produced by a blind scan, and that asymmetry is the point.
+const FragmentQuantity FragmentKind = "QUANTITY"
+
+// maxScannedQty bounds a scanned carton count. Beyond this it is a misread or
+// somebody has pointed at a serial.
+const maxScannedQty = 9999
+
+var reEightDigits = regexp.MustCompile(`^[0-9]{8}$`)
+
+// NormalisePID puts a part number in its canonical dashed form.
+//
+// Some cartons print the part number as 8 bare digits with the dash dropped.
+// It is the same product, so it is normalised to nnnn-nnnn and resolves to one
+// entry in the catalogue however it was printed.
+//
+// Anything that is not exactly 8 digits is returned untouched -- this widens
+// nothing and invents nothing.
+func NormalisePID(v string) string {
+	v = strings.TrimSpace(v)
+	if reEightDigits.MatchString(v) {
+		return v[:4] + "-" + v[4:]
+	}
+	return v
+}
+
+// ClassifyFragmentFor places a barcode into a slot the operator named.
+//
+// The difference from ClassifyFragment is the whole design: here the slot is
+// known, so the only question is whether the payload could be that field. A
+// payload that does not fit is still refused rather than coerced -- scanning a
+// box serial into the quantity slot must fail, not become a quantity of
+// 1124241658336425.
+func ClassifyFragmentFor(raw string, want Slot) Fragment {
+	v := strings.ToUpper(strings.TrimSpace(raw))
+	if v == "" {
+		return Fragment{Kind: FragmentNotMine, Raw: raw}
+	}
+
+	switch want {
+	case SlotProduct:
+		// Dashed, or the same number with the dash dropped.
+		if reProduct.MatchString(v) || reEightDigits.MatchString(v) {
+			return Fragment{Kind: FragmentProduct, Value: NormalisePID(v), Raw: raw}
+		}
+		return Fragment{Kind: FragmentNotMine, Hint: HintPartNo, Raw: raw}
+
+	case SlotBox:
+		if reSerial16.MatchString(v) || reBoxID.MatchString(v) {
+			return Fragment{Kind: FragmentBox, Value: v, Raw: raw}
+		}
+		return Fragment{Kind: FragmentNotMine, Raw: raw}
+
+	case SlotQuantity:
+		// Deliberately narrow. A quantity is a small positive number; anything
+		// longer is a serial or a date the operator has pointed at by mistake.
+		if !reDigits.MatchString(v) || len(v) > 4 {
+			return Fragment{Kind: FragmentNotMine, Hint: HintQty, Raw: raw}
+		}
+		n := 0
+		for _, c := range v {
+			n = n*10 + int(c-'0')
+		}
+		if n <= 0 || n > maxScannedQty {
+			return Fragment{Kind: FragmentNotMine, Hint: HintQty, Raw: raw}
+		}
+		return Fragment{Kind: FragmentQuantity, Value: v, Raw: raw}
+	}
+
+	// An unknown slot falls back to blind classification rather than accepting
+	// something on a caller's typo.
+	return ClassifyFragment(raw)
+}
+
+// RefusedForSlot explains, in the operator's terms, why a targeted scan did not
+// fit the field they asked for.
+func RefusedForSlot(want Slot) string {
+	switch want {
+	case SlotProduct:
+		return "That is not a part number. Scan the code printed under PID, Type or Part."
+	case SlotBox:
+		return "That is not a box number. Scan the long serial, or the box id."
+	case SlotQuantity:
+		return "That is not a quantity. Scan the number printed under QTY, or type it."
+	}
+	return "That barcode does not belong in this field."
+}

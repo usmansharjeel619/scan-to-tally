@@ -76,6 +76,10 @@ private val DESCRIPTION_ENDS = setOf(
 )
 
 private val PRODUCT_RE = Regex("^[0-9]{4}-[0-9]{4}$")
+
+/** The same part number with the dash dropped. Only ever read under an
+ *  anchor, where the label says which field it is. */
+private val PRODUCT_NODASH_RE = Regex("^[0-9]{8}$")
 private val BOXID_RE = Regex("^[A-Z]{2,4}[0-9]{3,6}$")
 private val SERIAL16_RE = Regex("^[0-9]{16}$")
 private val NUMBER_RE = Regex("^[0-9]{1,6}$")
@@ -93,7 +97,7 @@ private val NUMBER_RE = Regex("^[0-9]{1,6}$")
  * separator cannot be absorbed into it.
  */
 private val COMBINED_RE = Regex(
-    "([0-9]{4}-[0-9]{4})[|Il/\\\\]([0-9]{10,20})[|Il/\\\\]([0-9]{1,5})",
+    "([0-9]{4}-[0-9]{4}|[0-9]{8})[|Il/\\\\]([0-9]{10,20})[|Il/\\\\]([0-9]{1,5})",
     RegexOption.IGNORE_CASE,
 )
 
@@ -142,7 +146,8 @@ private fun combined(words: List<TextWord>): LabelReading? {
         if (qty <= 0) continue
 
         return LabelReading(
-            product = m.groupValues[1],
+            // Positional inside the long code, so a missing dash is unambiguous.
+            product = normalisePid(m.groupValues[1]),
             box = serial,
             qty = qty,
         )
@@ -237,12 +242,22 @@ private fun valueFor(
 }
 
 private fun readProduct(words: List<TextWord>): String? {
-    // Named first: "PID: 4098-9788", "Type: 4098-5220".
+    // Named first: "PID: 4098-9788", "Type: 4098-5220", "PID: 40989792".
+    //
+    // Under an anchor the label itself says which field this is, so a part
+    // number printed WITHOUT its dash can be taken here. It is normalised to
+    // the dashed form so both printings resolve to one product.
     for (anchor in anchors(words, ANCHOR_PRODUCT)) {
-        valueFor(words, anchor) { PRODUCT_RE.matches(it.clean) }?.let { return it.first.clean }
+        valueFor(words, anchor) {
+            PRODUCT_RE.matches(it.clean) || PRODUCT_NODASH_RE.matches(it.clean)
+        }?.let { return normalisePid(it.first.clean) }
     }
     // Otherwise the only thing on the label shaped like a part number. KAC
     // prints one barcode and no field name at all.
+    //
+    // Deliberately STRICTER than the anchored branch: with nothing naming the
+    // field, 8 bare digits is equally the shape of a date code, and taking one
+    // for the other would invent a product that is not on the carton.
     return words.map { it.clean }.singleOrNull { PRODUCT_RE.matches(it) }
 }
 

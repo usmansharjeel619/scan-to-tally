@@ -409,3 +409,47 @@ func TestMissingCompanyOnJobStillPosts(t *testing.T) {
 		t.Fatalf("a job with no company should still post: %+v", res)
 	}
 }
+
+// TestIncomingPostsPhysicalStock pins the voucher type for goods inward.
+//
+// The warehouse is recording what is physically on the shelf, not raising a
+// goods-inward document for an accounts team to settle later. A Receipt Note
+// says the second thing and leaves a document nobody closes.
+func TestIncomingPostsPhysicalStock(t *testing.T) {
+	pj := incomingJob("sess-vtype", protocol.Box{BoxSerial: "1124249955550001", Qty: 4})
+
+	v, err := buildVoucher(pj)
+	if err != nil {
+		t.Fatalf("buildVoucher: %v", err)
+	}
+	if v.Type != tally.PhysicalStock {
+		t.Errorf("incoming voucher type = %q, want %q", v.Type, tally.PhysicalStock)
+	}
+	// Physical Stock has no party field; setting one would be sent to Tally as
+	// a field the voucher type does not have.
+	if v.PartyLedgerName != "" {
+		t.Errorf("party = %q, want empty on a Physical Stock voucher", v.PartyLedgerName)
+	}
+	if v.IdempotencyKey != pj.SessionID {
+		t.Errorf("idempotency key = %q, want the session id", v.IdempotencyKey)
+	}
+}
+
+// TestIncomingVoucherTypeStillOverridable: a company that wants a Receipt Note
+// can still ask for one, and then the supplier is carried again.
+func TestIncomingVoucherTypeStillOverridable(t *testing.T) {
+	pj := incomingJob("sess-vtype-2", protocol.Box{BoxSerial: "1124249955550002", Qty: 4})
+	pj.VoucherType = string(tally.ReceiptNote)
+	pj.Party = "Simplex Supplies"
+
+	v, err := buildVoucher(pj)
+	if err != nil {
+		t.Fatalf("buildVoucher: %v", err)
+	}
+	if v.Type != tally.ReceiptNote {
+		t.Errorf("type = %q, want %q", v.Type, tally.ReceiptNote)
+	}
+	if v.PartyLedgerName != "Simplex Supplies" {
+		t.Errorf("party = %q, want it carried on a party-bearing type", v.PartyLedgerName)
+	}
+}

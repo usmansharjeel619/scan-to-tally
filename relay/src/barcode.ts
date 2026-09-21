@@ -10,6 +10,8 @@
  * arriving over HTTP is untrusted input, and the quantity on it becomes stock.
  */
 
+import { normalisePid } from './fragment.ts';
+
 export type Outcome = 'ACCEPT' | 'WRONG_BARCODE' | 'REJECT' | 'UNKNOWN';
 
 /** Which of the label's other barcodes was scanned, so the UI can redirect. */
@@ -148,7 +150,11 @@ export const simplexPipe: Parser = {
 
     return {
       outcome: 'ACCEPT', parser: 'simplex-pipe', raw, symbology, confidence: 0.9,
-      box: { pid, boxSerial: serial, qty, firmware, mfgDate: mfgDateFromSerial(serial) },
+      // Some cartons drop the dash from the part number. Its position in the
+      // payload makes it unambiguous here, so it normalises to the canonical
+      // dashed form and resolves to one catalogue entry either way.
+      box: { pid: normalisePid(pid), boxSerial: serial, qty, firmware,
+             mfgDate: mfgDateFromSerial(serial) },
     };
   },
 };

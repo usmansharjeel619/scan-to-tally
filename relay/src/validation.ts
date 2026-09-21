@@ -16,6 +16,7 @@
 import type { DB, LineFlag, Resolved } from './db.ts';
 import { resolvePid, resolvePidDetailed, catalogueLookup } from './db.ts';
 import { registry, boxKey, type ParseResult } from './barcode.ts';
+import { canonicalPid } from './fragment.ts';
 
 /** What the device does with the scan. */
 export type ScanOutcome =
@@ -109,8 +110,9 @@ export function decideIncomingScan(db: DB, input: IncomingScanInput): ScanDecisi
 
   // 1. Duplicate within this session -- a hard block, nothing to dismiss.
   const inSession = db.prepare(
-    `SELECT id, qty FROM session_lines WHERE session_id = ? AND pid = ? AND box_serial = ?`,
-  ).get(input.sessionId, pid, boxSerial) as { id: number; qty: number } | undefined;
+    `SELECT id, qty FROM session_lines
+      WHERE session_id = ? AND REPLACE(UPPER(pid),'-','') = ? AND box_serial = ?`,
+  ).get(input.sessionId, canonicalPid(pid), boxSerial) as { id: number; qty: number } | undefined;
 
   if (inSession) {
     return {
@@ -130,8 +132,9 @@ export function decideIncomingScan(db: DB, input: IncomingScanInput): ScanDecisi
   //    return is a different transaction and belongs in Tally, not in a dialog
   //    at the dock.
   const historical = db.prepare(
-    `SELECT session_id, received_at, qty FROM received_boxes WHERE pid = ? AND box_serial = ?`,
-  ).get(pid, boxSerial) as { session_id: string; received_at: string; qty: number } | undefined;
+    `SELECT session_id, received_at, qty FROM received_boxes
+      WHERE REPLACE(UPPER(pid),'-','') = ? AND box_serial = ?`,
+  ).get(canonicalPid(pid), boxSerial) as { session_id: string; received_at: string; qty: number } | undefined;
 
   if (historical) {
     return {
@@ -267,12 +270,13 @@ export function decideOutgoingScan(db: DB, input: OutgoingScanInput): ScanDecisi
   // fit inside what is left.
   const committed = (db.prepare(
     `SELECT COALESCE(SUM(qty),0) AS q FROM session_lines
-      WHERE session_id = ? AND pid = ? AND box_serial = ?`,
-  ).get(input.sessionId, pid, boxSerial) as { q: number }).q;
+      WHERE session_id = ? AND REPLACE(UPPER(pid),'-','') = ? AND box_serial = ?`,
+  ).get(input.sessionId, canonicalPid(pid), boxSerial) as { q: number }).q;
 
   const existing = db.prepare(
-    `SELECT id FROM session_lines WHERE session_id = ? AND pid = ? AND box_serial = ?`,
-  ).get(input.sessionId, pid, boxSerial) as { id: number } | undefined;
+    `SELECT id FROM session_lines
+      WHERE session_id = ? AND REPLACE(UPPER(pid),'-','') = ? AND box_serial = ?`,
+  ).get(input.sessionId, canonicalPid(pid), boxSerial) as { id: number } | undefined;
 
   const available = Math.max(0, onHand - committed);
   if (available <= EPS) {
@@ -348,8 +352,10 @@ export function validateOutgoingQty(
   // Ceiling 2: other lines in this session drawing on the same box.
   const committed = (db.prepare(
     `SELECT COALESCE(SUM(qty),0) AS q FROM session_lines
-      WHERE session_id = ? AND pid = ? AND box_serial = ? AND id IS NOT ?`,
-  ).get(opts.sessionId, opts.pid, opts.boxSerial, opts.excludeLineId ?? -1) as { q: number }).q;
+      WHERE session_id = ? AND REPLACE(UPPER(pid),'-','') = ? AND box_serial = ?
+        AND id IS NOT ?`,
+  ).get(opts.sessionId, canonicalPid(opts.pid), opts.boxSerial,
+        opts.excludeLineId ?? -1) as { q: number }).q;
 
   const available = Math.max(0, onHand - committed);
 

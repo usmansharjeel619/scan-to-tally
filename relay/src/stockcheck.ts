@@ -9,6 +9,7 @@
 import type { DB, LineFlag } from './db.ts';
 import { resolvePid } from './db.ts';
 import { registry } from './barcode.ts';
+import { canonicalPid } from './fragment.ts';
 import type { ScanDecision } from './validation.ts';
 import { wrongBarcodeMessage, rejectMessage, tail, fmt, EPS } from './validation.ts';
 
@@ -60,8 +61,9 @@ export function decideStockCheckScan(db: DB, input: StockCheckScanInput): ScanDe
   // A box is a physical object, counted once. Scanning it twice is a
   // double-scan, not a second box.
   const already = db.prepare(
-    `SELECT id, qty FROM session_lines WHERE session_id = ? AND pid = ? AND box_serial = ?`,
-  ).get(input.sessionId, pid, boxSerial) as { id: number; qty: number } | undefined;
+    `SELECT id, qty FROM session_lines
+      WHERE session_id = ? AND REPLACE(UPPER(pid),'-','') = ? AND box_serial = ?`,
+  ).get(input.sessionId, canonicalPid(pid), boxSerial) as { id: number; qty: number } | undefined;
 
   if (already) {
     return {

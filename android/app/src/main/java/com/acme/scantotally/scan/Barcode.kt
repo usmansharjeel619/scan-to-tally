@@ -160,6 +160,17 @@ fun mfgDateFromSerial(serial: String): LocalDate? {
 }
 
 /**
+ * The form a part number is MATCHED on, never the form it is stored in.
+ *
+ * The same model arrives on cartons printed both 41009701 and 4100-9701. Stored
+ * verbatim -- which is right, the audit trail should say what was on the box --
+ * those are two different strings, and a duplicate check keyed on them would
+ * let the same physical box be received twice under the two spellings. Identity
+ * collapses the dash; display and storage do not.
+ */
+fun canonicalPid(v: String): String = v.trim().uppercase().replace("-", "")
+
+/**
  * The spellings a part number might be filed under.
  *
  * Some cartons drop the dash. It is the same product either way, so a lookup

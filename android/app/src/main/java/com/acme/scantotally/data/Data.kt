@@ -324,7 +324,18 @@ interface ScanDao {
     )
     suspend fun receivedSince(pid: String, since: Long): Int
 
-    @Query("SELECT * FROM received_boxes WHERE pid = :pid AND boxSerial = :serial LIMIT 1")
+    /**
+     * A box already received, matched on the CANONICAL part number.
+     *
+     * The same model arrives on cartons printed both 41009701 and 4100-9701.
+     * Stored verbatim, those are two different strings; matched verbatim, the
+     * same physical box could be received twice, once under each spelling.
+     * The pid passed in must be canonicalPid().
+     */
+    @Query(
+        """SELECT * FROM received_boxes
+           WHERE REPLACE(UPPER(pid),'-','') = :pid AND boxSerial = :serial LIMIT 1"""
+    )
     suspend fun receivedBox(pid: String, serial: String): ReceivedBoxEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -441,13 +452,15 @@ interface ScanDao {
 
     @Query(
         """SELECT * FROM session_lines
-           WHERE sessionId = :sessionId AND pid = :pid AND boxSerial = :serial LIMIT 1"""
+           WHERE sessionId = :sessionId AND REPLACE(UPPER(pid),'-','') = :pid
+             AND boxSerial = :serial LIMIT 1"""
     )
     suspend fun lineForBox(sessionId: String, pid: String, serial: String): SessionLineEntity?
 
     @Query(
         """SELECT COALESCE(SUM(qty),0) FROM session_lines
-           WHERE sessionId = :sessionId AND pid = :pid AND boxSerial = :serial AND id != :excludeId"""
+           WHERE sessionId = :sessionId AND REPLACE(UPPER(pid),'-','') = :pid
+             AND boxSerial = :serial AND id != :excludeId"""
     )
     suspend fun committedForBox(
         sessionId: String, pid: String, serial: String, excludeId: Long = -1,
@@ -530,7 +543,8 @@ interface ScanDao {
         """SELECT l.id AS lineId, l.sessionId AS sessionId, s.state AS state,
                   l.qty AS qty, s.createdAt AS createdAt
              FROM session_lines l JOIN sessions s ON s.id = l.sessionId
-            WHERE l.pid = :pid AND l.boxSerial = :serial AND l.sessionId != :exceptSession
+            WHERE REPLACE(UPPER(l.pid),'-','') = :pid AND l.boxSerial = :serial
+              AND l.sessionId != :exceptSession
             ORDER BY l.id DESC LIMIT 1"""
     )
     suspend fun boxInAnotherSession(pid: String, serial: String, exceptSession: String): BoxElsewhere?

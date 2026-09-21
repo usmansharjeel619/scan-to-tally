@@ -5,6 +5,7 @@ import com.acme.scantotally.DeviceConfig
 import com.acme.scantotally.feedback.Beep
 import com.acme.scantotally.scan.BarcodeRegistry
 import com.acme.scantotally.scan.FragmentKind
+import com.acme.scantotally.scan.canonicalPid
 import com.acme.scantotally.scan.classifyFragment
 import com.acme.scantotally.scan.pidVariants
 import com.acme.scantotally.scan.Outcome
@@ -333,7 +334,7 @@ class Repository(context: Context, private val api: RelayApi?) {
         if (manual) flags += "MANUAL"
 
         // 1. Already on this receipt: a hard block, nothing to dismiss.
-        dao.lineForBox(sessionId, box.pid, box.boxSerial)?.let { existing ->
+        dao.lineForBox(sessionId, canonicalPid(box.pid), box.boxSerial)?.let { existing ->
             return ScanDecision(
                 Outcome2.DUPLICATE, Beep.DUPLICATE,
                 "Box ${tailOf(box.boxSerial)} is already on this entry (${fmt(existing.qty)}).",
@@ -345,7 +346,7 @@ class Repository(context: Context, private val api: RelayApi?) {
         //    box number identifies one physical carton, so this is the same
         //    pallet being scanned a second time, and there is nothing to
         //    override -- the earlier receipt is still there to be finished.
-        val elsewhere = dao.boxInAnotherSession(box.pid, box.boxSerial, sessionId)
+        val elsewhere = dao.boxInAnotherSession(canonicalPid(box.pid), box.boxSerial, sessionId)
         if (elsewhere != null && elsewhere.state != "POSTED") {
             return ScanDecision(
                 Outcome2.DUPLICATE, Beep.DUPLICATE,
@@ -357,7 +358,7 @@ class Repository(context: Context, private val api: RelayApi?) {
 
         // 3. Received in an earlier session. Returns and reprinted labels are
         //    real, so this one the operator may deliberately override.
-        val historical = dao.receivedBox(box.pid, box.boxSerial)
+        val historical = dao.receivedBox(canonicalPid(box.pid), box.boxSerial)
         // Already received, here or anywhere. A hard refusal with nothing to
         // dismiss.
         //
@@ -477,8 +478,8 @@ class Repository(context: Context, private val api: RelayApi?) {
             )
         }
 
-        val existing = dao.lineForBox(sessionId, box.pid, box.boxSerial)
-        val committed = dao.committedForBox(sessionId, box.pid, box.boxSerial, existing?.id ?: -1)
+        val existing = dao.lineForBox(sessionId, canonicalPid(box.pid), box.boxSerial)
+        val committed = dao.committedForBox(sessionId, canonicalPid(box.pid), box.boxSerial, existing?.id ?: -1)
         val available = max(0.0, onHand - committed)
 
         if (available <= EPS) {
@@ -535,7 +536,7 @@ class Repository(context: Context, private val api: RelayApi?) {
         qty: Double, excludeLineId: Long = -1,
     ): QtyCheck {
         val onHand = dao.balance(stockItemName, boxSerial, godown)?.closingQty ?: 0.0
-        val committed = dao.committedForBox(sessionId, pid, boxSerial, excludeLineId)
+        val committed = dao.committedForBox(sessionId, canonicalPid(pid), boxSerial, excludeLineId)
         val available = max(0.0, onHand - committed)
 
         val orderLine = dao.orderLines(salesOrder).firstOrNull { it.stockItemName == stockItemName }
@@ -589,7 +590,7 @@ class Repository(context: Context, private val api: RelayApi?) {
         earlyReject(parsed)?.let { return it }
         val box = parsed.box!!
 
-        dao.lineForBox(sessionId, box.pid, box.boxSerial)?.let { existing ->
+        dao.lineForBox(sessionId, canonicalPid(box.pid), box.boxSerial)?.let { existing ->
             return ScanDecision(
                 Outcome2.DUPLICATE, Beep.DUPLICATE,
                 "Box ${tailOf(box.boxSerial)} is already counted (${fmt(existing.qty)}).",

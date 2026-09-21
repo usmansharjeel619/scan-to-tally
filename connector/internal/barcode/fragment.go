@@ -133,6 +133,19 @@ const maxScannedQty = 9999
 
 var reEightDigits = regexp.MustCompile(`^[0-9]{8}$`)
 
+// CanonicalPID is the form a part number is MATCHED on, never the form it is
+// stored in.
+//
+// The same model arrives on cartons printed both 41009701 and 4100-9701. Stored
+// verbatim -- which is right, the audit trail should say what was on the box --
+// those are two different strings, and a duplicate check keyed on them would
+// let the same physical box be received twice under the two spellings. So
+// identity collapses the dash and comparison uses this; display and storage do
+// not.
+func CanonicalPID(v string) string {
+	return strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(v), "-", ""))
+}
+
 // PIDVariants returns the spellings a part number might be filed under.
 //
 // Some cartons print it as 8 bare digits with the dash dropped. It is the same

@@ -346,3 +346,56 @@ test('a PID matching exactly one item still resolves by name prefix', () => {
   assert.equal(d.outcome, 'ACCEPT');
   assert.equal(d.box?.stockItemName, '4099-9006 DS PUSH PULL TYPE MPS');
 });
+
+// --- the same model printed two ways ----------------------------------------
+
+test('a box is a duplicate whether or not the carton printed the dash', () => {
+  // Real: cartons of 4100-9701 arrive printed both "41009701" and "4100-9701".
+  // Stored verbatim -- the audit trail should say what was on the box -- those
+  // are two different strings, and a duplicate check matching them literally
+  // would let the SAME physical box be received twice, once under each
+  // spelling. Stock doubled, nothing on screen.
+  const serial = '1124249900007001';
+  db.prepare(
+    `INSERT INTO stock_items (name, base_units, has_batches, synced_at) VALUES (?,?,?,?)`,
+  ).run('4100-9701 4100ES MASTER CONTROL PANEL', 'Nos', 1, nowIso());
+
+  addLine(SESSION, '41009701', serial, 4, '4100-9701 4100ES MASTER CONTROL PANEL');
+
+  const dashed = decideIncomingScan(db, {
+    sessionId: SESSION, raw: `4100-9701|${serial}|4|`, symbology: 'CODE128',
+  });
+  assert.equal(dashed.outcome, 'DUPLICATE',
+    'the dashed spelling must find the box received under the undashed one');
+
+  const undashed = decideIncomingScan(db, {
+    sessionId: SESSION, raw: `41009701|${serial}|4|`, symbology: 'CODE128',
+  });
+  assert.equal(undashed.outcome, 'DUPLICATE');
+});
+
+test('the part number is stored exactly as the carton printed it', () => {
+  // The reconciling happens at lookup time. Nothing rewrites the payload: a
+  // carton that printed 40989792 must leave 40989792 behind, not a number that
+  // was never on the box.
+  const d = decideIncomingScan(db, {
+    sessionId: SESSION, raw: '40989792|1124249900008001|18|', symbology: 'CODE128',
+  });
+  assert.equal(d.box?.pid, '40989792');
+  assert.equal(d.parse.box?.pid, '40989792');
+});
+
+test('both spellings resolve to the one Tally item', () => {
+  db.prepare(
+    `INSERT INTO stock_items (name, base_units, has_batches, synced_at) VALUES (?,?,?,?)`,
+  ).run('4100-9702 IDNAC REPEATER', 'Nos', 1, nowIso());
+
+  for (const printed of ['4100-9702', '41009702']) {
+    const d = decideIncomingScan(db, {
+      sessionId: `sess-${printed}`, raw: `${printed}|112424990000900${printed.length}|2|`,
+      symbology: 'CODE128',
+    });
+    assert.equal(d.box?.stockItemName, '4100-9702 IDNAC REPEATER',
+      `${printed} should find the item`);
+  }
+});

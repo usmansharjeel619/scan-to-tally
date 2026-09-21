@@ -49,6 +49,10 @@ type staticVariables struct {
 	// Explodes the stock summary down to its batch rows. Without it the report
 	// stops at the item, which is the figure we do NOT want.
 	ExplodeFlag string `xml:"EXPLODEFLAG,omitempty"`
+	// Narrows a report to one location. The stock summary does not name the
+	// godown its figures belong to, so the only way to know is to ask a
+	// location at a time.
+	Godown string `xml:"SVGODOWN,omitempty"`
 }
 
 type requestData struct {

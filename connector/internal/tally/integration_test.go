@@ -311,11 +311,14 @@ func TestIntegrationVoucherValidationCatchesQtyMismatch(t *testing.T) {
 // what IS open so whoever reads it can see the mistake immediately. It is
 // transient, not permanent: opening the company fixes it with no restart.
 func TestProbeCatchesAMisconfiguredCompany(t *testing.T) {
-	setFault(t, "none")
+	// Skip BEFORE touching the simulator. Reaching for it first made a plain
+	// `go test ./...` fail rather than skip, and a suite that is red for a
+	// reason everyone has learned to ignore hides the failures that matter.
 	url := os.Getenv("STT_TALLY_URL")
 	if url == "" {
 		t.Skip("set STT_TALLY_URL to run integration tests against tallysim")
 	}
+	setFault(t, "none")
 
 	c := NewClient(Config{
 		BaseURL: url,

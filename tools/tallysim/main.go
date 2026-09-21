@@ -38,6 +38,10 @@ type batchKey struct{ Item, Batch, Godown string }
 type sim struct {
 	mu sync.Mutex
 
+	// The locations this company has. Kept explicitly rather than inferred
+	// from stock, because a company has godowns before it has anything in them.
+	godowns []string
+
 	company   string
 	items     []item
 	balances  map[batchKey]float64
@@ -71,6 +75,15 @@ type postedVoucher struct {
 	ID, Type, Reference, Narration string
 	Date                           time.Time
 	Lines                          int
+	// What went out, so a later "how much of this order is already gone"
+	// question can be answered the way Tally answers it.
+	Despatched []despatchedLine
+}
+
+type despatchedLine struct {
+	Item    string
+	Qty     float64
+	OrderNo string
 }
 
 func newSim() *sim {
@@ -98,12 +111,19 @@ func newSim() *sim {
 	// Opening stock. The first box is deliberately part-shipped: the label says
 	// 18 but only 13 remain, which is exactly the case the outgoing ceiling has
 	// to catch and the printed quantity would get wrong.
+	// Two locations, not one. The single-location case hid a real bug: balances
+	// were only attributed to a godown when there was exactly one, so a company
+	// with several got "location unknown" on every box and outgoing could never
+	// find the carton in front of the operator.
+	s.godowns = []string{"Main Store", "Rack 12"}
+
 	s.balances[batchKey{"4098-9792 SSD SENSOR BASE", "1124241658336425", "Main Store"}] = 13
 	s.balances[batchKey{"4098-9792 SSD SENSOR BASE", "1124241658336426", "Main Store"}] = 18
 	s.balances[batchKey{"4098-9792 SSD SENSOR BASE", "1124241658336427", "Main Store"}] = 18
 	s.balances[batchKey{"4090-9001 ADDRESSABLE HEAT DETECTOR", "0701240099887766", "Main Store"}] = 24
 	// A fully despatched box: still a known batch, but nothing left to give.
 	s.balances[batchKey{"2081-9027 CONTROL RELAY", "0315251122334455", "Main Store"}] = 0
+	s.balances[batchKey{"4090-9001 ADDRESSABLE HEAT DETECTOR", "0701249900000001", "Rack 12"}] = 7
 
 	s.orders = []salesOrder{
 		{
@@ -137,6 +157,7 @@ type reqEnvelope struct {
 		Desc struct {
 			StaticVariables struct {
 				CurrentCompany string `xml:"SVCURRENTCOMPANY"`
+				Godown         string `xml:"SVGODOWN"`
 			} `xml:"STATICVARIABLES"`
 		} `xml:"DESC"`
 		ImportData struct {
@@ -209,7 +230,7 @@ func (s *sim) handle(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case strings.EqualFold(env.Header.TallyRequest, "Export"):
-		s.export(w, env.Header.ID)
+		s.export(w, env.Header.ID, env.Body.Desc.StaticVariables.Godown)
 	case strings.EqualFold(env.Header.TallyRequest, "Import Data"):
 		s.importVoucher(w, env, fault)
 	default:
@@ -217,7 +238,9 @@ func (s *sim) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *sim) export(w http.ResponseWriter, id string) {
+// godown narrows a report to one location, the way SVGODOWN does in Tally.
+// Empty means every location, which is what a single-location company asks for.
+func (s *sim) export(w http.ResponseWriter, id string, godown string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -239,6 +262,15 @@ func (s *sim) export(w http.ResponseWriter, id string) {
 			fmt.Fprintf(&b, "<STOCKITEM NAME=%q><NAME>%s</NAME><BASEUNITS>%s</BASEUNITS>"+
 				"<PARTNO>%s</PARTNO><ISBATCHWISEON>%s</ISBATCHWISEON><GUID>sim-si-%d</GUID></STOCKITEM>\n",
 				it.Name, esc(it.Name), it.Units, esc(it.PartNo), yn(it.Batchwise), i)
+		}
+
+	case "STT_Godowns":
+		// Without this the connector cannot tell which locations exist, and
+		// every balance comes back with an unknown one -- which is exactly the
+		// shape of the bug that disabled outgoing in a live company.
+		for i, g := range s.godowns {
+			fmt.Fprintf(&b, "<GODOWN NAME=%q><NAME>%s</NAME><PARENT></PARENT>"+
+				"<GUID>sim-gd-%d</GUID></GODOWN>\n", g, esc(g), i)
 		}
 
 	case "STT_BatchBalances":
@@ -273,8 +305,15 @@ func (s *sim) export(w http.ResponseWriter, id string) {
 	// total has to be here even though the parser skips it, because skipping it
 	// correctly is the whole reason the parser is written the way it is.
 	case "Stock Summary":
+		// The real report carries no godown of its own -- it reports whatever
+		// SVGODOWN narrowed it to. Honouring that here is what lets the tests
+		// catch a connector that asks the wrong way: returning everything
+		// regardless would make a broken per-location read look correct.
 		byItem := map[string][]batchKey{}
 		for k := range s.balances {
+			if godown != "" && k.Godown != godown {
+				continue
+			}
 			byItem[k.Item] = append(byItem[k.Item], k)
 		}
 		// Sorted so a run is reproducible; Go randomises map order and a test
@@ -314,6 +353,27 @@ func (s *sim) export(w http.ResponseWriter, id string) {
 				fmt.Fprintf(&b, " <ALLINVENTORYENTRIES.LIST><STOCKITEMNAME>%s</STOCKITEMNAME>"+
 					"<ACTUALQTY>%s %s</ACTUALQTY></ALLINVENTORYENTRIES.LIST>\n",
 					esc(l.Item), trimNum(l.Qty), l.Units)
+			}
+			b.WriteString("</VOUCHER>\n")
+		}
+
+	case "STT_OrderFulfilment":
+		// What has already gone out against each sales order, so the app can
+		// show what is still outstanding.
+		//
+		// The simulator keeps despatches as vouchers with an ORDERNO on each
+		// batch allocation, which is how the connector reads them back.
+		for _, v := range s.vouchers {
+			if v.Type != "Delivery Note" {
+				continue
+			}
+			fmt.Fprintf(&b, "<VOUCHER><VOUCHERNUMBER>%s</VOUCHERNUMBER>"+
+				"<VOUCHERTYPENAME>%s</VOUCHERTYPENAME>\n", esc(v.ID), esc(v.Type))
+			for _, l := range v.Despatched {
+				fmt.Fprintf(&b, " <ALLINVENTORYENTRIES.LIST><STOCKITEMNAME>%s</STOCKITEMNAME>"+
+					"<ACTUALQTY>%s %s</ACTUALQTY><ORDERNO>%s</ORDERNO>"+
+					"</ALLINVENTORYENTRIES.LIST>\n",
+					esc(l.Item), trimNum(l.Qty), s.units[l.Item], esc(l.OrderNo))
 			}
 			b.WriteString("</VOUCHER>\n")
 		}
@@ -398,9 +458,22 @@ func (s *sim) importVoucher(w http.ResponseWriter, env reqEnvelope, fault string
 	s.nextVchID++
 	id := fmt.Sprint(s.nextVchID)
 	s.seenRefs[v.Reference] = id
+	var despatched []despatchedLine
+	if !incoming {
+		for _, e := range v.Entries {
+			for _, b := range e.Batches {
+				q, _ := parseQty(b.ActualQty)
+				despatched = append(despatched, despatchedLine{
+					Item: e.StockItemName, Qty: q, OrderNo: b.OrderNo,
+				})
+			}
+		}
+	}
+
 	s.vouchers = append(s.vouchers, postedVoucher{
 		ID: id, Type: v.VoucherTypeName, Reference: v.Reference,
 		Narration: v.Narration, Date: time.Now(), Lines: len(v.Entries),
+		Despatched: despatched,
 	})
 	log.Printf("created %s %s ref=%s entries=%d", v.VoucherTypeName, id, v.Reference, len(v.Entries))
 

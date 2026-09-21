@@ -394,16 +394,43 @@ func (c *Client) ListGodowns(ctx context.Context) ([]string, error) {
 // unknown, and the stock lookup showed zero for a product that had just been
 // received.
 func (c *Client) ListBatchBalances(ctx context.Context) ([]BatchBalance, error) {
-	// The report names no godown. With a single location that is unambiguous,
-	// so the balances are attributed to it; with several there is no honest
-	// answer here, and an empty name means "location unknown" downstream rather
-	// than a guess that could despatch from the wrong shelf.
-	godown := ""
-	if gs, err := c.ListGodowns(ctx); err == nil && len(gs) == 1 {
-		godown = gs[0]
+	// The report does not name the location its figures belong to, so it is
+	// asked a location at a time.
+	//
+	// It used to be asked once, and the answer attributed to the only godown
+	// when there was exactly one -- and to NOTHING when there were several,
+	// which left every balance with an unknown location. That is honest, but
+	// downstream it means a despatch can never find the box it is looking at:
+	// a company with 89 shelf locations had outgoing silently disabled by it.
+	gs, err := c.ListGodowns(ctx)
+	if err != nil || len(gs) == 0 {
+		// No list to work from. One request, unattributed, is still better than
+		// none -- it is what a single-location company would get anyway.
+		return c.stockSummaryFor(ctx, "")
+	}
+	if len(gs) == 1 {
+		return c.stockSummaryFor(ctx, gs[0])
 	}
 
-	payload, err := buildStockSummary(c.cfg.Company)
+	var out []BatchBalance
+	for _, g := range gs {
+		part, err := c.stockSummaryFor(ctx, g)
+		if err != nil {
+			// One unreadable location must not lose the other 88. The gap shows
+			// up as no stock THERE, which is visible, rather than as no stock
+			// anywhere, which looks like the feature is broken.
+			c.log.Warn("stock summary failed for a location", "godown", g, "err", err)
+			continue
+		}
+		out = append(out, part...)
+	}
+	return out, nil
+}
+
+// stockSummaryFor reads the exploded stock summary for one location, or for
+// every location at once when godown is empty.
+func (c *Client) stockSummaryFor(ctx context.Context, godown string) ([]BatchBalance, error) {
+	payload, err := buildStockSummary(c.cfg.Company, godown)
 	if err != nil {
 		return nil, business("BUILD_FAILED", err.Error())
 	}
@@ -428,7 +455,7 @@ func (c *Client) ListBatchBalances(ctx context.Context) ([]BatchBalance, error) 
 // the item. No date window: a CLOSING balance is cumulative from the start of
 // the books, so a from-date would only narrow the columns this does not read,
 // and picking one risks falling outside a company's period.
-func buildStockSummary(company string) ([]byte, error) {
+func buildStockSummary(company, godown string) ([]byte, error) {
 	env := exportEnvelope{
 		Header: exportHeader{
 			Version: 1, TallyRequest: "Export", Type: "Data", ID: "Stock Summary",
@@ -439,6 +466,9 @@ func buildStockSummary(company string) ([]byte, error) {
 					CurrentCompany: company,
 					ExportFormat:   "$$SysName:XML",
 					ExplodeFlag:    "Yes",
+					// Empty asks for every location at once, which is right for
+					// a company that has only one.
+					Godown: godown,
 				},
 			},
 		},

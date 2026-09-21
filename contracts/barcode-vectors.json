@@ -549,6 +549,51 @@
       "raw": "0",
       "want": "QUANTITY",
       "kind": "NOT_MINE"
+    },
+    {
+      "name": "part number with a revision suffix",
+      "raw": "4090-9001B",
+      "kind": "PRODUCT",
+      "value": "4090-9001B"
+    },
+    {
+      "name": "Apollo part number, longer groups and a letter tail",
+      "raw": "55000-390APO",
+      "kind": "PRODUCT",
+      "value": "55000-390APO"
+    },
+    {
+      "name": "a box id is letters THEN digits, and stays a box",
+      "raw": "HFE927",
+      "kind": "BOX",
+      "value": "HFE927"
+    },
+    {
+      "name": "asked for the product, given one with a letter suffix",
+      "raw": "4090-9001B",
+      "want": "PRODUCT",
+      "kind": "PRODUCT",
+      "value": "4090-9001B"
+    },
+    {
+      "name": "asked for the product, given a lettered Apollo code",
+      "raw": "55000-390APO",
+      "want": "PRODUCT",
+      "kind": "PRODUCT",
+      "value": "55000-390APO"
+    },
+    {
+      "name": "asked for the product, given a wholly alphabetic code",
+      "raw": "IDNAC-X",
+      "want": "PRODUCT",
+      "kind": "PRODUCT",
+      "value": "IDNAC-X"
+    },
+    {
+      "name": "asked for the product, given a country of origin",
+      "raw": "CN",
+      "want": "PRODUCT",
+      "kind": "NOT_MINE"
     }
   ]
 }

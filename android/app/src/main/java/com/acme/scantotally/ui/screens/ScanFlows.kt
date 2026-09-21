@@ -292,8 +292,13 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                 result = when {
                     resp == null -> "Saved. It will post to Tally when the connection returns."
                     !resp.ok -> resp.message.ifEmpty { "Tally would not accept this stock entry." }
+                    // The relay's own words: it has just created the missing
+                    // products itself, so this is a short wait for Tally to
+                    // answer, not a job left for somebody.
                     resp.unresolvedLines > 0 ->
-                        "Saved, but ${resp.unresolvedLines} line(s) are waiting for Tally to create the product."
+                        resp.message.ifEmpty {
+                            "Saved. Adding the new product to Tally - this posts by itself in a moment."
+                        }
                     resp.dispatched -> "Sent to Tally."
                     else -> "Saved. Waiting for Tally to come back."
                 }
@@ -1211,7 +1216,9 @@ private fun NewProductDialog(
                 Spacer(Modifier.height(12.dp))
                 Text(
                     "This is added to Tally straight away, and the rest of the " +
-                        "pallet will scan without asking again.",
+                        "pallet will scan without asking again. Skip it and the " +
+                        "box still posts - the product goes in under its part " +
+                        "number, and can be named in Tally later.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1223,7 +1230,9 @@ private fun NewProductDialog(
                 enabled = description.trim().length >= 3,
             ) { Text("Save") }
         },
-        dismissButton = { TextButton(onClick = onSkip) { Text("Later") } },
+        // Skipping costs nothing now: the product is created from the part
+        // number alone if nobody names it, so the box is never held back.
+        dismissButton = { TextButton(onClick = onSkip) { Text("Skip") } },
     )
 }
 

@@ -22,6 +22,7 @@ import { decideIncomingScan, decideOutgoingScan, validateOutgoingQty } from './v
 import { decideStockCheckScan, computeVariance, type CountScope } from './stockcheck.ts';
 import { buildJobs, type PostJob } from './job.ts';
 import { composeItemName } from './fragment.ts';
+import { ensureProposalsFor } from './newproduct.ts';
 import { ConnectorHub, type JobResult } from './hub.ts';
 
 const PORT = Number(process.env.STT_PORT ?? 8787);
@@ -241,6 +242,19 @@ function dispatchItemCreation(pid: string, company: string): boolean {
   db.prepare(`UPDATE proposed_items SET state = ? WHERE pid = ?`)
     .run(sent ? 'CREATING' : 'PENDING', pid);
   return sent;
+}
+
+/**
+ * Gives every unresolved line on a session a product, asking nobody.
+ *
+ * The rule enforced here is that A SCANNED BOX ALWAYS BECOMES STOCK. See
+ * ensureProposalsFor for why, and for what the name ends up being; this half
+ * is only the sending, which is what needs a live connector.
+ */
+function ensureProductsFor(sessionId: string, company: string, by: string): string[] {
+  const pids = ensureProposalsFor(db, sessionId, by, DEFAULT_UNIT);
+  for (const pid of pids) dispatchItemCreation(pid, company);
+  return pids;
 }
 
 /** Everything that could not be sent because Tally was unreachable. */
@@ -937,21 +951,27 @@ app.post('/api/v1/sessions/:id/submit', async (req, reply) => {
         message: 'Count matches the book exactly. Nothing to adjust.' };
     }
     if (unresolved.n > 0) {
-      // Held, not refused. The operator scanned correctly; a product Tally has
-      // never seen is not their mistake, and the boxes are safe on the session
-      // until it lands. It posts whole, by itself, the moment it can.
+      // Nobody is asked, and nothing waits for a human. Every product still
+      // missing is created now, from the price list's wording or from the part
+      // number alone, and the receipt posts by itself the moment Tally answers.
+      //
+      // This used to hold and hope: if the operator had skipped the "what is
+      // it?" prompt there was no proposal, so the wait was for something that
+      // would never happen and the boxes stayed on the phone for ever.
+      const creating = ensureProductsFor(id, d.company, `device:${d.id}`);
+
       db.prepare(`UPDATE sessions SET state='QUEUED', submitted_at=? WHERE id=?`)
         .run(nowIso(), id);
       audit(db, `device:${d.id}`, 'SESSION_HELD_FOR_PRODUCT', id,
-        `${unresolved.n} line(s) waiting`);
+        `${unresolved.n} line(s) waiting on ${creating.join(', ')}`);
       return {
         sessionId: id,
         state: 'QUEUED',
         dispatched: false,
         unresolvedLines: unresolved.n,
         waiting: true,
-        message: `Waiting for Tally to add ${unresolved.n === 1 ? 'a product' : `${unresolved.n} products`}. ` +
-          'Nothing is lost -- this posts by itself once they exist.',
+        message: `Adding ${creating.length === 1 ? 'a new product' : `${creating.length} new products`} ` +
+          'to Tally. Nothing is lost -- this posts by itself in a moment.',
       };
     }
     return reply.code(400).send({

@@ -86,11 +86,20 @@ private val DESCRIPTION_ENDS = setOf(
     "serial", "box", "tlnr", "software", "made", "coo", "no", "no.",
 )
 
-private val PRODUCT_RE = Regex("^[0-9]{4}-[0-9]{4}$")
+/**
+ * A dashed part number, letters allowed.
+ *
+ * Kept in step with the scanner's own pattern: a carton whose PID the camera
+ * refuses but the scanner accepts (or the other way round) is a carton that
+ * behaves differently depending on which button was pressed.
+ */
+private val PRODUCT_RE = Regex("^[0-9]{4,6}-[0-9]{2,5}[A-Z]{0,4}$")
 
-/** The same part number with the dash dropped. Only ever read under an
- *  anchor, where the label says which field it is. */
-private val PRODUCT_NODASH_RE = Regex("^[0-9]{8}$")
+/** The same part number with the dash dropped, and its lettered forms. Only
+ *  ever read under an anchor, where the label says which field it is -- read
+ *  blind, these are indistinguishable from half a dozen other numbers OCR
+ *  finds on a carton. */
+private val PRODUCT_NODASH_RE = Regex("^[0-9]{6,8}[A-Z]{0,4}$")
 private val BOXID_RE = Regex("^[A-Z]{2,4}[0-9]{3,6}$")
 private val SERIAL16_RE = Regex("^[0-9]{16}$")
 private val NUMBER_RE = Regex("^[0-9]{1,6}$")

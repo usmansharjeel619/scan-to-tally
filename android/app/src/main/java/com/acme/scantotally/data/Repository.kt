@@ -402,7 +402,10 @@ class Repository(context: Context, private val api: RelayApi?) {
             beep = if (flagged) Beep.FLAGGED else Beep.ACCEPT,
             message = resolved?.let { "${it.description.ifEmpty { it.stockItemName }} - ${box.qty}" }
                 ?: cat?.let { "${it.description} - ${box.qty} counted, adding to Tally" }
-                ?: "New product ${box.pid} - ${box.qty} counted, tell me what it is",
+                // Not an instruction: naming it is optional, and the box is
+                // counted either way. An unnamed product reaches Tally under
+                // its part number rather than not reaching it at all.
+                ?: "New product ${box.pid} - ${box.qty} counted, name it if you can",
             // The price list first: it is the business's own naming and is
             // what every other carton of this product will be called. The
             // label is the fallback for a product nobody has listed at all.

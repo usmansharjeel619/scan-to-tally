@@ -63,7 +63,21 @@ data class Fragment(
     val raw: String = "",
 )
 
-private val PRODUCT = Regex("^[0-9]{4}-[0-9]{4}$")
+/**
+ * A dashed part number.
+ *
+ * Simplex's own are nnnn-nnnn, but the same shelves carry JCI, Tyco, Apollo
+ * and KAC cartons, and theirs carry LETTERS: a revision suffix (4090-9001B),
+ * Apollo's 55000-390APO. A pattern that accepts only nnnn-nnnn refuses those
+ * outright, and a part number the app refuses is a carton that does not get
+ * counted -- which is the one outcome worth avoiding.
+ *
+ * Still only the DASHED form here, because this is the blind path, which never
+ * guesses. Undashed codes stay ambiguous against a box id until the operator
+ * says which field they are filling. A three-digit head stays out too: the
+ * Simplex Mexico supplier ref "742-949" is nnn-nnn and is not a part number.
+ */
+private val PRODUCT = Regex("^[0-9]{4,6}-[0-9]{2,5}[A-Z]{0,4}$")
 private val SERIAL16 = Regex("^[0-9]{16}$")
 
 /**
@@ -107,8 +121,6 @@ fun classifyFragment(raw: String): Fragment {
     }
 }
 
-private val EIGHT_DIGITS = Regex("^[0-9]{8}$")
-
 /** A scanned carton count beyond this is a misread or a serial. */
 private const val MAX_SCANNED_QTY = 9999
 
@@ -125,12 +137,23 @@ fun classifyFragmentFor(raw: String, want: ScanSlot): Fragment {
 
     return when (want) {
         ScanSlot.PRODUCT ->
-            // Dashed, or the same number with the dash dropped.
-            if (PRODUCT.matches(v) || EIGHT_DIGITS.matches(v)) {
+            // The operator has SAID this is the part number, so it is taken as
+            // one. Whatever a supplier prints -- dashed, undashed, lettered,
+            // a code no pattern here has ever seen -- is a part number if that
+            // is the field being filled.
+            //
+            // Only the three things that certainly are NOT one are refused,
+            // and they are refused because each is a barcode printed inches
+            // away on the same label: the 16-digit box serial, the small bare
+            // number under QTY, and the two-letter country of origin.
+            if (SERIAL16.matches(v) ||
+                (DIGITS.matches(v) && v.length <= 4) ||
+                v.length < 3 || v.length > MAX_SERIAL_LEN
+            ) {
+                Fragment(FragmentKind.NOT_MINE, hint = FragmentHint.PART_NO, raw = raw)
+            } else {
                 // Stored as scanned; reconciling the dash is the lookup's job.
                 Fragment(FragmentKind.PRODUCT, value = v, raw = raw)
-            } else {
-                Fragment(FragmentKind.NOT_MINE, hint = FragmentHint.PART_NO, raw = raw)
             }
 
         ScanSlot.BOX ->

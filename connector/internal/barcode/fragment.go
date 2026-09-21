@@ -42,10 +42,20 @@ type Fragment struct {
 }
 
 var (
-	// Every part number on every label examined: four digits, dash, four
-	// digits. A supplier ref like "742-949" is nnn-nnn and deliberately does
-	// not match.
-	reProduct = regexp.MustCompile(`^[0-9]{4}-[0-9]{4}$`)
+	// A dashed part number.
+	//
+	// Simplex's own are nnnn-nnnn, but the same shelves carry JCI, Tyco,
+	// Apollo and KAC cartons, and theirs carry LETTERS: a revision suffix
+	// (4090-9001B), Apollo's 55000-390APO. A pattern that accepts only
+	// nnnn-nnnn refuses those outright, and a part number the app refuses is
+	// a carton that does not get counted -- the one outcome worth avoiding.
+	//
+	// Still only the DASHED form here, because this is the blind path, which
+	// never guesses. Undashed codes stay ambiguous against a box id until the
+	// operator says which field they are filling. A three-digit head stays
+	// out too: the Simplex Mexico supplier ref "742-949" is nnn-nnn and is
+	// not a part number.
+	reProduct = regexp.MustCompile(`^[0-9]{4,6}-[0-9]{2,5}[A-Z]{0,4}$`)
 
 	// The Simplex serial, scanned on its own rather than inside the long code.
 	reSerial16 = regexp.MustCompile(`^[0-9]{16}$`)
@@ -183,12 +193,22 @@ func ClassifyFragmentFor(raw string, want Slot) Fragment {
 
 	switch want {
 	case SlotProduct:
-		// Dashed, or the same number with the dash dropped.
-		if reProduct.MatchString(v) || reEightDigits.MatchString(v) {
-			// Stored as scanned. Reconciling the dash is the lookup's job.
-			return Fragment{Kind: FragmentProduct, Value: v, Raw: raw}
+		// The operator has SAID this is the part number, so it is taken as
+		// one. Whatever a supplier prints -- dashed, undashed, lettered, a
+		// code no pattern here has ever seen -- is a part number if that is
+		// the field being filled.
+		//
+		// Only the three things that certainly are NOT one are refused, and
+		// they are refused because each is a barcode printed inches away on
+		// the same label: the 16-digit box serial, the small bare number under
+		// QTY, and the two-letter country of origin.
+		if reSerial16.MatchString(v) ||
+			(reDigits.MatchString(v) && len(v) <= 4) ||
+			len(v) < 3 || len(v) > MaxSerialLen {
+			return Fragment{Kind: FragmentNotMine, Hint: HintPartNo, Raw: raw}
 		}
-		return Fragment{Kind: FragmentNotMine, Hint: HintPartNo, Raw: raw}
+		// Stored as scanned. Reconciling the dash is the lookup's job.
+		return Fragment{Kind: FragmentProduct, Value: v, Raw: raw}
 
 	case SlotBox:
 		if reSerial16.MatchString(v) || reBoxID.MatchString(v) {

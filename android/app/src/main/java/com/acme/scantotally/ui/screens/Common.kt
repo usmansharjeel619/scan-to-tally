@@ -181,10 +181,20 @@ fun ScanResultCard(decision: ScanDecision?, modifier: Modifier = Modifier) {
     }
 
     val sem = LocalSemantics.current
-    val tone = when (decision.outcome) {
-        Outcome2.ACCEPT -> sem.accept
-        Outcome2.FLAGGED, Outcome2.DUPLICATE -> sem.review
-        Outcome2.WRONG_BARCODE, Outcome2.REJECT -> sem.reject
+
+    // A part number Tally has never seen is NOT something to review. The
+    // product is created from what was scanned, without anybody being asked,
+    // so the box is counted and posts like any other. Calling that "needs
+    // review" sent operators looking for a problem that does not exist, and
+    // made a perfectly good receipt look broken.
+    val newProductOnly = decision.outcome == Outcome2.FLAGGED &&
+        decision.flags.none { it != "UNRESOLVED_PID" && it != "MANUAL" }
+
+    val tone = when {
+        newProductOnly -> sem.accept
+        decision.outcome == Outcome2.ACCEPT -> sem.accept
+        decision.outcome == Outcome2.FLAGGED || decision.outcome == Outcome2.DUPLICATE -> sem.review
+        else -> sem.reject
     }
     val bg = tone.bg
     val fg = tone.fg
@@ -196,12 +206,13 @@ fun ScanResultCard(decision: ScanDecision?, modifier: Modifier = Modifier) {
     ) {
         Column(Modifier.padding(16.dp)) {
             Text(
-                when (decision.outcome) {
-                    Outcome2.ACCEPT -> "ACCEPTED"
-                    Outcome2.FLAGGED -> "COUNTED · NEEDS REVIEW"
-                    Outcome2.DUPLICATE -> "DUPLICATE"
-                    Outcome2.WRONG_BARCODE -> "WRONG BARCODE"
-                    Outcome2.REJECT -> "SET THIS BOX ASIDE"
+                when {
+                    newProductOnly -> "COUNTED · NEW PRODUCT"
+                    decision.outcome == Outcome2.ACCEPT -> "ACCEPTED"
+                    decision.outcome == Outcome2.FLAGGED -> "COUNTED · NEEDS REVIEW"
+                    decision.outcome == Outcome2.DUPLICATE -> "DUPLICATE"
+                    decision.outcome == Outcome2.WRONG_BARCODE -> "WRONG BARCODE"
+                    else -> "SET THIS BOX ASIDE"
                 },
                 color = fg,
                 style = MaterialTheme.typography.labelMedium,

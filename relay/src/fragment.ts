@@ -6,6 +6,8 @@
  * barcode means two different things in two places and stock drifts.
  */
 
+import { MAX_SERIAL_LEN } from './barcode.ts';
+
 export type FragmentKind = 'PRODUCT' | 'BOX' | 'QUANTITY' | 'NOT_MINE';
 export type FragmentHint = 'PART_NO' | 'QTY' | undefined;
 
@@ -18,7 +20,21 @@ export interface Fragment {
 }
 
 /** Four digits, dash, four digits, on every label examined. */
-const PRODUCT = /^[0-9]{4}-[0-9]{4}$/;
+/**
+ * A dashed part number.
+ *
+ * Simplex's own are nnnn-nnnn, but the same shelves carry JCI, Tyco, Apollo
+ * and KAC cartons, and theirs carry LETTERS: a revision suffix (4090-9001B),
+ * Apollo's 55000-390APO. A pattern that accepts only nnnn-nnnn refuses those
+ * outright, and a part number the app refuses is a carton that does not get
+ * counted -- which is the one outcome worth avoiding.
+ *
+ * Still only the DASHED form here, because this is the blind path, which never
+ * guesses. Undashed codes stay ambiguous against a box id until the operator
+ * says which field they are filling. A three-digit head stays out too: the
+ * Simplex Mexico supplier ref "742-949" is nnn-nnn and is not a part number.
+ */
+const PRODUCT = /^[0-9]{4,6}-[0-9]{2,5}[A-Z]{0,4}$/;
 
 /** A Simplex serial scanned on its own rather than inside the long code. */
 const SERIAL16 = /^[0-9]{16}$/;
@@ -123,11 +139,21 @@ export function classifyFragmentFor(raw: string, want: Slot): Fragment {
 
   switch (want) {
     case 'PRODUCT':
-      if (PRODUCT.test(v) || EIGHT_DIGITS.test(v)) {
-        // Stored as scanned; reconciling the dash is the lookup's job.
-        return { kind: 'PRODUCT', value: v, raw };
+      // The operator has SAID this is the part number, so it is taken as one.
+      // Whatever a supplier prints -- dashed, undashed, lettered, a code no
+      // pattern here has ever seen -- is a part number if that is the field
+      // being filled.
+      //
+      // Only the three things that certainly are NOT one are refused, and they
+      // are refused because each is a barcode printed inches away on the same
+      // label: the 16-digit box serial, the small bare number under QTY, and
+      // the two-letter country of origin.
+      if (SERIAL16.test(v) || (DIGITS.test(v) && v.length <= 4) ||
+          v.length < 3 || v.length > MAX_SERIAL_LEN) {
+        return { kind: 'NOT_MINE', hint: 'PART_NO', raw };
       }
-      return { kind: 'NOT_MINE', hint: 'PART_NO', raw };
+      // Stored as scanned; reconciling the dash is the lookup's job.
+      return { kind: 'PRODUCT', value: v, raw };
 
     case 'BOX':
       if (SERIAL16.test(v) || BOX_ID.test(v)) return { kind: 'BOX', value: v, raw };

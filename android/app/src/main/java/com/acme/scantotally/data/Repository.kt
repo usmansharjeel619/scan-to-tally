@@ -747,6 +747,19 @@ class Repository(context: Context, private val api: RelayApi?) {
     suspend fun deleteLine(lineId: Long) = dao.deleteLine(lineId)
 
     /**
+     * The unit to create a new stock item with.
+     *
+     * In order: what this company's existing items already use, then what the
+     * relay says it will send to Tally, then a last-resort default. Never a
+     * constant compiled into a screen -- Tally refuses a unit the company has
+     * not defined, and the symbol differs between sets of books.
+     */
+    suspend fun defaultUnit(): String =
+        dao.commonestUnit()?.takeIf { it.isNotBlank() }
+            ?: config.defaultUnit.first().takeIf { it.isNotBlank() }
+            ?: FALLBACK_UNIT
+
+    /**
      * Corrects a box already on the receipt.
      *
      * The box number is the box's identity, so changing it is not an edit in
@@ -997,6 +1010,10 @@ class Repository(context: Context, private val api: RelayApi?) {
     suspend fun syncMasters(): Boolean = runCatching {
         val s = api?.sync() ?: return false
 
+        // Keep the unit the relay will actually use, so the new-product
+        // prompt offers the same symbol rather than a guess of its own.
+        config.rememberDefaultUnit(s.defaultUnit)
+
         // This handset belongs to ONE company, and will not quietly follow
         // Tally to another.
         //
@@ -1117,3 +1134,11 @@ class Repository(context: Context, private val api: RelayApi?) {
         else -> null
     }
 }
+
+/**
+ * Used only when a handset has never synced and has no items cached.
+ *
+ * "Nos" is what the live company uses; it is a last resort, not the answer.
+ * The answer comes from the company's own item master or from the relay.
+ */
+private const val FALLBACK_UNIT = "Nos"

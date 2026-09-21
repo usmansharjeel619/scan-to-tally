@@ -542,6 +542,10 @@ app.get('/api/v1/sync', async (req, reply) => {
 
   return {
     syncedAt: nowIso(),
+    // The unit a new stock item is created with. Published so the handset
+    // shows the same thing the relay will actually send to Tally, rather than
+    // carrying its own guess that has to be changed in two places.
+    defaultUnit: DEFAULT_UNIT,
     godown: d.godown,
     company: d.company,
     items, bindings, balances, receivedBoxes, catalogue, proposals,

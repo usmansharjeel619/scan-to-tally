@@ -434,3 +434,86 @@ fun SectionLabel(text: String, color: Color = MaterialTheme.colorScheme.onSurfac
         modifier = Modifier.padding(top = 16.dp, bottom = 6.dp),
     )
 }
+
+/**
+ * One scanned box, with everything needed to judge it without opening anything.
+ *
+ * Part number, box number and quantity are all on the face of the row. The
+ * previous list showed a product and a count and made the operator tap into a
+ * group to see which boxes were actually on the receipt, which is no use when
+ * the question is "did that last one go on right".
+ */
+@Composable
+fun SessionLineRow(
+    line: SessionLineEntity,
+    /** Marked so the most recent scan is findable at a glance. */
+    newest: Boolean = false,
+    onEdit: (SessionLineEntity) -> Unit,
+    onRemove: (Long) -> Unit,
+) {
+    val sem = LocalSemantics.current
+    val flags = line.flags.split(",").filter { it.isNotBlank() }
+
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = when {
+                flags.isNotEmpty() -> sem.review.bg
+                newest -> MaterialTheme.colorScheme.primaryContainer
+                else -> MaterialTheme.colorScheme.surface
+            },
+        ),
+    ) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Text(
+                line.description.ifEmpty {
+                    line.stockItemName.ifEmpty { "Unknown product" }
+                },
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 2,
+            )
+            Spacer(Modifier.height(6.dp))
+
+            // The three facts, each labelled, because a bare string of digits
+            // beside another bare string of digits tells nobody which is which.
+            FieldLine("Part", line.pid)
+            FieldLine("Box", line.boxSerial)
+            FieldLine("Qty", "${fmtQty(line.qty)} ${line.unit}".trim())
+
+            if (flags.isNotEmpty()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    flags.joinToString(" · ") { it.replace('_', ' ').lowercase() },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = sem.review.fg,
+                )
+            }
+
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = { onEdit(line) }) { Text("Edit") }
+                TextButton(onClick = { onRemove(line.id) }) {
+                    Text("Remove", color = sem.reject.fg)
+                }
+            }
+        }
+    }
+}
+
+/** A labelled value, aligned so the same field lands in the same place. */
+@Composable
+private fun FieldLine(label: String, value: String) {
+    Row(Modifier.padding(vertical = 1.dp)) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(44.dp),
+        )
+        Text(
+            value.ifEmpty { "—" },
+            style = MaterialTheme.typography.bodyLarge,
+            fontFamily = FontFamily.Monospace,
+        )
+    }
+}

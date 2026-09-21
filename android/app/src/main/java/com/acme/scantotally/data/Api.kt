@@ -32,6 +32,8 @@ import kotlinx.serialization.json.Json
 @Serializable
 data class SyncResponse(
     val syncedAt: String = "",
+    /** The unit the relay creates new stock items with, e.g. "Nos". */
+    val defaultUnit: String = "",
     val godown: String = "",
     val company: String = "",
     val items: List<ApiItem> = emptyList(),

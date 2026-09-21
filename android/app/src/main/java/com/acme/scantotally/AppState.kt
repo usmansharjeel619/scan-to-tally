@@ -42,12 +42,28 @@ class DeviceConfig(private val context: Context) {
      * item, balance and box history on this phone.
      */
     private val keyCompany = stringPreferencesKey("company")
+    private val keyDefaultUnit = stringPreferencesKey("default_unit")
 
     val relayUrl: Flow<String> = context.dataStore.data.map { it[keyRelayUrl] ?: "" }
     val token: Flow<String> = context.dataStore.data.map { it[keyToken] ?: "" }
     val godown: Flow<String> = context.dataStore.data.map { it[keyGodown] ?: "Main Store" }
     val operator: Flow<String> = context.dataStore.data.map { it[keyOperator] ?: "" }
     val company: Flow<String> = context.dataStore.data.map { it[keyCompany] ?: "" }
+
+    /**
+     * The unit a new stock item is created with, as the RELAY reports it.
+     *
+     * Never hardcoded on the handset. Tally refuses a unit the company has not
+     * defined, and the symbol differs between sets of books -- one uses "NO",
+     * another "Nos". A guess baked into the app is a guess that has to be
+     * found and changed in two places the next time the books change.
+     */
+    val defaultUnit: Flow<String> = context.dataStore.data.map { it[keyDefaultUnit] ?: "" }
+
+    suspend fun rememberDefaultUnit(unit: String) {
+        if (unit.isBlank()) return
+        context.dataStore.edit { it[keyDefaultUnit] = unit.trim() }
+    }
 
     suspend fun setCompany(name: String) {
         context.dataStore.edit { it[keyCompany] = name.trim() }

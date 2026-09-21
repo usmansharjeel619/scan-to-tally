@@ -258,6 +258,19 @@ interface ScanDao {
     @Query("SELECT * FROM pid_bindings WHERE pid = :pid LIMIT 1")
     suspend fun binding(pid: String): PidBindingEntity?
 
+    /**
+     * The unit this company's stock items actually use.
+     *
+     * Taken by popularity rather than assumed, so a new product is created
+     * with the same symbol as everything already on the books. Tally refuses a
+     * unit the company has not defined, and "NO" and "Nos" are different books.
+     */
+    @Query(
+        """SELECT baseUnits FROM stock_items WHERE baseUnits != ''
+           GROUP BY baseUnits ORDER BY COUNT(*) DESC LIMIT 1"""
+    )
+    suspend fun commonestUnit(): String?
+
     @Query("SELECT * FROM stock_items WHERE name = :name LIMIT 1")
     suspend fun item(name: String): StockItemEntity?
 

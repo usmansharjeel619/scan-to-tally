@@ -34,6 +34,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -110,12 +113,15 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
     var openGroup by remember { mutableStateOf<LineGroup?>(null) }
     var editing by remember { mutableStateOf<SessionLineEntity?>(null) }
     var operator by remember { mutableStateOf("") }
+    /** What this company creates new stock items with, learned on sync. */
+    var defaultUnit by remember { mutableStateOf("") }
     var submitting by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
         val r = app.repository()
         repo = r
+        defaultUnit = r.defaultUnit()
         operator = app.config.operator.first()
         sessionId = resumeId?.let { r.resumeSession(it) }
         // Resuming keeps the scans already on it. A fresh start deliberately
@@ -286,6 +292,8 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
         },
         onReadLabel = { reading = true },
         onOpenGroup = { openGroup = it },
+        onEditLine = { editing = it },
+        onRemoveLine = { id -> scope.launch { repo?.deleteLine(id) } },
     )
 
     if (reading) {
@@ -409,6 +417,7 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
     newProduct?.let { d ->
         NewProductDialog(
             decision = d,
+            defaultUnit = defaultUnit,
             onSkip = { newProduct = null },
             onSave = { description, unit ->
                 scope.launch {
@@ -1018,6 +1027,14 @@ private fun Key(label: String, modifier: Modifier = Modifier, accent: Boolean = 
 @Composable
 private fun NewProductDialog(
     decision: ScanDecision,
+    /**
+     * The unit this company creates items with, resolved by the caller.
+     *
+     * Passed in rather than looked up here: Tally refuses a unit the company
+     * has not defined, and the right symbol is a property of the books, not of
+     * this dialog.
+     */
+    defaultUnit: String,
     onSkip: () -> Unit,
     onSave: (description: String, unit: String) -> Unit,
 ) {
@@ -1026,7 +1043,10 @@ private fun NewProductDialog(
     // cannot know.
     val known = decision.catalogueDescription
     var description by remember(decision.pid) { mutableStateOf(known ?: "") }
-    var unit by remember(decision.pid) { mutableStateOf("NO") }
+    // The unit is LEARNED, never hardcoded: Tally refuses a unit the company
+    // has not defined, and the symbol differs between sets of books. Comes from
+    // this company's own items, or from what the relay says it will send.
+    var unit by remember(decision.pid) { mutableStateOf(defaultUnit) }
     var batchwise by remember(decision.pid) { mutableStateOf(true) }
     SuspendScanCapture()
 
@@ -1109,7 +1129,7 @@ private fun NewProductDialog(
         },
         confirmButton = {
             Button(
-                onClick = { onSave(description.trim(), unit.trim().ifEmpty { "NO" }) },
+                onClick = { onSave(description.trim(), unit.trim()) },
                 enabled = description.trim().length >= 3,
             ) { Text("Save") }
         },
@@ -1138,6 +1158,9 @@ private fun ScanScaffold(
     onReadLabel: (() -> Unit)? = null,
     /** Opens a product's boxes, so a wrong one can be taken off the receipt. */
     onOpenGroup: ((LineGroup) -> Unit)? = null,
+    /** Edits one box straight from the session list, without opening a group. */
+    onEditLine: ((SessionLineEntity) -> Unit)? = null,
+    onRemoveLine: ((Long) -> Unit)? = null,
 ) {
     Scaffold(
         topBar = {
@@ -1188,41 +1211,110 @@ private fun ScanScaffold(
                 Spacer(Modifier.height(8.dp))
             }
 
-            slots?.let {
-                it()
-                Spacer(Modifier.height(10.dp))
+            // Two tabs rather than one cramped column.
+            //
+            // The session list used to live in whatever height was left between
+            // the scan card and the Done button, which on a handset is a couple
+            // of rows. Checking what had been scanned meant scrolling a window
+            // too small to see it through. Scanning and reviewing are different
+            // jobs and now get a screen each.
+            var tab by rememberSaveable { mutableStateOf(0) }
+
+            TabRow(selectedTabIndex = tab) {
+                Tab(
+                    selected = tab == 0,
+                    onClick = { tab = 0 },
+                    text = { Text("Scan") },
+                )
+                Tab(
+                    selected = tab == 1,
+                    onClick = { tab = 1 },
+                    text = {
+                        Text(
+                            if (lines.isEmpty()) "This session"
+                            else "This session · ${lines.size}",
+                        )
+                    },
+                )
             }
+            Spacer(Modifier.height(12.dp))
 
-            ScanResultCard(last)
-
-            result?.let {
-                Spacer(Modifier.height(10.dp))
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-                    Text(it, Modifier.padding(14.dp), style = MaterialTheme.typography.titleMedium)
-                }
-            }
-
-            SectionLabel(
-                if (lines.isEmpty()) "On this receipt"
-                else "On this receipt · ${lines.size} " +
-                    (if (lines.size == 1) "box" else "boxes") +
-                    " · ${fmtQty(lines.sumOf { it.qty })} total",
-            )
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                if (lines.isEmpty()) {
-                    Text(
-                        "Nothing scanned yet.",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    LazyColumn(Modifier.fillMaxWidth()) {
-                        items(groupLines(lines)) { group ->
-                            GroupRow(group) { onOpenGroup?.invoke(group) }
+                when (tab) {
+                    0 -> Column(Modifier.fillMaxSize()) {
+                        slots?.let {
+                            it()
+                            Spacer(Modifier.height(10.dp))
+                        }
+
+                        ScanResultCard(last)
+
+                        result?.let {
+                            Spacer(Modifier.height(10.dp))
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                ),
+                            ) {
+                                Text(
+                                    it, Modifier.padding(14.dp),
+                                    style = MaterialTheme.typography.titleMedium,
+                                )
+                            }
+                        }
+
+                        if (lines.isNotEmpty()) {
+                            Spacer(Modifier.height(12.dp))
+                            SectionLabel("Last on this receipt")
+                            // The newest box, in full, without changing tab.
+                            // A scan that went on wrong is worth catching on
+                            // the next carton, not at the end of the pallet.
+                            SessionLineRow(
+                                line = lines.last(),
+                                newest = true,
+                                onEdit = { l -> onEditLine?.invoke(l) },
+                                onRemove = { id -> onRemoveLine?.invoke(id) },
+                            )
+                        }
+                    }
+
+                    else -> {
+                        if (lines.isEmpty()) {
+                            Text(
+                                "Nothing scanned yet.",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            Column(Modifier.fillMaxSize()) {
+                                SectionLabel(
+                                    "${lines.size} " +
+                                        (if (lines.size == 1) "box" else "boxes") +
+                                        " · ${fmtQty(lines.sumOf { it.qty })} total",
+                                )
+                                LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+                                    // Newest first: the scan just made is the
+                                    // one being checked, and it was previously
+                                    // at the bottom of a list that had to be
+                                    // scrolled to reach.
+                                    items(
+                                        items = lines.reversed(),
+                                        key = { it.id },
+                                    ) { line ->
+                                        SessionLineRow(
+                                            line = line,
+                                            newest = line.id == lines.last().id,
+                                            onEdit = { l -> onEditLine?.invoke(l) },
+                                            onRemove = { id -> onRemoveLine?.invoke(id) },
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
+            Spacer(Modifier.height(12.dp))
 
             Button(
                 onClick = onSubmit,

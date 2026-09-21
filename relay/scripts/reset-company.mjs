@@ -69,10 +69,26 @@ const BINDINGS = ['pid_bindings'];
  */
 const MASTERS = [
   'batch_balances', 'sales_order_lines', 'sales_orders',
-  'stock_items', 'godowns', 'catalogue', 'proposals',
+  'stock_items', 'godowns',
 ];
 
-const KEPT = ['devices', 'audit_log'];
+/**
+ * Item-creation requests. Cleared with the masters, because a CREATED row for
+ * an item that no longer exists in Tally is worse than no row: it says the
+ * product is already there.
+ *
+ * Earlier versions of this script named tables that do not exist ('catalogue',
+ * 'proposals'), which the presence check then silently skipped -- so these
+ * survived a reset that looked like it had cleared everything.
+ */
+const PROPOSALS = ['proposed_items'];
+
+/**
+ * product_catalogue is the business's OWN price list, not Tally data. It is
+ * what gives a scanned part number its proper name, and nothing in Tally
+ * replaces it, so a reset must never take it.
+ */
+const KEPT = ['devices', 'audit_log', 'product_catalogue'];
 
 if (!existsSync(DB_PATH)) {
   console.error(`No database at ${DB_PATH}. Set STT_DB if it lives elsewhere.`);
@@ -95,8 +111,17 @@ const count = (t) => {
 const targets = [
   ...HISTORY, ...SESSIONS,
   ...(keepBindings ? [] : BINDINGS),
-  ...MASTERS,
+  ...MASTERS, ...PROPOSALS,
 ].filter((t) => present.has(t));
+
+// A named table that does not exist is a silent no-op, and that is exactly how
+// proposed_items survived a reset once. Say so instead.
+const missing = [
+  ...HISTORY, ...SESSIONS, ...BINDINGS, ...MASTERS, ...PROPOSALS,
+].filter((t) => !present.has(t));
+if (missing.length) {
+  console.log(`\nWARNING: named but not present: ${missing.join(', ')}`);
+}
 
 console.log(`\ndatabase : ${DB_PATH}`);
 console.log(`mode     : ${confirm ? 'APPLY' : 'dry run (nothing will change)'}\n`);

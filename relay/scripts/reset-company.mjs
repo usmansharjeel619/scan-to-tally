@@ -56,8 +56,15 @@ const newGodown = valueOf('--godown');
  */
 const HISTORY = ['received_boxes', 'despatched_boxes'];
 
-/** Test sessions and their lines. Noise on the new books. */
-const SESSIONS = ['session_lines', 'sessions'];
+/**
+ * Test sessions, their lines, and the per-product vouchers they became.
+ *
+ * session_vouchers is the idempotency ledger: a row there says "this session's
+ * voucher for this product has already been posted". Leave it behind and the
+ * key is claimed by a voucher that no longer exists in the new books, so the
+ * first real session to reuse it is treated as a redelivery and never posts.
+ */
+const SESSIONS = ['session_vouchers', 'session_lines', 'sessions'];
 
 /** Learned PID -> item mappings. Company-specific. */
 const BINDINGS = ['pid_bindings'];

@@ -66,9 +66,10 @@ import com.acme.scantotally.data.SessionLineEntity
 import com.acme.scantotally.feedback.Beep
 import com.acme.scantotally.scan.BoxDraft
 import com.acme.scantotally.scan.FragmentKind
+import com.acme.scantotally.scan.ScanSlot
+import com.acme.scantotally.scan.classifyFragmentFor
+import com.acme.scantotally.scan.refusedForSlot
 import com.acme.scantotally.scan.classifyFragment
-import com.acme.scantotally.scan.fragmentRefusal
-import com.acme.scantotally.scan.offeredQuantity
 import com.acme.scantotally.scan.RawScan
 import com.acme.scantotally.scan.SuspendScanCapture
 import com.acme.scantotally.ui.theme.AcceptGreen
@@ -105,11 +106,12 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
     var draft by remember { mutableStateOf(BoxDraft()) }
     var typing by remember { mutableStateOf<BoxDraft.Slot?>(null) }
     /** A quantity read off a barcode, waiting to be confirmed against the carton. */
-    var offeredQty by remember { mutableStateOf<Int?>(null) }
     /** The camera, off unless asked for. Scanning is unchanged and still first. */
     var reading by remember { mutableStateOf(false) }
     /** What became of the last carton the camera added, shown until the next. */
     var cameraResult by remember { mutableStateOf<String?>(null) }
+    /** The field waiting for a targeted scan, or null for the long barcode. */
+    var armed by remember { mutableStateOf<BoxDraft.Slot?>(null) }
     var openGroup by remember { mutableStateOf<LineGroup?>(null) }
     var editing by remember { mutableStateOf<SessionLineEntity?>(null) }
     var operator by remember { mutableStateOf("") }
@@ -212,23 +214,34 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                 return@collect
             }
 
-            val fragment = classifyFragment(scan.data)
-            if (fragment.kind == FragmentKind.NOT_MINE) {
-                // A number scanned while the quantity is the only thing missing
-                // is plainly meant as the quantity. It still cannot be taken on
-                // trust -- a Tyco week number is the same shape -- so it is
-                // offered for confirmation rather than refused or accepted.
-                val offered = draft.offeredQuantity(fragment)
-                if (offered != null) {
-                    offeredQty = offered
-                    typing = BoxDraft.Slot.QUANTITY
-                    app.feedback.play(Beep.ACCEPT)
-                    return@collect
-                }
-
+            // Past here the scan was NOT the long barcode.
+            //
+            // A plain trigger pull accepts that code and nothing else. The
+            // smaller barcodes on a carton cannot be told apart by looking at
+            // them -- a quantity and a week number are the same shape, a part
+            // number without its dash and a date code are the same shape -- so
+            // placing one on a guess is how stock goes wrong with nothing on
+            // screen. To scan one, the operator arms its field first and then
+            // only the shape has to fit.
+            val target = armed
+            if (target == null) {
                 last = ScanDecision(
                     outcome = Outcome2.WRONG_BARCODE, beep = Beep.REJECT,
-                    message = fragmentRefusal(fragment),
+                    message = "Scan the long barcode with three parts. " +
+                        "For a single field, tap Scan beside it first.",
+                    raw = scan.data, symbology = scan.symbology,
+                )
+                app.feedback.play(Beep.REJECT)
+                return@collect
+            }
+
+            val fragment = classifyFragmentFor(scan.data, target.toScanSlot())
+            if (fragment.kind == FragmentKind.NOT_MINE) {
+                // Armed, but the barcode cannot be that field. Refused rather
+                // than coerced: a box serial must not become a quantity.
+                last = ScanDecision(
+                    outcome = Outcome2.WRONG_BARCODE, beep = Beep.REJECT,
+                    message = refusedForSlot(target.toScanSlot()),
                     raw = scan.data, symbology = scan.symbology,
                 )
                 app.feedback.play(Beep.REJECT)
@@ -236,6 +249,7 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
             }
 
             draft = draft.withScan(fragment)
+            armed = null
             app.feedback.play(Beep.ACCEPT)
 
             val d = draft
@@ -285,9 +299,13 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
         slots = {
             BoxSlots(
                 draft = draft,
-                onTypeProduct = { typing = BoxDraft.Slot.PRODUCT },
-                onTypeBox = { typing = BoxDraft.Slot.BOX },
-                onTypeQuantity = { typing = BoxDraft.Slot.QUANTITY },
+                onTypeProduct = { armed = null; typing = BoxDraft.Slot.PRODUCT },
+                onTypeBox = { armed = null; typing = BoxDraft.Slot.BOX },
+                onTypeQuantity = { armed = null; typing = BoxDraft.Slot.QUANTITY },
+                armed = armed,
+                // Tapping the armed field again cancels it, so a mis-tap is
+                // undone the same way it was made.
+                onArmScan = { slot -> armed = if (armed == slot) null else slot },
             )
         },
         onReadLabel = { reading = true },
@@ -387,8 +405,7 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
         SlotEntryDialog(
             slot = slot,
             draft = draft,
-            offered = offeredQty,
-            onCancel = { typing = null; offeredQty = null },
+            onCancel = { typing = null },
             onConfirm = { value ->
                 draft = when (slot) {
                     BoxDraft.Slot.PRODUCT -> draft.withTypedProduct(value)
@@ -397,7 +414,6 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                         draft.withTypedQty(value.toIntOrNull() ?: 0)
                 }
                 typing = null
-                offeredQty = null
 
                 val d = draft
                 if (d.isComplete) {
@@ -654,6 +670,8 @@ fun OutgoingScreen(
     // Only product and box: a despatch quantity is typed on the keypad, never
     // taken from the label.
     var outDraft by remember { mutableStateOf(BoxDraft()) }
+    /** The field waiting for a targeted scan on a despatch. */
+    var outArmed by remember { mutableStateOf<BoxDraft.Slot?>(null) }
     var outTyping by remember { mutableStateOf<BoxDraft.Slot?>(null) }
     val app = rememberApp()
     val scope = rememberCoroutineScope()
@@ -695,16 +713,34 @@ fun OutgoingScreen(
                 outDraft = BoxDraft()
                 r.scanOutgoing(sid, salesOrder, godown, scan)
             } else {
-                val fragment = classifyFragment(scan.data)
-                if (fragment.kind == FragmentKind.NOT_MINE) {
+                // Same rule as a receipt: a plain trigger pull takes the long
+                // three-part barcode and nothing else. The flows must not
+                // differ on this -- the same carton and the same scanner
+                // behaving one way inbound and another outbound is how an
+                // operator learns to stop reading the screen.
+                val target = outArmed
+                if (target == null) {
                     last = ScanDecision(
                         outcome = Outcome2.WRONG_BARCODE, beep = Beep.REJECT,
-                        message = fragmentRefusal(fragment),
+                        message = "Scan the long barcode with three parts. " +
+                            "For a single field, tap Scan beside it first.",
                         raw = scan.data, symbology = scan.symbology,
                     )
                     app.feedback.play(Beep.REJECT)
                     return@collect
                 }
+
+                val fragment = classifyFragmentFor(scan.data, target.toScanSlot())
+                if (fragment.kind == FragmentKind.NOT_MINE) {
+                    last = ScanDecision(
+                        outcome = Outcome2.WRONG_BARCODE, beep = Beep.REJECT,
+                        message = refusedForSlot(target.toScanSlot()),
+                        raw = scan.data, symbology = scan.symbology,
+                    )
+                    app.feedback.play(Beep.REJECT)
+                    return@collect
+                }
+                outArmed = null
 
                 outDraft = outDraft.withScan(fragment)
                 if (outDraft.pid.isEmpty() || outDraft.boxSerial.isEmpty()) {
@@ -747,9 +783,11 @@ fun OutgoingScreen(
             BoxSlots(
                 draft = outDraft,
                 showQuantity = false,
-                onTypeProduct = { outTyping = BoxDraft.Slot.PRODUCT },
-                onTypeBox = { outTyping = BoxDraft.Slot.BOX },
+                onTypeProduct = { outArmed = null; outTyping = BoxDraft.Slot.PRODUCT },
+                onTypeBox = { outArmed = null; outTyping = BoxDraft.Slot.BOX },
                 onTypeQuantity = {},
+                armed = outArmed,
+                onArmScan = { slot -> outArmed = if (outArmed == slot) null else slot },
             )
         },
         onSubmit = {
@@ -1332,4 +1370,15 @@ private fun ScanScaffold(
             }
         }
     }
+}
+
+/**
+ * The draft's slots and the classifier's are separate types on purpose -- one
+ * is "what does this box still need", the other "what is the scanner pointed
+ * at" -- so the crossing is written once, here.
+ */
+private fun BoxDraft.Slot.toScanSlot(): ScanSlot = when (this) {
+    BoxDraft.Slot.PRODUCT -> ScanSlot.PRODUCT
+    BoxDraft.Slot.BOX -> ScanSlot.BOX
+    BoxDraft.Slot.QUANTITY -> ScanSlot.QUANTITY
 }

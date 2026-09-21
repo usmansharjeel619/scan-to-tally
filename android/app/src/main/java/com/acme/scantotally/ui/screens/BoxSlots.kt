@@ -59,6 +59,16 @@ fun BoxSlots(
     onTypeQuantity: () -> Unit,
     modifier: Modifier = Modifier,
     /**
+     * The field waiting for a targeted scan, if any.
+     *
+     * A plain trigger pull takes the long three-part barcode and nothing else.
+     * To scan one of the smaller barcodes the operator arms the field first,
+     * which is what makes it safe: a quantity and a week number are the same
+     * shape, and only saying which one is meant can tell them apart.
+     */
+    armed: BoxDraft.Slot? = null,
+    onArmScan: ((BoxDraft.Slot) -> Unit)? = null,
+    /**
      * Off for a despatch, where the quantity is typed on the keypad that
      * follows -- checked against the box's real remaining stock rather than
      * anything printed on the carton.
@@ -82,6 +92,8 @@ fun BoxSlots(
                 mono = true,
                 scanned = BoxDraft.Slot.PRODUCT in draft.scanned,
                 onType = onTypeProduct,
+                armed = armed == BoxDraft.Slot.PRODUCT,
+                onArm = onArmScan?.let { { it(BoxDraft.Slot.PRODUCT) } },
             )
             Slot(
                 label = "BOX",
@@ -89,16 +101,21 @@ fun BoxSlots(
                 mono = true,
                 scanned = BoxDraft.Slot.BOX in draft.scanned,
                 onType = onTypeBox,
+                armed = armed == BoxDraft.Slot.BOX,
+                onArm = onArmScan?.let { { it(BoxDraft.Slot.BOX) } },
             )
             if (showQuantity) Slot(
-                // Never scannable on these labels: a quantity barcode and a
-                // week number are the same shape, so this one is always typed.
+                // Scannable ONLY when armed. A quantity barcode and a week
+                // number are the same shape, so a loose scan can never place
+                // one -- but once the operator has said "this is the quantity",
+                // there is nothing left to get wrong.
                 label = "QUANTITY",
                 value = draft.qty?.takeIf { it > 0 }?.toString().orEmpty(),
                 mono = false,
-                scanned = false,
-                scannable = false,
+                scanned = BoxDraft.Slot.QUANTITY in draft.scanned,
                 onType = onTypeQuantity,
+                armed = armed == BoxDraft.Slot.QUANTITY,
+                onArm = onArmScan?.let { { it(BoxDraft.Slot.QUANTITY) } },
             )
         }
     }
@@ -112,6 +129,8 @@ private fun Slot(
     scanned: Boolean,
     onType: () -> Unit,
     scannable: Boolean = true,
+    armed: Boolean = false,
+    onArm: (() -> Unit)? = null,
 ) {
     val filled = value.isNotEmpty()
     val sem = LocalSemantics.current
@@ -147,13 +166,26 @@ private fun Slot(
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        } else {
+        } else if (armed) {
+            // Said plainly, because the operator has to know the next trigger
+            // pull goes somewhere different from usual.
             Text(
-                if (scannable) "scan it, or" else "",
+                "waiting for a scan…",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = sem.accept.fg,
+                fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
             )
+            TextButton(onClick = { onArm?.invoke() }) {
+                Text("Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            Spacer(Modifier.weight(1f))
+            if (scannable && onArm != null) {
+                TextButton(onClick = onArm) {
+                    Text("Scan", color = sem.accept.fg, fontWeight = FontWeight.SemiBold)
+                }
+            }
             TextButton(onClick = onType) {
                 Text("Type", color = sem.review.fg, fontWeight = FontWeight.SemiBold)
             }

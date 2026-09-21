@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
@@ -20,9 +21,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FlashOff
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledIconToggleButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -134,6 +141,12 @@ fun LabelCameraSheet(
     var seen by remember { mutableStateOf(LabelReading()) }
     var frames by remember { mutableStateOf(0) }
 
+    // The torch stays on between cartons on purpose. A dark aisle is dark for
+    // the whole pallet, and making the operator switch it back on for every box
+    // is the kind of friction that ends with the light left off.
+    var torchOn by remember { mutableStateOf(false) }
+    var hasTorch by remember { mutableStateOf(false) }
+
     // Ready for the next carton, without leaving the camera.
     //
     // A pallet is many boxes, and closing the camera after each one means
@@ -146,7 +159,10 @@ fun LabelCameraSheet(
     }
 
     Box(Modifier.fillMaxSize()) {
-        CameraFeed { words ->
+        CameraFeed(
+            torchOn = torchOn,
+            onTorchAvailable = { hasTorch = it },
+        ) { words ->
             consensus.offer(readLabel(words))
             frames = consensus.frames
             seen = LabelReading(
@@ -157,6 +173,27 @@ fun LabelCameraSheet(
                 // it in the prompt before it becomes anything.
                 description = readLabel(words).description ?: seen.description,
             )
+        }
+
+        // The torch, over the preview rather than in the card below it: it has
+        // to be reachable while the handset is already held up to a carton, and
+        // the card is where the reading is, which is the thing it must not
+        // cover. Given its own solid backing because a transparent control over
+        // a camera image is invisible against half the cartons in a warehouse.
+        if (hasTorch) {
+            FilledIconToggleButton(
+                checked = torchOn,
+                onCheckedChange = { torchOn = it },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(16.dp)
+                    .size(TouchTarget),
+            ) {
+                Icon(
+                    if (torchOn) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                    contentDescription = if (torchOn) "Turn the light off" else "Turn the light on",
+                )
+            }
         }
 
         Column(
@@ -310,7 +347,18 @@ private fun Found(
  * worth reading late, and the next frame is a few milliseconds away.
  */
 @Composable
-private fun CameraFeed(onWords: (List<TextWord>) -> Unit) {
+private fun CameraFeed(
+    /**
+     * The torch, for the aisles where the overhead lighting is not enough to
+     * read a label by. OCR degrades long before a person would call the light
+     * bad, so this is the difference between reading a carton and typing it.
+     */
+    torchOn: Boolean = false,
+    /** Not every device has a lamp; the control is hidden when none does. */
+    onTorchAvailable: (Boolean) -> Unit = {},
+    // Last, so the frame handler reads as this composable's trailing lambda.
+    onWords: (List<TextWord>) -> Unit,
+) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val executor = remember { Executors.newSingleThreadExecutor() }
@@ -318,8 +366,20 @@ private fun CameraFeed(onWords: (List<TextWord>) -> Unit) {
         TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     }
 
+    // Held so the torch can be switched after binding. The camera arrives
+    // asynchronously, so the toggle cannot simply act on it directly.
+    var camera by remember { mutableStateOf<Camera?>(null) }
+
+    LaunchedEffect(camera, torchOn) {
+        val c = camera ?: return@LaunchedEffect
+        if (c.cameraInfo.hasFlashUnit()) c.cameraControl.enableTorch(torchOn)
+    }
+
     DisposableEffect(Unit) {
         onDispose {
+            // Leaving a lamp burning after the sheet closes drains the handset
+            // and blinds whoever picks it up next.
+            camera?.takeIf { it.cameraInfo.hasFlashUnit() }?.cameraControl?.enableTorch(false)
             executor.shutdown()
             recognizer.close()
         }
@@ -374,9 +434,9 @@ private fun CameraFeed(onWords: (List<TextWord>) -> Unit) {
                 }
 
                 provider.unbindAll()
-                provider.bindToLifecycle(
+                camera = provider.bindToLifecycle(
                     lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis,
-                )
+                ).also { onTorchAvailable(it.cameraInfo.hasFlashUnit()) }
             }, ContextCompat.getMainExecutor(ctx))
 
             view

@@ -147,7 +147,7 @@ private fun combined(words: List<TextWord>): LabelReading? {
 
         return LabelReading(
             // Positional inside the long code, so a missing dash is unambiguous.
-            product = normalisePid(m.groupValues[1]),
+            product = m.groupValues[1],
             box = serial,
             qty = qty,
         )
@@ -250,7 +250,7 @@ private fun readProduct(words: List<TextWord>): String? {
     for (anchor in anchors(words, ANCHOR_PRODUCT)) {
         valueFor(words, anchor) {
             PRODUCT_RE.matches(it.clean) || PRODUCT_NODASH_RE.matches(it.clean)
-        }?.let { return normalisePid(it.first.clean) }
+        }?.let { return it.first.clean }
     }
     // Otherwise the only thing on the label shaped like a part number. KAC
     // prints one barcode and no field name at all.

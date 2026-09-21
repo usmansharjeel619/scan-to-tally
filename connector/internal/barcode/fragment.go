@@ -133,20 +133,26 @@ const maxScannedQty = 9999
 
 var reEightDigits = regexp.MustCompile(`^[0-9]{8}$`)
 
-// NormalisePID puts a part number in its canonical dashed form.
+// PIDVariants returns the spellings a part number might be filed under.
 //
-// Some cartons print the part number as 8 bare digits with the dash dropped.
-// It is the same product, so it is normalised to nnnn-nnnn and resolves to one
-// entry in the catalogue however it was printed.
+// Some cartons print it as 8 bare digits with the dash dropped. It is the same
+// product either way, so a lookup tries both -- but the SCANNED form is what
+// gets stored. Rewriting the payload would put a part number in the audit trail
+// that was never on the carton, and would stop matching an item already in
+// Tally under the other spelling.
 //
-// Anything that is not exactly 8 digits is returned untouched -- this widens
-// nothing and invents nothing.
-func NormalisePID(v string) string {
+// The scanned form is always first, so a caller that only takes the head still
+// gets what was actually read.
+func PIDVariants(v string) []string {
 	v = strings.TrimSpace(v)
-	if reEightDigits.MatchString(v) {
-		return v[:4] + "-" + v[4:]
+	switch {
+	case reEightDigits.MatchString(v):
+		return []string{v, v[:4] + "-" + v[4:]}
+	case reProduct.MatchString(v):
+		return []string{v, v[:4] + v[5:]}
+	default:
+		return []string{v}
 	}
-	return v
 }
 
 // ClassifyFragmentFor places a barcode into a slot the operator named.
@@ -166,7 +172,8 @@ func ClassifyFragmentFor(raw string, want Slot) Fragment {
 	case SlotProduct:
 		// Dashed, or the same number with the dash dropped.
 		if reProduct.MatchString(v) || reEightDigits.MatchString(v) {
-			return Fragment{Kind: FragmentProduct, Value: NormalisePID(v), Raw: raw}
+			// Stored as scanned. Reconciling the dash is the lookup's job.
+			return Fragment{Kind: FragmentProduct, Value: v, Raw: raw}
 		}
 		return Fragment{Kind: FragmentNotMine, Hint: HintPartNo, Raw: raw}
 

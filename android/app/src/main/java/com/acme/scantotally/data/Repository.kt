@@ -6,6 +6,7 @@ import com.acme.scantotally.feedback.Beep
 import com.acme.scantotally.scan.BarcodeRegistry
 import com.acme.scantotally.scan.FragmentKind
 import com.acme.scantotally.scan.classifyFragment
+import com.acme.scantotally.scan.pidVariants
 import com.acme.scantotally.scan.Outcome
 import com.acme.scantotally.scan.ParsedBox
 import com.acme.scantotally.scan.mfgDateFromSerial
@@ -185,6 +186,19 @@ class Repository(context: Context, private val api: RelayApi?) {
      * fallbacks below settle the obvious cases without asking anyone.
      */
     private suspend fun resolve(pid: String): Resolved? {
+        // Both spellings, scanned form first.
+        //
+        // A carton may print 4098-9792 or 40989792 for the same product, and an
+        // item may already sit in Tally under either. The payload is NOT
+        // rewritten -- what was scanned is what is stored -- so the reconciling
+        // happens here, where a product is looked up.
+        for (form in pidVariants(pid)) {
+            resolveOne(form)?.let { return it }
+        }
+        return null
+    }
+
+    private suspend fun resolveOne(pid: String): Resolved? {
         dao.binding(pid)?.let { b ->
             val item = dao.item(b.stockItemName)
             return Resolved(b.stockItemName, item?.baseUnits ?: "", b.description, item?.hasBatches ?: false)
@@ -322,7 +336,7 @@ class Repository(context: Context, private val api: RelayApi?) {
         dao.lineForBox(sessionId, box.pid, box.boxSerial)?.let { existing ->
             return ScanDecision(
                 Outcome2.DUPLICATE, Beep.DUPLICATE,
-                "Box ${tailOf(box.boxSerial)} is already on this receipt (${fmt(existing.qty)}).",
+                "Box ${tailOf(box.boxSerial)} is already on this entry (${fmt(existing.qty)}).",
                 editLineId = existing.id, raw = scan.data, symbology = scan.symbology,
             )
         }
@@ -336,7 +350,7 @@ class Repository(context: Context, private val api: RelayApi?) {
             return ScanDecision(
                 Outcome2.DUPLICATE, Beep.DUPLICATE,
                 "Box ${tailOf(box.boxSerial)} is already counted (${fmt(elsewhere.qty)}) on " +
-                    "an ${elsewhere.state.lowercase()} receipt. Finish that one instead.",
+                    "an ${elsewhere.state.lowercase()} entry. Finish that one instead.",
                 raw = scan.data, symbology = scan.symbology,
             )
         }

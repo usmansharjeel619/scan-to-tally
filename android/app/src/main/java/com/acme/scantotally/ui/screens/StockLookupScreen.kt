@@ -188,7 +188,7 @@ fun StockLookupScreen(nav: NavController, scans: Flow<RawScan>) {
                         if (look.awaitingSync) {
                             Spacer(Modifier.height(8.dp))
                             Text(
-                                "A receipt for this product has not reached these " +
+                                "An entry for this product has not reached these " +
                                     "figures yet. They refresh within two minutes.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,

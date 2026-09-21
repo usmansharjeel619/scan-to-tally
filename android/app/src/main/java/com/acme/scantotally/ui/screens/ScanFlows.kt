@@ -112,6 +112,9 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
     var cameraResult by remember { mutableStateOf<String?>(null) }
     /** The field waiting for a targeted scan, or null for the long barcode. */
     var armed by remember { mutableStateOf<BoxDraft.Slot?>(null) }
+    /** The camera, opened from the new-product prompt to read just the name. */
+    var readingName by remember { mutableStateOf(false) }
+    var capturedName by remember { mutableStateOf<String?>(null) }
     var openGroup by remember { mutableStateOf<LineGroup?>(null) }
     var editing by remember { mutableStateOf<SessionLineEntity?>(null) }
     var operator by remember { mutableStateOf("") }
@@ -275,7 +278,7 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
         lines = lines,
         submitting = submitting,
         result = result,
-        submitLabel = "Done · post receipt",
+        submitLabel = "Done · post stock entry",
         onSubmit = {
             scope.launch {
                 val r = repo ?: return@launch
@@ -288,7 +291,7 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                 if (resp == null || resp.ok) app.feedback.playSessionPosted()
                 result = when {
                     resp == null -> "Saved. It will post to Tally when the connection returns."
-                    !resp.ok -> resp.message.ifEmpty { "Tally would not accept this receipt." }
+                    !resp.ok -> resp.message.ifEmpty { "Tally would not accept this stock entry." }
                     resp.unresolvedLines > 0 ->
                         "Saved, but ${resp.unresolvedLines} line(s) are waiting for Tally to create the product."
                     resp.dispatched -> "Sent to Tally."
@@ -430,11 +433,34 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
         )
     }
 
+    if (readingName) {
+        // Shown INSTEAD of the prompt, not over it. newProduct stays set, so
+        // closing this comes straight back to the prompt with whatever was
+        // read already in the box.
+        LabelCameraSheet(
+            descriptionOnly = true,
+            onClose = { readingName = false },
+            lastResult = null,
+            added = 0,
+            onCorrect = { _, _, _, description ->
+                capturedName = description
+                readingName = false
+            },
+            onAdd = { _, _, _, description ->
+                capturedName = description
+                readingName = false
+            },
+        )
+        return
+    }
+
     newProduct?.let { d ->
         NewProductDialog(
             decision = d,
             defaultUnit = defaultUnit,
-            onSkip = { newProduct = null },
+            capturedDescription = capturedName,
+            onReadDescription = { readingName = true },
+            onSkip = { newProduct = null; capturedName = null },
             onSave = { description, unit ->
                 scope.launch {
                     val r = repo ?: return@launch
@@ -442,6 +468,7 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                     // Closed first. Leaving it up while this writes makes the
                     // Save button look dead, and the operator taps it again.
                     newProduct = null
+                    capturedName = null
                     val res = r.proposeNewItem(sid, d.pid, description, unit, d.raw, operator)
                     // A product Tally will not create has to be said out loud.
                     // Silently failing here is what left receipts that could
@@ -1073,6 +1100,16 @@ private fun NewProductDialog(
      * this dialog.
      */
     defaultUnit: String,
+    /**
+     * A name read off the carton, when the operator asked the camera for one.
+     *
+     * The long barcode carries a part number and a count but never the
+     * product's name, so for a product in neither Tally nor the price list
+     * there is nowhere for that name to come from except the carton itself.
+     */
+    capturedDescription: String? = null,
+    /** Opens the camera to read ONLY the printed name. */
+    onReadDescription: (() -> Unit)? = null,
     onSkip: () -> Unit,
     onSave: (description: String, unit: String) -> Unit,
 ) {
@@ -1115,11 +1152,24 @@ private fun NewProductDialog(
                 )
 
                 Spacer(Modifier.height(16.dp))
+                // A name the camera read replaces what is in the box, because
+                // the operator asked for it deliberately.
+                LaunchedEffect(capturedDescription) {
+                    capturedDescription?.takeIf { it.isNotBlank() }?.let { description = it }
+                }
+
                 OutlinedTextField(
                     value = description,
                     onValueChange = { description = it },
                     label = { Text(if (known != null) "Description" else "What is it?") },
                     placeholder = { Text("SSD SENSOR BASE") },
+                    trailingIcon = onReadDescription?.let {
+                        {
+                            IconButton(onClick = it) {
+                                Icon(Icons.Default.PhotoCamera, "Read the name off the carton")
+                            }
+                        }
+                    },
                     supportingText = {
                         Text(
                             if (known != null) "From the price list - change it only if wrong"
@@ -1135,7 +1185,9 @@ private fun NewProductDialog(
                     value = unit,
                     onValueChange = { unit = it.take(8) },
                     label = { Text("Unit") },
-                    supportingText = { Text("NO for pieces, mts for metres, EA for each") },
+                    supportingText = {
+                        Text("As Tally spells it. This company uses \"$defaultUnit\".")
+                    },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -1303,7 +1355,7 @@ private fun ScanScaffold(
 
                         if (lines.isNotEmpty()) {
                             Spacer(Modifier.height(12.dp))
-                            SectionLabel("Last on this receipt")
+                            SectionLabel("Last scanned")
                             // The newest box, in full, without changing tab.
                             // A scan that went on wrong is worth catching on
                             // the next carton, not at the end of the pallet.

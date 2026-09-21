@@ -127,7 +127,8 @@ fun classifyFragmentFor(raw: String, want: ScanSlot): Fragment {
         ScanSlot.PRODUCT ->
             // Dashed, or the same number with the dash dropped.
             if (PRODUCT.matches(v) || EIGHT_DIGITS.matches(v)) {
-                Fragment(FragmentKind.PRODUCT, value = normalisePid(v), raw = raw)
+                // Stored as scanned; reconciling the dash is the lookup's job.
+                Fragment(FragmentKind.PRODUCT, value = v, raw = raw)
             } else {
                 Fragment(FragmentKind.NOT_MINE, hint = FragmentHint.PART_NO, raw = raw)
             }

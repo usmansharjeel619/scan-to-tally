@@ -35,9 +35,14 @@
     "when the operator has said which field they are pointing at.",
     "",
     "An 8-digit part number is the same number as nnnn-nnnn with the dash",
-    "dropped, so it is normalised to the dashed form and resolves to one product",
     "either way. It is NEVER accepted blind: 8 digits is also the shape of a",
-    "date code."
+    "date code.",
+    "",
+    "A part number is stored EXACTLY as it was scanned, dash or no dash. The",
+    "two forms are reconciled where a product is looked up, not by rewriting",
+    "the payload: a carton that printed 40989792 should leave 40989792 in the",
+    "audit trail, and an item already in Tally under either spelling should",
+    "still be found."
   ],
   "version": 1,
   "vectors": [
@@ -324,7 +329,7 @@
       "symbology": "CODE128",
       "outcome": "ACCEPT",
       "expect": {
-        "pid": "4098-9792",
+        "pid": "40989792",
         "boxSerial": "1124241658336425",
         "qty": 18,
         "firmware": null,
@@ -492,7 +497,7 @@
       "raw": "40989792",
       "want": "PRODUCT",
       "kind": "PRODUCT",
-      "value": "4098-9792"
+      "value": "40989792"
     },
     {
       "name": "asked for the product, given a box serial",

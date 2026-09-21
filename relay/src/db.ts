@@ -9,6 +9,7 @@
  */
 
 import Database from 'better-sqlite3';
+import { pidVariants } from './fragment.ts';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -433,13 +434,23 @@ export function resolvePid(db: DB, pid: string): Resolved | null {
 export function resolvePidDetailed(
   db: DB, pid: string,
 ): { resolved: Resolved | null; ambiguous: Ambiguous | null } {
-  const r = resolveOne(db, pid);
-  if (r) return { resolved: r, ambiguous: null };
+  // Both spellings of the part number, scanned form first.
+  //
+  // A carton may print 4098-9792 or 40989792 for the same product, and an item
+  // may already sit in Tally under either. The payload is NOT rewritten -- what
+  // was scanned is what is stored -- so the reconciling happens here, where a
+  // product is looked up.
+  const forms = pidVariants(pid);
+
+  for (const form of forms) {
+    const r = resolveOne(db, form);
+    if (r) return { resolved: r, ambiguous: null };
+  }
 
   // No single answer. Were there several?
-  const candidates = (db.prepare(
+  const candidates = forms.flatMap((form) => (db.prepare(
     `SELECT name FROM stock_items WHERE name LIKE ? ORDER BY name LIMIT 20`,
-  ).all(`${pid} %`) as Array<{ name: string }>).map((x) => x.name);
+  ).all(`${form} %`) as Array<{ name: string }>).map((x) => x.name));
 
   if (candidates.length > 1) {
     return { resolved: null, ambiguous: { pid, candidates } };

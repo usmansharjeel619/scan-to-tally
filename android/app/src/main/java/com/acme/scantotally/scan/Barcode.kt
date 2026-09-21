@@ -128,10 +128,9 @@ object SimplexPipeParser : BarcodeParser {
         return ParseResult(
             outcome = Outcome.ACCEPT, raw = raw, symbology = symbology, parser = name,
             confidence = 0.9,
-            // Some cartons drop the dash from the part number. Its position in the
-            // payload makes it unambiguous here, so it is normalised to the canonical
-            // dashed form and resolves to one catalogue entry either way.
-            box = ParsedBox(normalisePid(pid), serial, qty, firmware, mfgDateFromSerial(serial)),
+            // Kept exactly as the carton printed it. Matching it to a product
+            // is tolerant of the dash; the audit trail is not rewritten.
+            box = ParsedBox(pid, serial, qty, firmware, mfgDateFromSerial(serial)),
         )
     }
 }
@@ -161,16 +160,22 @@ fun mfgDateFromSerial(serial: String): LocalDate? {
 }
 
 /**
- * Puts a part number in its canonical dashed form.
+ * The spellings a part number might be filed under.
  *
- * Some cartons drop the dash from the part number. It is the same product, so
- * it is normalised to nnnn-nnnn and resolves to one catalogue entry however it
- * was printed. Anything that is not exactly 8 digits is returned untouched --
- * this widens nothing and invents nothing.
+ * Some cartons drop the dash. It is the same product either way, so a lookup
+ * tries both -- but the SCANNED form is what gets stored. Rewriting the payload
+ * would put a part number in the audit trail that was never on the carton, and
+ * would stop matching an item already in Tally under the other spelling.
+ *
+ * The scanned form is always first.
  */
-fun normalisePid(v: String): String {
+fun pidVariants(v: String): List<String> {
     val s = v.trim()
-    return if (RE_EIGHT_DIGITS.matches(s)) s.substring(0, 4) + "-" + s.substring(4) else s
+    return when {
+        RE_EIGHT_DIGITS.matches(s) -> listOf(s, s.substring(0, 4) + "-" + s.substring(4))
+        RE_PID.matches(s) -> listOf(s, s.substring(0, 4) + s.substring(5))
+        else -> listOf(s)
+    }
 }
 
 private val RE_EIGHT_DIGITS = Regex("""^[0-9]{8}$""")

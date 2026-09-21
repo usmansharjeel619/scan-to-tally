@@ -463,7 +463,7 @@ private fun WipeDialog(onCancel: () -> Unit, onWipe: () -> Unit) {
         title = { Text("Clear this phone?") },
         text = {
             Text(
-                "Every receipt on this phone is discarded, including any that " +
+                "Every entry on this phone is discarded, including any that " +
                     "have not been sent to Tally. Products and stock figures come " +
                     "back on the next sync. The relay address and token are kept.",
             )
@@ -569,9 +569,9 @@ fun HomeScreen(nav: NavController) {
                 ) {
                     Text(
                         when {
-                            failed > 0 -> "Receipts ($failed did not save)"
-                            pending > 0 -> "Receipts ($pending sending)"
-                            else -> "Receipts"
+                            failed > 0 -> "Entries ($failed did not save)"
+                            pending > 0 -> "Entries ($pending sending)"
+                            else -> "Entries"
                         },
                     )
                 }
@@ -742,11 +742,11 @@ fun whenScanned(millis: Long): String {
 }
 
 /**
- * Every receipt this device has made.
+ * Every entry this device has made.
  *
  * Saved ones included, with the Tally voucher number against them -- that is
  * the thing an operator actually comes here to check, and a list that only
- * ever shows problems cannot answer it. A receipt that failed to save never
+ * ever shows problems cannot answer it. An entry that failed to save never
  * vanishes either: stock that quietly goes wrong is the worst outcome there is.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -773,7 +773,7 @@ fun ReceiptsScreen(nav: NavController) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Receipts") },
+                title = { Text("Entries") },
                 navigationIcon = {
                     IconButton(onClick = { nav.popBackStack() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
@@ -795,7 +795,7 @@ fun ReceiptsScreen(nav: NavController) {
             ) {
                 Text("Nothing scanned yet.", style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    "Receipts appear here as soon as you scan the first box.",
+                    "Entries appear here as soon as you scan the first box.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -969,7 +969,7 @@ fun ReceiptsScreen(nav: NavController) {
         val boxes = summaries.firstOrNull { it.sessionId == id }?.boxes ?: 0
         AlertDialog(
             onDismissRequest = { confirmDiscard = null },
-            title = { Text("Discard this receipt?") },
+            title = { Text("Discard this entry?") },
             text = {
                 Text(
                     if (boxes == 0) "Nothing was scanned on it."
@@ -982,7 +982,7 @@ fun ReceiptsScreen(nav: NavController) {
                     scope.launch {
                         repo?.discard(id)
                         confirmDiscard = null
-                        note = "Receipt discarded."
+                        note = "Entry discarded."
                     }
                 }) { Text("Discard") }
             },
@@ -1001,8 +1001,8 @@ fun ReceiptsScreen(nav: NavController) {
             title = { Text("Clear everything not saved?") },
             text = {
                 Text(
-                    "$unsaved ${if (unsaved == 1) "receipt" else "receipts"} and $boxes scanned " +
-                        "${if (boxes == 1) "box" else "boxes"} will be thrown away. Receipts " +
+                    "$unsaved ${if (unsaved == 1) "entry" else "entries"} and $boxes scanned " +
+                        "${if (boxes == 1) "box" else "boxes"} will be thrown away. Entries " +
                         "already saved in Tally are kept.",
                 )
             },
@@ -1011,7 +1011,7 @@ fun ReceiptsScreen(nav: NavController) {
                     scope.launch {
                         val n = repo?.discardAllUnsaved() ?: 0
                         confirmClearAll = false
-                        note = "Cleared $n ${if (n == 1) "receipt" else "receipts"}."
+                        note = "Cleared $n ${if (n == 1) "entry" else "entries"}."
                     }
                 }) { Text("Clear") }
             },

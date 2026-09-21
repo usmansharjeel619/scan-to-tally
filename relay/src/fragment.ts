@@ -78,16 +78,23 @@ const EIGHT_DIGITS = /^[0-9]{8}$/;
 /** A scanned carton count beyond this is a misread or a serial. */
 const MAX_SCANNED_QTY = 9999;
 
+const DASHED_PID = /^[0-9]{4}-[0-9]{4}$/;
+
 /**
- * Puts a part number in its canonical dashed form.
+ * The spellings a part number might be filed under.
  *
- * Some cartons drop the dash. It is the same product, so it normalises to
- * nnnn-nnnn and resolves to one catalogue entry however it was printed.
- * Anything that is not exactly 8 digits is returned untouched.
+ * Some cartons drop the dash. It is the same product either way, so a lookup
+ * tries both -- but the SCANNED form is what gets stored. Rewriting the payload
+ * would put a part number in the audit trail that was never on the carton, and
+ * would stop matching an item already in Tally under the other spelling.
+ *
+ * The scanned form is always first.
  */
-export function normalisePid(v: string): string {
+export function pidVariants(v: string): string[] {
   const s = String(v ?? '').trim();
-  return EIGHT_DIGITS.test(s) ? `${s.slice(0, 4)}-${s.slice(4)}` : s;
+  if (EIGHT_DIGITS.test(s)) return [s, `${s.slice(0, 4)}-${s.slice(4)}`];
+  if (DASHED_PID.test(s)) return [s, s.slice(0, 4) + s.slice(5)];
+  return [s];
 }
 
 /**
@@ -104,7 +111,8 @@ export function classifyFragmentFor(raw: string, want: Slot): Fragment {
   switch (want) {
     case 'PRODUCT':
       if (PRODUCT.test(v) || EIGHT_DIGITS.test(v)) {
-        return { kind: 'PRODUCT', value: normalisePid(v), raw };
+        // Stored as scanned; reconciling the dash is the lookup's job.
+        return { kind: 'PRODUCT', value: v, raw };
       }
       return { kind: 'NOT_MINE', hint: 'PART_NO', raw };
 

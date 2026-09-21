@@ -84,6 +84,19 @@ fun LabelCameraSheet(
      * the slots, which already know how to edit each field.
      */
     onCorrect: (product: String?, box: String?, qty: Int?, description: String?) -> Unit,
+    /**
+     * Read ONLY the product's printed name.
+     *
+     * For a product that is in neither Tally nor the price list, where the only
+     * place its name exists is on the carton in front of the operator. The
+     * barcode never carried it, so without this the name has to be typed from
+     * a box held in the other hand.
+     *
+     * Nothing else on the label is offered in this mode: the part number and
+     * box number are already known by the time this is reached, and showing
+     * them again invites replacing a scanned value with an OCR guess.
+     */
+    descriptionOnly: Boolean = false,
 ) {
     val context = LocalContext.current
     var granted by remember {
@@ -165,7 +178,7 @@ fun LabelCameraSheet(
                         )
                         if (added > 0) {
                             Text(
-                                "$added on this receipt",
+                                "$added on this entry",
                                 style = MaterialTheme.typography.labelLarge,
                                 color = LocalSemantics.current.accept.fg,
                             )
@@ -187,11 +200,17 @@ fun LabelCameraSheet(
                     Spacer(Modifier.height(10.dp))
 
                     val correct = { onCorrect(seen.product, seen.box, seen.qty, seen.description) }
-                    Found("PRODUCT", seen.product, consensus.product?.votes, frames, correct)
-                    Found("BOX", seen.box, consensus.box?.votes, frames, correct)
-                    Found("QUANTITY", seen.qty?.toString(), consensus.qty?.votes, frames, correct)
+                    if (descriptionOnly) {
+                        Found("NAME", seen.description, null, frames, {})
+                    } else {
+                        Found("PRODUCT", seen.product, consensus.product?.votes, frames, correct)
+                        Found("BOX", seen.box, consensus.box?.votes, frames, correct)
+                        Found("QUANTITY", seen.qty?.toString(), consensus.qty?.votes, frames, correct)
+                    }
 
-                    if (seen.product != null || seen.box != null || seen.qty != null) {
+                    if (!descriptionOnly &&
+                        (seen.product != null || seen.box != null || seen.qty != null)
+                    ) {
                         Spacer(Modifier.height(6.dp))
                         Text(
                             "Tap any of them to correct it.",
@@ -212,17 +231,33 @@ fun LabelCameraSheet(
                 val whole = seen.product != null && seen.box != null && seen.qty != null
                 Button(
                     onClick = {
-                        onAdd(seen.product, seen.box, seen.qty, seen.description)
-                        // Straight on to the next carton. Only a whole reading
-                        // has been added; a partial one has gone to the slots
-                        // behind, and the camera is finished with it either way.
-                        readyForNext()
+                        if (descriptionOnly) {
+                            // Only the name travels back. Nothing already
+                            // scanned is touched.
+                            onAdd(null, null, null, seen.description)
+                        } else {
+                            onAdd(seen.product, seen.box, seen.qty, seen.description)
+                            // Straight on to the next carton. Only a whole
+                            // reading has been added; a partial one has gone to
+                            // the slots behind, and the camera is finished with
+                            // it either way.
+                            readyForNext()
+                        }
                     },
                     // Nothing read is nothing to offer. A partial reading fills
                     // what it found and leaves the rest showing as missing.
-                    enabled = seen.product != null || seen.box != null || seen.qty != null,
+                    enabled = if (descriptionOnly) seen.description != null
+                    else seen.product != null || seen.box != null || seen.qty != null,
                     modifier = Modifier.weight(2f).heightIn(min = TouchTarget),
-                ) { Text(if (whole) "Add this box" else "Use what was read") }
+                ) {
+                    Text(
+                        when {
+                            descriptionOnly -> "Use this name"
+                            whole -> "Add this box"
+                            else -> "Use what was read"
+                        },
+                    )
+                }
             }
         }
     }

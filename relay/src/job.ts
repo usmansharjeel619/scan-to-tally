@@ -1,0 +1,191 @@
+/**
+ * Turning a scan session into the voucher(s) it becomes.
+ *
+ * Kept out of the HTTP layer so it can be exercised directly: importing the
+ * server starts a listener and opens a database, which is no way to test the
+ * rule that decides whether stock reaches Tally.
+ */
+
+import type { DB } from './db.ts';
+import { computeVariance, varianceToLines, type CountScope } from './stockcheck.ts';
+
+export interface JobBox {
+  boxSerial: string;
+  qty: number;
+  mfgDate?: string;
+  rawPayload?: string;
+  pid?: string;
+  manual?: boolean;
+}
+
+export interface JobLine {
+  stockItemName: string;
+  unit: string;
+  description?: string;
+  boxes: JobBox[];
+}
+
+export interface PostJob {
+  /**
+   * The idempotency key, end to end. One voucher, one key.
+   *
+   * For a session that becomes several vouchers this is derived from the
+   * session and the product, so each voucher is independently protected
+   * against being posted twice.
+   */
+  sessionId: string;
+  /** The session the voucher came from, for attributing the result back. */
+  parentSessionId: string;
+  kind: string;
+  company: string;
+  godown: string;
+  party?: string;
+  salesOrder?: string;
+  scope?: CountScope;
+  date: string;
+  operator?: string;
+  deviceId?: string;
+  narration?: string;
+  lines: JobLine[];
+}
+
+/** Why a session produced no jobs. Told apart because they read differently. */
+export type NotBuiltReason =
+  | 'NO_SESSION'
+  | 'NO_LINES'
+  | 'WAITING_FOR_PRODUCT'
+  | 'NO_VARIANCE';
+
+export interface BuildResult {
+  jobs: PostJob[];
+  reason?: NotBuiltReason;
+  /** How many boxes are still waiting for Tally to create their product. */
+  unresolved: number;
+}
+
+/**
+ * Builds every voucher a session should become.
+ *
+ * ONE VOUCHER PER PRODUCT. A pallet of four products becomes four Physical
+ * Stock vouchers, each holding every box of its own product however the
+ * scanning was interleaved. A day book then reads one line per product, and a
+ * product scanned, left, and come back to lands in the same voucher as the
+ * rest of it rather than a second one.
+ *
+ * NOTHING PARTIAL. If any box is still waiting for Tally to create its product,
+ * no voucher is built at all -- not even for the products that are ready.
+ * Building the ready ones is what used to happen, and the waiting boxes were
+ * then dropped from a session that went on to post and mark itself done: stock
+ * physically on the shelf, absent from Tally, with nothing left to retry it.
+ */
+export function buildJobs(
+  db: DB, sessionId: string, scope: CountScope = 'PARTIAL',
+): BuildResult {
+  const s = db.prepare(`SELECT * FROM sessions WHERE id = ?`).get(sessionId) as any;
+  if (!s) return { jobs: [], reason: 'NO_SESSION', unresolved: 0 };
+
+  const base = {
+    parentSessionId: s.id,
+    kind: s.kind,
+    company: s.company,
+    godown: s.godown,
+    party: s.party,
+    salesOrder: s.sales_order,
+    date: new Date().toISOString(),
+    operator: s.operator,
+    deviceId: s.device_id,
+  };
+
+  // A stock check posts the VARIANCE, never the raw count, and it is one
+  // adjustment rather than one per product: the whole point is the comparison,
+  // and splitting it would turn one reconciliation into several.
+  if (s.kind === 'STOCKCHECK') {
+    const report = computeVariance(db, sessionId, s.godown, scope);
+    const lines = varianceToLines(report);
+    if (!lines.length) return { jobs: [], reason: 'NO_VARIANCE', unresolved: 0 };
+    return {
+      unresolved: 0,
+      jobs: [{
+        ...base,
+        sessionId: s.id,
+        scope,
+        narration: s.narration ||
+          `Stock check (${scope.toLowerCase()}) | ${s.godown} | ${report.counted} boxes counted`,
+        lines: lines.map((l) => ({
+          stockItemName: l.stockItemName,
+          unit: l.unit,
+          boxes: l.boxes.map((x) => ({ boxSerial: x.boxSerial, qty: x.qty })),
+        })),
+      }],
+    };
+  }
+
+  const lines = db.prepare(
+    `SELECT * FROM session_lines WHERE session_id = ? ORDER BY id`,
+  ).all(sessionId) as any[];
+  if (!lines.length) return { jobs: [], reason: 'NO_LINES', unresolved: 0 };
+
+  const unresolved = lines.filter((l) => !l.stock_item_name).length;
+  if (unresolved > 0) {
+    return { jobs: [], reason: 'WAITING_FOR_PRODUCT', unresolved };
+  }
+
+  // Grouped by product, so interleaved scanning still lands one box beside the
+  // rest of its own product.
+  const byItem = new Map<string, JobLine>();
+  for (const l of lines) {
+    let entry = byItem.get(l.stock_item_name);
+    if (!entry) {
+      entry = {
+        stockItemName: l.stock_item_name,
+        unit: l.unit,
+        description: l.description ?? '',
+        boxes: [],
+      };
+      byItem.set(l.stock_item_name, entry);
+    }
+    entry.boxes.push({
+      boxSerial: l.box_serial,
+      qty: l.qty,
+      mfgDate: l.mfg_date ?? undefined,
+      rawPayload: l.raw_payload,
+      pid: l.pid,
+      manual: String(l.flags ?? '').includes('MANUAL'),
+    });
+  }
+  if (!byItem.size) return { jobs: [], reason: 'NO_LINES', unresolved: 0 };
+
+  const products = [...byItem.values()];
+
+  return {
+    unresolved: 0,
+    jobs: products.map((line, i) => ({
+      ...base,
+      // Derived, and STABLE: the same session and product always produce the
+      // same key, so a redelivery is recognised as the voucher it already is
+      // rather than posted again. Ordered by first appearance, so the index is
+      // reproducible from the same session.
+      sessionId: voucherKey(s.id, line.stockItemName, i),
+      narration: s.narration ||
+        `Mobile scan | operator ${s.operator ?? ''} | session ${s.id}`,
+      lines: [line],
+    })),
+  };
+}
+
+/**
+ * The idempotency key for one product's voucher out of a session.
+ *
+ * Carries the session so it is traceable, and the product so two vouchers from
+ * one session can never collide. The index is a tiebreak only -- two distinct
+ * products cannot share a name, but a name can contain anything, so the key
+ * does not depend on it being well behaved.
+ */
+export function voucherKey(sessionId: string, stockItemName: string, index: number): string {
+  return `${sessionId}#${index}`;
+}
+
+/** Whether a session has everything it needs to post. */
+export function isReadyToPost(db: DB, sessionId: string): boolean {
+  return buildJobs(db, sessionId).jobs.length > 0;
+}

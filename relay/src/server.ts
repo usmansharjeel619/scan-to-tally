@@ -19,7 +19,8 @@ import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { openDb, applySync, audit, nowIso, resolvePid, type DB } from './db.ts';
 import { decideIncomingScan, decideOutgoingScan, validateOutgoingQty } from './validation.ts';
-import { decideStockCheckScan, computeVariance, varianceToLines, type CountScope } from './stockcheck.ts';
+import { decideStockCheckScan, computeVariance, type CountScope } from './stockcheck.ts';
+import { buildJobs, type PostJob } from './job.ts';
 import { composeItemName } from './fragment.ts';
 import { ConnectorHub, type JobResult } from './hub.ts';
 
@@ -148,8 +149,16 @@ function applyJobResult(r: JobResult): void {
     return;
   }
 
+  // A result arrives keyed by VOUCHER, and a session may have several. Find
+  // which session it belongs to before doing anything with it.
+  const voucher = db.prepare(
+    `SELECT session_id FROM session_vouchers WHERE voucher_key = ?`,
+  ).get(r.sessionId) as { session_id: string } | undefined;
+
+  const sessionId = voucher?.session_id ?? r.sessionId;
+
   const session = db.prepare(`SELECT id, kind FROM sessions WHERE id = ?`)
-    .get(r.sessionId) as { id: string; kind: string } | undefined;
+    .get(sessionId) as { id: string; kind: string } | undefined;
   if (!session) {
     // A result nobody is waiting for is still a result. Dropping it silently
     // is how a post that Tally refused disappears without trace -- and the
@@ -165,24 +174,30 @@ function applyJobResult(r: JobResult): void {
 
   if (r.ok) {
     db.prepare(`
-      UPDATE sessions SET state='POSTED', tally_voucher_id=?, duplicate=?,
-             completed_at=?, attempts=?, error_class='', error_code='', error_message=''
-       WHERE id=?`)
-      .run(r.tallyVoucherId ?? '', r.duplicate ? 1 : 0, nowIso(), r.attempts ?? 0, r.sessionId);
+      UPDATE session_vouchers SET state='POSTED', tally_voucher_id=?, completed_at=?,
+        error_code='', error_message='' WHERE voucher_key=?`)
+      .run(r.tallyVoucherId ?? '', nowIso(), r.sessionId);
 
-    recordBoxHistory(r.sessionId, session.kind);
-    audit(db, 'connector', 'POSTED', r.sessionId,
+    audit(db, 'connector', 'POSTED', sessionId,
       `voucher ${r.tallyVoucherId}${r.duplicate ? ' (duplicate, not reposted)' : ''}`);
   } else {
     // A failed post NEVER vanishes. It goes to the review queue with Tally's
     // own words shown verbatim.
     db.prepare(`
-      UPDATE sessions SET state='FAILED', error_class=?, error_code=?, error_message=?,
-             attempts=?, completed_at=? WHERE id=?`)
-      .run(r.errorClass ?? '', r.errorCode ?? '', r.errorMessage ?? '',
-        r.attempts ?? 0, nowIso(), r.sessionId);
-    audit(db, 'connector', 'FAILED', r.sessionId, `${r.errorCode}: ${r.errorMessage}`);
+      UPDATE session_vouchers SET state='FAILED', error_code=?, error_message=?,
+        completed_at=? WHERE voucher_key=?`)
+      .run(r.errorCode ?? '', r.errorMessage ?? '', nowIso(), r.sessionId);
+    audit(db, 'connector', 'FAILED', sessionId, `${r.errorCode}: ${r.errorMessage}`);
   }
+
+  // The session is only finished when EVERY voucher it became is. Calling it
+  // posted on the first result would say stock is in Tally that is still in
+  // flight.
+  settleSession(sessionId);
+
+  const after = db.prepare(`SELECT state FROM sessions WHERE id=?`)
+    .get(sessionId) as { state: string } | undefined;
+  if (after?.state === 'POSTED') recordBoxHistory(sessionId, session.kind);
 }
 
 /**
@@ -286,6 +301,13 @@ function applyItemCreationResult(r: JobResult): void {
   });
   tx();
 
+  // Release anything that was only waiting for this product.
+  //
+  // A session held for a missing product has to be let go by SOMETHING, or it
+  // waits for the next connector reconnect -- which may be hours, and looks
+  // exactly like the boxes having vanished.
+  releaseHeldSessions();
+
   audit(db, 'connector', 'ITEM_CREATED', pid, name);
 }
 
@@ -313,6 +335,104 @@ function recordBoxHistory(sessionId: string, kind: string): void {
     }
   });
   tx();
+}
+
+/**
+ * Sends any held session that is now complete.
+ *
+ * A session is held rather than posted when one of its boxes is waiting for
+ * Tally to create a product. This is what lets it go: called whenever a product
+ * lands, so the wait is as long as the product took and not a minute longer.
+ */
+function releaseHeldSessions(): void {
+  const held = db.prepare(
+    `SELECT id, company FROM sessions WHERE state='QUEUED' ORDER BY created_at`,
+  ).all() as Array<{ id: string; company: string }>;
+
+  for (const row of held) {
+    const { jobs } = buildJobs(db, row.id);
+    if (!jobs.length) continue; // still waiting on something
+    if (dispatchSession(row.id, row.company, jobs)) {
+      audit(db, 'relay', 'SESSION_RELEASED', row.id, 'product created; posting now');
+    }
+  }
+}
+
+/**
+ * Sends every voucher a session became, and records each one.
+ *
+ * Returns whether ANY reached the connector. A voucher that did not is left
+ * QUEUED and goes on the next sweep -- it is not lost, and it is not posted
+ * twice, because its key is stable.
+ */
+function dispatchSession(sessionId: string, company: string, jobs: PostJob[]): boolean {
+  let sent = 0;
+
+  const record = db.prepare(`
+    INSERT INTO session_vouchers
+      (voucher_key, session_id, stock_item_name, state, created_at)
+    VALUES (?,?,?,?,?)
+    ON CONFLICT(voucher_key) DO NOTHING`);
+
+  for (const job of jobs) {
+    const item = job.lines[0]?.stockItemName ?? '';
+    record.run(job.sessionId, sessionId, item, 'QUEUED', nowIso());
+
+    // Already done from an earlier attempt? Do not send it again.
+    const existing = db.prepare(
+      `SELECT state FROM session_vouchers WHERE voucher_key = ?`,
+    ).get(job.sessionId) as { state: string } | undefined;
+    if (existing?.state === 'POSTED') continue;
+
+    if (hub.dispatch(company, job.sessionId, job)) {
+      db.prepare(`UPDATE session_vouchers SET state='POSTING' WHERE voucher_key=?`)
+        .run(job.sessionId);
+      sent += 1;
+    }
+  }
+
+  if (sent > 0) {
+    db.prepare(`UPDATE sessions SET state='POSTING' WHERE id=?`).run(sessionId);
+  }
+  return sent > 0;
+}
+
+/**
+ * A session is finished when every voucher it became is.
+ *
+ * Deliberately not "when the last result arrived": a result can arrive for a
+ * voucher while another is still in flight, and calling the session posted then
+ * would say stock is in Tally that is not.
+ */
+function settleSession(sessionId: string): void {
+  const rows = db.prepare(
+    `SELECT state, tally_voucher_id, error_code, error_message
+       FROM session_vouchers WHERE session_id = ?`,
+  ).all(sessionId) as Array<{
+    state: string; tally_voucher_id: string; error_code: string; error_message: string;
+  }>;
+  if (!rows.length) return;
+
+  if (rows.some((r) => r.state === 'QUEUED' || r.state === 'POSTING')) return;
+
+  const failed = rows.filter((r) => r.state === 'FAILED');
+  if (failed.length) {
+    const f = failed[0]!;
+    db.prepare(`
+      UPDATE sessions SET state='FAILED', error_class='BUSINESS', error_code=?,
+        error_message=?, completed_at=? WHERE id=?`)
+      .run(f.error_code,
+        failed.length === 1 ? f.error_message
+          : `${failed.length} of ${rows.length} vouchers failed. First: ${f.error_message}`,
+        nowIso(), sessionId);
+    return;
+  }
+
+  db.prepare(`
+    UPDATE sessions SET state='POSTED', tally_voucher_id=?, completed_at=?,
+      error_class='', error_code='', error_message='' WHERE id=?`)
+    .run(rows.map((r) => r.tally_voucher_id).filter(Boolean).join(', '),
+      nowIso(), sessionId);
 }
 
 /** Redelivers anything the connector may have missed while disconnected. */
@@ -374,86 +494,15 @@ function resendOutstanding(company: string): void {
     `SELECT id FROM sessions WHERE state IN ('QUEUED','POSTING') ORDER BY created_at`,
   ).all() as Array<{ id: string }>;
   for (const row of rows) {
-    const job = buildJob(row.id);
-    if (job && hub.dispatch(company, row.id, job)) {
-      db.prepare(`UPDATE sessions SET state='POSTING' WHERE id=?`).run(row.id);
-    }
+    const { jobs } = buildJobs(db, row.id);
+    if (jobs.length) dispatchSession(row.id, company, jobs);
   }
   if (rows.length) app.log.info({ count: rows.length }, 'redelivered outstanding sessions');
 }
 
 // --- job assembly -----------------------------------------------------------
 
-/**
- * Aggregates a session's scans into ONE line per part number with N boxes
- * beneath it. The connector asserts this again before posting, because
- * splitting an item across entries is accepted by Tally and quietly ruins its
- * stock reports.
- */
-function buildJob(sessionId: string, scope: CountScope = 'PARTIAL'): Record<string, unknown> | null {
-  const s = db.prepare(`SELECT * FROM sessions WHERE id = ?`).get(sessionId) as any;
-  if (!s) return null;
 
-  // A stock check posts the VARIANCE, never the raw count: writing back
-  // figures Tally already holds is noise in the stock report for no gain.
-  if (s.kind === 'STOCKCHECK') {
-    const report = computeVariance(db, sessionId, s.godown, scope);
-    const lines = varianceToLines(report);
-    if (!lines.length) return null;
-    return {
-      sessionId: s.id, kind: 'STOCKCHECK', company: s.company, godown: s.godown,
-      scope, date: new Date().toISOString(), operator: s.operator, deviceId: s.device_id,
-      narration: s.narration || `Stock check (${scope.toLowerCase()}) | ${s.godown} | ${report.counted} boxes counted`,
-      lines: lines.map((l) => ({
-        stockItemName: l.stockItemName, unit: l.unit,
-        boxes: l.boxes.map((x) => ({ boxSerial: x.boxSerial, qty: x.qty })),
-      })),
-    };
-  }
-
-  const lines = db.prepare(
-    `SELECT * FROM session_lines WHERE session_id = ? ORDER BY id`,
-  ).all(sessionId) as any[];
-  if (!lines.length) return null;
-
-  const byItem = new Map<string, any>();
-  for (const l of lines) {
-    if (!l.stock_item_name) continue; // unresolved lines cannot be posted
-    let entry = byItem.get(l.stock_item_name);
-    if (!entry) {
-      entry = {
-        stockItemName: l.stock_item_name,
-        unit: l.unit,
-        description: l.description ?? '',
-        boxes: [],
-      };
-      byItem.set(l.stock_item_name, entry);
-    }
-    entry.boxes.push({
-      boxSerial: l.box_serial,
-      qty: l.qty,
-      mfgDate: l.mfg_date ?? undefined,
-      rawPayload: l.raw_payload,
-      pid: l.pid,
-      manual: String(l.flags ?? '').includes('MANUAL'),
-    });
-  }
-  if (!byItem.size) return null;
-
-  return {
-    sessionId: s.id,
-    kind: s.kind,
-    company: s.company,
-    godown: s.godown,
-    party: s.party,
-    salesOrder: s.sales_order,
-    date: new Date().toISOString(),
-    operator: s.operator,
-    deviceId: s.device_id,
-    narration: s.narration,
-    lines: [...byItem.values()],
-  };
-}
 
 // --- auth -------------------------------------------------------------------
 
@@ -858,8 +907,8 @@ app.post('/api/v1/sessions/:id/submit', async (req, reply) => {
     `SELECT COUNT(*) AS n FROM session_lines WHERE session_id=?`,
   ).get(id) as { n: number };
 
-  const job = buildJob(id, scope);
-  if (!job) {
+  const { jobs, reason } = buildJobs(db, id, scope);
+  if (!jobs.length) {
     // A count with nothing on it has not matched anything -- it has not
     // happened. Reporting "matches the book exactly" for an empty stock take
     // is a false statement about stock, and the worst kind: reassuring.
@@ -887,20 +936,35 @@ app.post('/api/v1/sessions/:id/submit', async (req, reply) => {
       return { sessionId: id, state: 'POSTED', noVariance: true,
         message: 'Count matches the book exactly. Nothing to adjust.' };
     }
+    if (unresolved.n > 0) {
+      // Held, not refused. The operator scanned correctly; a product Tally has
+      // never seen is not their mistake, and the boxes are safe on the session
+      // until it lands. It posts whole, by itself, the moment it can.
+      db.prepare(`UPDATE sessions SET state='QUEUED', submitted_at=? WHERE id=?`)
+        .run(nowIso(), id);
+      audit(db, `device:${d.id}`, 'SESSION_HELD_FOR_PRODUCT', id,
+        `${unresolved.n} line(s) waiting`);
+      return {
+        sessionId: id,
+        state: 'QUEUED',
+        dispatched: false,
+        unresolvedLines: unresolved.n,
+        waiting: true,
+        message: `Waiting for Tally to add ${unresolved.n === 1 ? 'a product' : `${unresolved.n} products`}. ` +
+          'Nothing is lost -- this posts by itself once they exist.',
+      };
+    }
     return reply.code(400).send({
       error: 'nothing_to_post',
-      message: unresolved.n > 0
-        ? `All ${unresolved.n} line(s) are waiting for Tally to create the product.`
-        : 'This session has no lines.',
+      message: 'This session has no lines.',
     });
   }
 
   db.prepare(`UPDATE sessions SET state='QUEUED', submitted_at=? WHERE id=?`).run(nowIso(), id);
   audit(db, `device:${d.id}`, 'SESSION_SUBMITTED', id,
-    `${(job.lines as any[]).length} item(s)`);
+    `${jobs.length} voucher(s), one per product`);
 
-  const sent = hub.dispatch(s.company, id, job);
-  if (sent) db.prepare(`UPDATE sessions SET state='POSTING' WHERE id=?`).run(id);
+  const sent = dispatchSession(id, s.company, jobs);
 
   // Not being sent is fine and expected: the connector may be offline. The
   // session is durable and will be redelivered on reconnect. The operator's
@@ -909,6 +973,7 @@ app.post('/api/v1/sessions/:id/submit', async (req, reply) => {
     sessionId: id,
     state: sent ? 'POSTING' : 'QUEUED',
     dispatched: sent,
+    vouchers: jobs.length,
     unresolvedLines: unresolved.n,
   };
 });
@@ -1015,12 +1080,15 @@ app.post('/api/v1/sessions/:id/retry', async (req, reply) => {
   if (!s) return reply.code(404).send({ error: 'no_such_session' });
   if (s.state !== 'FAILED') return reply.code(409).send({ error: 'not_failed', state: s.state });
 
-  const job = buildJob(id);
-  if (!job) return reply.code(400).send({ error: 'nothing_to_post' });
+  const { jobs } = buildJobs(db, id);
+  if (!jobs.length) return reply.code(400).send({ error: 'nothing_to_post' });
 
   db.prepare(`UPDATE sessions SET state='QUEUED', error_message='' WHERE id=?`).run(id);
-  const sent = hub.dispatch(s.company, id, job);
-  if (sent) db.prepare(`UPDATE sessions SET state='POSTING' WHERE id=?`).run(id);
+  // Only the vouchers that did NOT post are resent; dispatchSession skips any
+  // already POSTED, so a retry cannot double one that succeeded.
+  db.prepare(`UPDATE session_vouchers SET state='QUEUED', error_code='', error_message=''
+              WHERE session_id=? AND state='FAILED'`).run(id);
+  const sent = dispatchSession(id, s.company, jobs);
 
   audit(db, d.operator || `device:${d.id}`, 'SESSION_RETRIED', id);
   return { sessionId: id, state: sent ? 'POSTING' : 'QUEUED' };
@@ -1219,4 +1287,4 @@ if (!CONNECTOR_SECRET) {
 await app.listen({ port: PORT, host: HOST });
 app.log.info(`relay listening on ${HOST}:${PORT}, db ${DB_PATH}`);
 
-export { app, db, hub, buildJob, applyJobResult, reconcileDeviceCompanies };
+export { app, db, hub, applyJobResult, reconcileDeviceCompanies };

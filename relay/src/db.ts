@@ -218,6 +218,24 @@ CREATE TABLE IF NOT EXISTS proposed_items (
 );
 CREATE INDEX IF NOT EXISTS idx_proposed_state ON proposed_items(state, proposed_at);
 
+-- One row per voucher a session becomes.
+--
+-- A session with four products posts four Physical Stock vouchers, each
+-- independently keyed so a redelivery cannot post one of them twice. The
+-- session is only finished when every one of its vouchers is.
+CREATE TABLE IF NOT EXISTS session_vouchers (
+  voucher_key      TEXT PRIMARY KEY,
+  session_id       TEXT NOT NULL,
+  stock_item_name  TEXT NOT NULL DEFAULT '',
+  state            TEXT NOT NULL,           -- QUEUED|POSTING|POSTED|FAILED
+  tally_voucher_id TEXT NOT NULL DEFAULT '',
+  error_code       TEXT NOT NULL DEFAULT '',
+  error_message    TEXT NOT NULL DEFAULT '',
+  created_at       TEXT NOT NULL,
+  completed_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_vouchers_session ON session_vouchers(session_id);
+
 CREATE TABLE IF NOT EXISTS audit_log (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
   at        TEXT NOT NULL,

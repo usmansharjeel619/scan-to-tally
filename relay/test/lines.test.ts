@@ -381,20 +381,83 @@ test('one order can be filled from several boxes, and stops at the order total',
 test('two boxes of one product post as ONE voucher line with two batches', async () => {
   // Splitting a part number across entries is accepted by Tally and quietly
   // ruins its stock reports, so the job must nest the boxes under one line.
-  const { buildJob } = await import('../src/server.ts');
+  const { buildJobs } = await import('../src/job.ts');
 
   const sid = await openSession('INCOMING');
   await line(sid, { pid: KNOWN_PID, boxSerial: 'BOX-A', qty: 2, raw: 'x' });
   await line(sid, { pid: KNOWN_PID, boxSerial: 'BOX-B', qty: 4, raw: 'x' });
 
-  const job = buildJob(sid) as any;
+  const { jobs } = buildJobs(db, sid);
+  assert.equal(jobs.length, 1, 'one product, one voucher');
+  const job = jobs[0]!;
   assert.equal(job.lines.length, 1, 'one line for the part number');
-  assert.equal(job.lines[0].stockItemName, KNOWN_ITEM);
-  assert.equal(job.lines[0].boxes.length, 2, 'both boxes beneath it');
+  assert.equal(job.lines[0]!.stockItemName, KNOWN_ITEM);
+  assert.equal(job.lines[0]!.boxes.length, 2, 'both boxes beneath it');
   assert.deepEqual(
-    job.lines[0].boxes.map((b: any) => [b.boxSerial, b.qty]).sort(),
+    job.lines[0]!.boxes.map((b) => [b.boxSerial, b.qty]).sort(),
     [['BOX-A', 2], ['BOX-B', 4]],
   );
+});
+
+test('each product becomes its own voucher, however the scanning interleaved',
+  async () => {
+    // Scanned A, A, B, then back to A. The day book had the first product on
+    // two separate vouchers, because the operator had moved off it and come
+    // back. Every box of a product belongs on that product's one voucher, and
+    // scan order is not a fact about stock.
+    const { buildJobs } = await import('../src/job.ts');
+    const { applySync } = await import('../src/db.ts');
+
+    applySync(db, {
+      items: [
+        { name: KNOWN_ITEM, baseUnits: 'NO', hasBatches: true },
+        { name: '4098-5266 PHOTO SENSOR W/REED', baseUnits: 'NO', hasBatches: true },
+      ],
+      godowns: [GODOWN],
+    });
+
+    const sid = await openSession('INCOMING');
+    await line(sid, { pid: KNOWN_PID, boxSerial: 'A-1', qty: 1, raw: 'x' });
+    await line(sid, { pid: KNOWN_PID, boxSerial: 'A-2', qty: 1, raw: 'x' });
+    await line(sid, { pid: '4098-5266', boxSerial: 'B-1', qty: 5, raw: 'x' });
+    await line(sid, { pid: KNOWN_PID, boxSerial: 'A-3', qty: 1, raw: 'x' });
+
+    const { jobs } = buildJobs(db, sid);
+    assert.equal(jobs.length, 2, 'two products, two vouchers');
+
+    const byItem = new Map(jobs.map((j) => [j.lines[0]!.stockItemName, j]));
+    const a = byItem.get(KNOWN_ITEM)!;
+    assert.equal(a.lines.length, 1, 'one line');
+    assert.equal(a.lines[0]!.boxes.length, 3,
+      'all three boxes of the first product on its own voucher');
+
+    const b = byItem.get('4098-5266 PHOTO SENSOR W/REED')!;
+    assert.equal(b.lines[0]!.boxes.length, 1);
+
+    // Each voucher carries its own idempotency key, or a redelivery would
+    // repost one of them under the other's identity.
+    assert.notEqual(jobs[0]!.sessionId, jobs[1]!.sessionId);
+    for (const j of jobs) assert.equal(j.parentSessionId, sid);
+  });
+
+test('a session with an unresolved box builds NOTHING', async () => {
+  // The bug: the unresolved line was skipped, the voucher posted with the
+  // other boxes, the session went POSTED, and the skipped cartons were gone --
+  // off the receipt, never in Tally, nothing left to retry them.
+  const { buildJobs } = await import('../src/job.ts');
+
+  const sid = await openSession('INCOMING');
+  await line(sid, { pid: KNOWN_PID, boxSerial: 'OK-1', qty: 3, raw: 'x' });
+  db.prepare(
+    `INSERT INTO session_lines
+       (session_id, pid, box_serial, qty, unit, stock_item_name, raw_payload, scanned_at)
+     VALUES (?,?,?,?,?,'','',datetime('now'))`,
+  ).run(sid, '9999-0404', 'WAITING-1', 7, 'NO');
+
+  const { jobs, reason, unresolved } = buildJobs(db, sid);
+  assert.equal(jobs.length, 0, 'no voucher at all while a box is waiting');
+  assert.equal(reason, 'WAITING_FOR_PRODUCT');
+  assert.equal(unresolved, 1);
 });
 
 test('an item deleted in Tally stops resolving here', async () => {

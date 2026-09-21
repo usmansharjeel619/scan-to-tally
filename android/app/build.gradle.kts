@@ -39,6 +39,24 @@ android {
         buildConfigField("String", "BUILD_STAMP", "\"" + stamp + "\"")
         buildConfigField("String", "RELEASE", "\"" + release + "\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // ARM only.
+        //
+        // The APK carried native libraries for four architectures, and x86 and
+        // x86_64 were 34MB of them -- for devices that do not exist in a
+        // warehouse. Every handset here is ARM, and the bytes were downloaded
+        // over site wifi on every update regardless.
+        //
+        // This matters beyond tidiness: an 83MB download over a warehouse
+        // connection is one that can truncate, and a truncated APK installs as
+        // "package appears to be invalid", which looks like a broken build
+        // rather than a broken download.
+        //
+        // armeabi-v7a stays for older 32-bit rugged devices; drop it too if
+        // every handset is confirmed arm64.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildTypes {

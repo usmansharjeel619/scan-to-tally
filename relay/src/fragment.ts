@@ -157,3 +157,27 @@ export function refusedForSlot(want: Slot): string {
     default: return 'That barcode does not belong in this field.';
   }
 }
+
+/**
+ * The name a newly created stock item gets.
+ *
+ * The live catalogue names items "<PID> <DESCRIPTION>", and that convention is
+ * what makes a scanned part number resolvable later -- so it is composed the
+ * same way rather than left to drift.
+ *
+ * But only ONCE. The description often already carries the part number, from
+ * the price list or read off a carton that prints it above the name, and
+ * prefixing regardless produced items called
+ * "4098-5266 4098-5266 PHOTO SENSOR W/REED". Two spellings of one product is
+ * two products as far as Tally is concerned, which is how one carton ends up on
+ * two separate vouchers.
+ *
+ * Compared canonically: a carton may print 4098-5266 where the price list holds
+ * 40985266, and either way the number is already there.
+ */
+export function composeItemName(pid: string, description: string): string {
+  const desc = String(description ?? '').trim();
+  const head = canonicalPid(desc.split(/\s+/)[0] ?? '');
+  if (head !== '' && head === canonicalPid(pid)) return desc;
+  return desc === '' ? String(pid ?? '').trim() : `${String(pid ?? '').trim()} ${desc}`;
+}

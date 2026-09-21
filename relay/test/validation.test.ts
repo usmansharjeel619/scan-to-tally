@@ -1,6 +1,7 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb, applySync, nowIso, type DB } from '../src/db.ts';
+import { composeItemName } from '../src/fragment.ts';
 import { decideIncomingScan, decideOutgoingScan, validateOutgoingQty } from '../src/validation.ts';
 
 const ITEM = '4098-9792 SSD SENSOR BASE';
@@ -398,4 +399,25 @@ test('both spellings resolve to the one Tally item', () => {
     assert.equal(d.box?.stockItemName, '4100-9702 IDNAC REPEATER',
       `${printed} should find the item`);
   }
+});
+
+// --- naming a product that has never been seen ------------------------------
+
+test('the part number is not put into the name twice', () => {
+  // Real, from the live day book: items were created as
+  // "4098-5266 4098-5266 PHOTO SENSOR W/REED". The description already carried
+  // the part number and the composer prefixed it regardless. Two spellings of
+  // one product is two products as far as Tally is concerned.
+  assert.equal(composeItemName('4098-5266', 'PHOTO SENSOR W/REED'),
+    '4098-5266 PHOTO SENSOR W/REED');
+  assert.equal(composeItemName('4098-5266', '4098-5266 PHOTO SENSOR W/REED'),
+    '4098-5266 PHOTO SENSOR W/REED', 'already prefixed');
+  // Across spellings, because a carton and the price list need not agree.
+  assert.equal(composeItemName('4098-5266', '40985266 PHOTO SENSOR W/REED'),
+    '40985266 PHOTO SENSOR W/REED', 'undashed prefix still counts as present');
+  assert.equal(composeItemName('40985266', '4098-5266 PHOTO SENSOR W/REED'),
+    '4098-5266 PHOTO SENSOR W/REED', 'dashed prefix still counts as present');
+  // A part number that merely looks similar is NOT a prefix.
+  assert.equal(composeItemName('4098-5266', '4098-5267 SOMETHING ELSE'),
+    '4098-5266 4098-5267 SOMETHING ELSE');
 });

@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { openDb, applySync, audit, nowIso, resolvePid, type DB } from './db.ts';
 import { decideIncomingScan, decideOutgoingScan, validateOutgoingQty } from './validation.ts';
 import { decideStockCheckScan, computeVariance, varianceToLines, type CountScope } from './stockcheck.ts';
+import { composeItemName } from './fragment.ts';
 import { ConnectorHub, type JobResult } from './hub.ts';
 
 const PORT = Number(process.env.STT_PORT ?? 8787);
@@ -40,6 +41,7 @@ const DIST_DIR = process.env.STT_DIST_DIR ?? '/opt/scan-to-tally/dist';
  * different books, with the failure looking like a hang.
  */
 const DEFAULT_UNIT = process.env.STT_DEFAULT_UNIT ?? 'NO';
+
 
 const db: DB = openDb(DB_PATH);
 
@@ -965,7 +967,13 @@ app.post('/api/v1/proposed-items', async (req, reply) => {
   // The live catalogue names items "<PID> <DESCRIPTION>", and that convention
   // is exactly what makes a scanned PID resolvable later. Compose it the same
   // way rather than letting the name drift.
-  const name = `${pid} ${description}`;
+  //
+  // But only ONCE. The description often already carries the part number --
+  // from the price list, or read off a carton that prints it above the name --
+  // and prefixing regardless produced items called
+  // "4098-5266 4098-5266 PHOTO SENSOR W/REED". Two spellings of one product is
+  // two products as far as Tally is concerned.
+  const name = composeItemName(pid, description);
 
   db.prepare(`
     INSERT INTO proposed_items

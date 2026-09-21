@@ -47,7 +47,18 @@ data class LabelReading(
     val description: String? = null,
 )
 
-private val ANCHOR_PRODUCT = setOf("pid", "type", "part")
+/**
+ * Names that mean "the number beside me IS the product", in order of authority.
+ *
+ * A carton often carries BOTH a PID and a part number, and on these labels both
+ * are 8 digits -- so nothing about the value tells them apart and only the word
+ * beside it can. "PART" is therefore the LAST resort, used only when the label
+ * names no PID at all: reading a part number as the product files stock against
+ * a code Tally does not know.
+ */
+private val ANCHOR_PRODUCT_STRONG = setOf("pid", "type")
+private val ANCHOR_PRODUCT_WEAK = setOf("part", "partno", "part-no")
+private val ANCHOR_PRODUCT = ANCHOR_PRODUCT_STRONG + ANCHOR_PRODUCT_WEAK
 private val ANCHOR_QTY = setOf("qty", "quantity")
 private val ANCHOR_BOX = setOf("box", "serial", "boxid")
 
@@ -242,15 +253,26 @@ private fun valueFor(
 }
 
 private fun readProduct(words: List<TextWord>): String? {
-    // Named first: "PID: 4098-9788", "Type: 4098-5220", "PID: 40989792".
+    val looksLikeProduct = { w: TextWord ->
+        PRODUCT_RE.matches(w.clean) || PRODUCT_NODASH_RE.matches(w.clean)
+    }
+
+    // "PID: 4098-9788", "Type: 4098-5220", "PID: 40989792".
     //
     // Under an anchor the label itself says which field this is, so a part
-    // number printed WITHOUT its dash can be taken here. It is normalised to
-    // the dashed form so both printings resolve to one product.
-    for (anchor in anchors(words, ANCHOR_PRODUCT)) {
-        valueFor(words, anchor) {
-            PRODUCT_RE.matches(it.clean) || PRODUCT_NODASH_RE.matches(it.clean)
-        }?.let { return it.first.clean }
+    // number printed WITHOUT its dash can be taken here.
+    for (anchor in anchors(words, ANCHOR_PRODUCT_STRONG)) {
+        valueFor(words, anchor, looksLikeProduct)?.let { return it.first.clean }
+    }
+
+    // Only now "PART NO". A carton carrying both prints them in the same shape,
+    // so taking the part number while a PID is on the label would file stock
+    // against a code Tally has never heard of -- and it would do it silently,
+    // because the value looks perfectly valid.
+    if (anchors(words, ANCHOR_PRODUCT_STRONG).isEmpty()) {
+        for (anchor in anchors(words, ANCHOR_PRODUCT_WEAK)) {
+            valueFor(words, anchor, looksLikeProduct)?.let { return it.first.clean }
+        }
     }
     // Otherwise the only thing on the label shaped like a part number. KAC
     // prints one barcode and no field name at all.

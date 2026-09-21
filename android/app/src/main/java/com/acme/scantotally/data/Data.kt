@@ -485,16 +485,27 @@ interface ScanDao {
               SET stockItemName = :name,
                   unit = :unit,
                   description = CASE WHEN description = '' THEN :description ELSE description END,
-                  flags = TRIM(REPLACE(','||flags||',', ',UNRESOLVED_PID,', ',PROPOSED,'), ',')
+                  flags = TRIM(REPLACE(','||flags||',', ',UNRESOLVED_PID,', ','), ',')
             WHERE pid = :pid AND stockItemName = ''"""
     )
     suspend fun fillInProduct(pid: String, name: String, unit: String, description: String)
 
-    /** Undoes that, for a product Tally turned out to refuse. */
+    /**
+     * Undoes that, for a product Tally turned out to refuse.
+     *
+     * Matched on the part number rather than on a flag. The fill used to leave
+     * a PROPOSED marker behind for this to find, but that marker was set on
+     * SUCCESS and never cleared, so a line that had resolved perfectly wore a
+     * "needs review" badge for ever and looked like it was stuck.
+     */
     @Query(
         """UPDATE session_lines
               SET stockItemName = '',
-                  flags = TRIM(REPLACE(','||flags||',', ',PROPOSED,', ',UNRESOLVED_PID,'), ',')
+                  flags = CASE
+                            WHEN ','||flags||',' LIKE '%,UNRESOLVED_PID,%' THEN flags
+                            WHEN flags = '' THEN 'UNRESOLVED_PID'
+                            ELSE flags || ',UNRESOLVED_PID'
+                          END
             WHERE pid = :pid AND sessionId IN (SELECT id FROM sessions WHERE state != 'POSTED')"""
     )
     suspend fun unfillProduct(pid: String)

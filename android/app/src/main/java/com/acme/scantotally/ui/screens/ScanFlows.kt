@@ -313,18 +313,19 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
         result = result,
         submitLabel = "Done · post stock entry",
         onSubmit = {
-            // A product nobody named reaches Tally as a bare part number with
-            // no description -- "0635484" sitting in the day book, holding
-            // stock that belongs to a product that has a proper name. That
-            // used to happen silently, at submit, with nothing said.
+            // A receipt does not post while a product on it has no name.
             //
-            // So it is said, ONCE, and it is still their decision: the boxes
-            // are counted either way and posting is one tap away. Asking twice
-            // is how a prompt gets learned as something to dismiss.
+            // It used to post anyway, creating "0635484" in Tally with no
+            // description -- which was not a new product at all but the part
+            // number read where the PID was meant, so real stock landed on a
+            // product that does not exist. Two of those reached the day book.
+            //
+            // The relay enforces this as well; it has to, because the phone is
+            // not the only thing that can submit. This is here so the operator
+            // finds out while the carton is still in their hand.
             val unnamed = lines.filter { it.flags.contains("UNRESOLVED_PID") }
                 .map { it.pid }.distinct()
-            if (unnamed.isNotEmpty() && unnamedPrompt == null) unnamedPrompt = unnamed
-            else submitNow()
+            if (unnamed.isNotEmpty()) unnamedPrompt = unnamed else submitNow()
         },
         slots = {
             BoxSlots(
@@ -448,13 +449,6 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                         labelQty = line.qty, flags = listOf("UNRESOLVED_PID"),
                     )
                 }
-            },
-            onPostAnyway = {
-                // Kept non-null so the next Done goes straight through: they
-                // have answered, and asking twice is how a prompt gets learned
-                // as something to dismiss.
-                unnamedPrompt = emptyList()
-                submitNow()
             },
             onCancel = { unnamedPrompt = null },
         )
@@ -1496,32 +1490,30 @@ private fun BoxDraft.Slot.toScanSlot(): ScanSlot = when (this) {
 }
 
 /**
- * Saying, once, that some products on this receipt have no name.
+ * A receipt cannot post while a product on it has no description.
  *
- * An unnamed product is created in Tally under its bare part number --
- * "0635484", no description -- and it is almost never what anyone wanted: it
- * is usually the part-number barcode read where the PID was meant, so the
- * stock lands on an invented product instead of the real one.
+ * This DOES block, and that is the point. An unnamed product is nearly always
+ * the part-number barcode read where the PID was meant -- 0635484 instead of
+ * 2084-9009 -- so posting it puts real stock on a product that does not exist,
+ * under a name nobody can search for. Two of those reached the live day book.
  *
- * It does not block. The cartons are counted whatever is decided here, and
- * posting is one tap away -- the earlier rule stands that a scanned box always
- * becomes stock. What changed is that it no longer happens in silence.
+ * Nothing is lost by stopping here. Every carton stays counted on the receipt,
+ * and it posts by itself the moment a name is given.
  */
 @Composable
 private fun UnnamedProductsDialog(
     pids: List<String>,
     onName: () -> Unit,
-    onPostAnyway: () -> Unit,
     onCancel: () -> Unit,
 ) {
     SuspendScanCapture()
     AlertDialog(
         onDismissRequest = onCancel,
-        title = { Text(if (pids.size == 1) "One product has no name" else "${pids.size} products have no name") },
+        title = { Text(if (pids.size == 1) "One product needs a name" else "${pids.size} products need a name") },
         text = {
             Column {
                 Text(
-                    "These go into Tally as just their number, with no description:",
+                    "This cannot post until these have a description:",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1535,15 +1527,16 @@ private fun UnnamedProductsDialog(
                 }
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    "If a number here is the PART NUMBER rather than the PID, the " +
-                        "stock will land on a product that does not really exist. " +
-                        "The PID is the code printed under PID or Type.",
+                    "If a number here is the PART NUMBER rather than the PID, remove " +
+                        "that box and scan it again: the PID is the code printed " +
+                        "under PID or Type. Nothing is lost -- every carton stays " +
+                        "counted, and this posts by itself once they have names.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = LocalSemantics.current.review.fg,
                 )
             }
         },
         confirmButton = { Button(onClick = onName) { Text("Name them") } },
-        dismissButton = { TextButton(onClick = onPostAnyway) { Text("Post anyway") } },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Back") } },
     )
 }

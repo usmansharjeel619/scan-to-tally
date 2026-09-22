@@ -49,34 +49,53 @@ export function catalogueDescriptionFor(db: DB, pid: string): string {
  * (79 units) sat exactly like that in the live relay, waiting on something
  * that nothing in the system was ever going to do.
  *
- * So the submit makes the proposal itself, from the best name available: the
- * price list's wording when it knows the part, otherwise the part number
- * alone. A bare part number is an ugly item name and an honest one -- it says
- * exactly what was known -- and it can be described properly in Tally
- * afterwards, which is a five-second edit. Stock that never arrived cannot be
- * fixed at all.
+ * So the submit makes the proposal itself -- BUT ONLY WHEN IT HAS A NAME TO
+ * GIVE IT. The price list's wording counts; nothing does not.
+ *
+ * Creating it under the bare part number was tried, on the reasoning that an
+ * ugly honest name beats stock that never arrives. On the dock that produced
+ * items called "0635484" and "2084000" sitting in the day book with no
+ * description -- and those were not new products at all, they were the PART
+ * NUMBER read where the PID was meant, so real stock landed on products that
+ * do not exist. An unnamed product is nearly always a misread, and posting it
+ * makes a mess to be unpicked in Tally by hand.
+ *
+ * So an undescribed product HOLDS ITS RECEIPT instead. Nothing is lost: the
+ * boxes stay on the session, the operator is told which products need a name,
+ * and it posts by itself the moment one is given.
  *
  * Returns the part numbers now waiting to be created, in scan order.
  */
+export interface Proposals {
+  /** Part numbers now on their way to Tally. */
+  creating: string[];
+  /** Part numbers that cannot be created because nobody has named them. */
+  needName: string[];
+}
+
 export function ensureProposalsFor(
   db: DB, sessionId: string, by: string, fallbackUnit: string,
-): string[] {
+): Proposals {
   const rows = db.prepare(
     `SELECT pid, MIN(id) AS first_seen FROM session_lines
       WHERE session_id = ? AND stock_item_name = '' AND TRIM(pid) <> ''
       GROUP BY pid ORDER BY first_seen`,
   ).all(sessionId) as Array<{ pid: string }>;
 
-  const pids: string[] = [];
+  const creating: string[] = [];
+  const needName: string[] = [];
+
   for (const { pid } of rows) {
-    const existing = db.prepare(`SELECT state FROM proposed_items WHERE pid = ?`)
-      .get(pid) as { state: string } | undefined;
+    const existing = db.prepare(`SELECT state, description FROM proposed_items WHERE pid = ?`)
+      .get(pid) as { state: string; description: string } | undefined;
 
     if (!existing) {
       // Whatever is known, and nothing invented. An operator who described it
       // has already been through the propose endpoint and is not overwritten
       // here -- their wording is better than anything this can work out.
       const description = catalogueDescriptionFor(db, pid);
+      if (!description) { needName.push(pid); continue; }
+
       const name = composeItemName(pid, description);
       db.prepare(`
         INSERT INTO proposed_items
@@ -86,6 +105,11 @@ export function ensureProposalsFor(
         .run(pid, name, description, unitForNewItems(db, fallbackUnit), by,
           nowIso(), sessionId);
       audit(db, by, 'ITEM_AUTO_PROPOSED', pid, name);
+    } else if (!String(existing.description ?? '').trim()) {
+      // A proposal carrying no description is not one this will send, however
+      // it came to be there.
+      needName.push(pid);
+      continue;
     } else if (existing.state === 'FAILED') {
       // A submit is the operator asking again. A creation that failed because
       // Tally was mid-backup must not strand the boxes for ever; one that
@@ -94,7 +118,7 @@ export function ensureProposalsFor(
         .run(pid);
     }
 
-    pids.push(pid);
+    creating.push(pid);
   }
-  return pids;
+  return { creating, needName };
 }

@@ -1,14 +1,19 @@
 /**
- * A scanned box always becomes stock.
+ * A product with no description does not reach Tally.
  *
- * The operator is asked what an unknown product is, and is free not to answer:
- * the dock does not stop for data entry, and at the end of a shift nobody
- * types. Until this was fixed, not answering meant the line stayed unresolved
- * for ever, holding its whole receipt back -- waiting for a proposal that
- * nothing in the system was ever going to make. Three boxes, 79 units, sat
- * exactly like that in the live relay.
+ * This rule replaced its opposite, and the reason is worth keeping. Creating
+ * an unnamed product under its bare part number was tried first, so that a
+ * skipped prompt could never strand a carton. On the dock it produced items
+ * called "0635484" and "2084000" in the day book with no description -- and
+ * they were not new products at all. They were the PART NUMBER read where the
+ * PID was meant, so real stock landed on products that do not exist.
  *
- * So these are about what happens when NOBODY answers.
+ * An unnamed product is nearly always a misread. Holding the receipt costs a
+ * prompt; posting it costs an afternoon in Tally unpicking stock from an
+ * invented item.
+ *
+ * Nothing is lost either way: the boxes stay on the session and it posts by
+ * itself the moment a name arrives.
  */
 import { test, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -35,7 +40,7 @@ after(() => app.close());
 beforeEach(() => {
   for (const t of ['session_lines', 'sessions', 'session_vouchers', 'proposed_items',
                    'pid_bindings', 'stock_items', 'received_boxes', 'devices',
-                   'product_catalogue']) {
+                   'product_catalogue', 'item_vouchers', 'posted_batches']) {
     db.prepare(`DELETE FROM ${t}`).run();
   }
   db.prepare(`INSERT INTO devices (id, name, company, godown, token_hash, operator, created_at)
@@ -75,43 +80,55 @@ function proposal(pid: string): any {
   return db.prepare(`SELECT * FROM proposed_items WHERE pid = ?`).get(pid);
 }
 
-test('a box nobody described still gets a product, named after the part number', async () => {
+function catalogue(pid: string, description: string): void {
+  db.prepare(`INSERT INTO product_catalogue (pid, description, source, alternates, loaded_at)
+              VALUES (?,?,'test','[]',?)`).run(pid, description, nowIso());
+}
+
+test('a product nobody named is NOT created, and its receipt does not post', async () => {
   const id = await openSession();
   await line(id, { pid: NEW_PID, boxSerial: 'GUM145', qty: 20, raw: 'x', manual: true });
 
-  // Nobody calls /proposed-items. This is the operator skipping the prompt.
   const r = await submit(id);
   assert.equal(r.statusCode, 200, r.body);
+  const body = r.json();
 
+  assert.equal(body.state, 'QUEUED');
+  assert.deepEqual(body.needName, [NEW_PID], 'the operator must be told which product to name');
+  assert.match(body.message, /no description/);
+  assert.equal(proposal(NEW_PID), undefined, 'nothing may be created under a bare part number');
+
+  // And the boxes are still there, waiting rather than lost.
+  const kept = db.prepare(`SELECT COUNT(*) c FROM session_lines WHERE session_id=?`).get(id) as any;
+  assert.equal(kept.c, 1);
+});
+
+test('the price list is a name, so a part it knows goes straight through', async () => {
+  catalogue(NEW_PID, 'PHOTO SENSOR W/REED');
+
+  const id = await openSession();
+  await line(id, { pid: NEW_PID, boxSerial: 'GUM146', qty: 20, raw: 'x' });
+  const body = (await submit(id)).json();
+
+  assert.deepEqual(body.needName, [], 'nobody needs to type what the price list already knows');
   const p = proposal(NEW_PID);
-  assert.ok(p, 'no product was proposed for a scanned box');
-  assert.equal(p.state, 'PENDING');
-  assert.equal(p.name, NEW_PID, 'an undescribed product is named after its part number');
+  assert.ok(p, 'it should have been created');
+  assert.equal(p.name, `${NEW_PID} PHOTO SENSOR W/REED`);
   assert.equal(p.base_units, 'Nos', 'the unit must be learned from the company books');
   assert.equal(p.batchwise, 1, 'a box is a batch');
 });
 
-test('the price list names it when it knows the part', async () => {
-  db.prepare(`INSERT INTO product_catalogue (pid, description, source, alternates, loaded_at)
-              VALUES (?,?,'test','[]',?)`).run(NEW_PID, 'PHOTO SENSOR W/REED', nowIso());
-
-  const id = await openSession();
-  await line(id, { pid: NEW_PID, boxSerial: 'GUM146', qty: 20, raw: 'x' });
-  await submit(id);
-
-  assert.equal(proposal(NEW_PID).name, `${NEW_PID} PHOTO SENSOR W/REED`);
-});
-
-test('a part number carrying letters is treated like any other', async () => {
+test('a part number carrying letters is held like any other unnamed product', async () => {
   const id = await openSession();
   const r = await line(id, { pid: LETTERED_PID, boxSerial: 'HFE927', qty: 24, raw: 'x' });
   assert.equal(r.statusCode, 200, r.body);
-  await submit(id);
 
-  assert.equal(proposal(LETTERED_PID)?.name, LETTERED_PID);
+  const body = (await submit(id)).json();
+  assert.deepEqual(body.needName, [LETTERED_PID]);
+  assert.equal(proposal(LETTERED_PID), undefined);
 });
 
-test('what the operator typed is never overwritten by a guess', async () => {
+test('what the operator typed is what gets created', async () => {
   const id = await openSession();
   await line(id, { pid: NEW_PID, boxSerial: 'GUM147', qty: 20, raw: 'x' });
 
@@ -121,11 +138,13 @@ test('what the operator typed is never overwritten by a guess', async () => {
   });
   assert.equal(described.statusCode, 200, described.body);
 
-  await submit(id);
+  const body = (await submit(id)).json();
+  assert.deepEqual(body.needName, []);
   assert.equal(proposal(NEW_PID).name, `${NEW_PID} PHOTO SENSOR W/REED`);
 });
 
 test('a creation Tally refused is tried again on the next submit', async () => {
+  catalogue(NEW_PID, 'PHOTO SENSOR W/REED');
   const id = await openSession();
   await line(id, { pid: NEW_PID, boxSerial: 'GUM148', qty: 20, raw: 'x' });
   await submit(id);
@@ -143,6 +162,7 @@ test('a creation Tally refused is tried again on the next submit', async () => {
 });
 
 test('the receipt posts by itself once the product exists', async () => {
+  catalogue(NEW_PID, 'PHOTO SENSOR W/REED');
   const id = await openSession();
   await line(id, { pid: NEW_PID, boxSerial: 'GUM150', qty: 20, raw: 'x' });
 
@@ -162,4 +182,24 @@ test('the receipt posts by itself once the product exists', async () => {
     'the box scanned before Tally answered must be filled in, not left behind');
   assert.equal(row.unit, 'Nos');
   assert.ok(!row.flags.includes('UNRESOLVED_PID'));
+});
+
+test('a box with no part number or no box number is refused outright', async () => {
+  // Not a box. A line without one posts a voucher that says nothing: stock
+  // against no product, or a batch with no name.
+  const id = await openSession();
+
+  const noPid = await line(id, { pid: '  ', boxSerial: 'GUM151', qty: 5, raw: 'x' });
+  assert.equal(noPid.statusCode, 400, noPid.body);
+  assert.equal(noPid.json().error, 'pid_required');
+
+  const noBox = await line(id, { pid: NEW_PID, boxSerial: '', qty: 5, raw: 'x' });
+  assert.equal(noBox.statusCode, 400, noBox.body);
+  assert.equal(noBox.json().error, 'box_required');
+
+  const noQty = await line(id, { pid: NEW_PID, boxSerial: 'GUM152', qty: 0, raw: 'x' });
+  assert.equal(noQty.statusCode, 400, noQty.body);
+
+  assert.equal((db.prepare(`SELECT COUNT(*) c FROM session_lines WHERE session_id=?`)
+    .get(id) as any).c, 0, 'none of them may be recorded');
 });

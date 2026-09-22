@@ -258,16 +258,18 @@ function dispatchItemCreation(pid: string, company: string): boolean {
 }
 
 /**
- * Gives every unresolved line on a session a product, asking nobody.
+ * Creates every product on a session that can be created, and names the ones
+ * that cannot.
  *
- * The rule enforced here is that A SCANNED BOX ALWAYS BECOMES STOCK. See
- * ensureProposalsFor for why, and for what the name ends up being; this half
- * is only the sending, which is what needs a live connector.
+ * A product with no description is NOT created. See ensureProposalsFor for
+ * why; this half is only the sending, which is what needs a live connector.
  */
-function ensureProductsFor(sessionId: string, company: string, by: string): string[] {
-  const pids = ensureProposalsFor(db, sessionId, by, DEFAULT_UNIT);
-  for (const pid of pids) dispatchItemCreation(pid, company);
-  return pids;
+function ensureProductsFor(
+  sessionId: string, company: string, by: string,
+): { creating: string[]; needName: string[] } {
+  const p = ensureProposalsFor(db, sessionId, by, DEFAULT_UNIT);
+  for (const pid of p.creating) dispatchItemCreation(pid, company);
+  return p;
 }
 
 /** Everything that could not be sent because Tally was unreachable. */
@@ -814,10 +816,23 @@ app.post('/api/v1/sessions/:id/lines', async (req, reply) => {
   if (!s) return reply.code(404).send({ error: 'no_such_session' });
   if (s.state !== 'DRAFT') return reply.code(409).send({ error: 'session_closed', state: s.state });
 
-  const pid = String(b.pid ?? '');
-  const boxSerial = String(b.boxSerial ?? '');
+  const pid = String(b.pid ?? '').trim();
+  const boxSerial = String(b.boxSerial ?? '').trim();
   const qty = Number(b.qty);
   const lineId = b.lineId ? Number(b.lineId) : undefined;
+
+  // A box is a part number, a box number and a quantity. Missing any of the
+  // three it is not a box, and a line without one would post a voucher that
+  // says nothing: a batch with no name, or stock against no product.
+  //
+  // The device refuses these too, but this is the boundary that has to hold --
+  // a line arriving over HTTP is untrusted input and becomes stock.
+  if (!lineId) {
+    if (!pid) return reply.code(400).send({ error: 'pid_required',
+      message: 'That box has no part number, so it cannot be received.' });
+    if (!boxSerial) return reply.code(400).send({ error: 'box_required',
+      message: 'That box has no box number, so it cannot be received.' });
+  }
 
   const resolved = resolvePid(db, pid);
 
@@ -1029,27 +1044,34 @@ app.post('/api/v1/sessions/:id/submit', async (req, reply) => {
         message: 'Count matches the book exactly. Nothing to adjust.' };
     }
     if (unresolved.n > 0) {
-      // Nobody is asked, and nothing waits for a human. Every product still
-      // missing is created now, from the price list's wording or from the part
-      // number alone, and the receipt posts by itself the moment Tally answers.
+      // Products the price list can name are created now, without anyone being
+      // asked, and the receipt posts by itself the moment Tally answers.
       //
-      // This used to hold and hope: if the operator had skipped the "what is
-      // it?" prompt there was no proposal, so the wait was for something that
-      // would never happen and the boxes stayed on the phone for ever.
-      const creating = ensureProductsFor(id, d.company, `device:${d.id}`);
+      // A product NOBODY can name holds the receipt instead. It is nearly
+      // always the part number read where the PID was meant, and posting it
+      // puts real stock on a product that does not exist -- which is a mess to
+      // unpick in Tally by hand. Nothing is lost: the boxes stay here and this
+      // posts itself the moment a name arrives.
+      const { creating, needName } = ensureProductsFor(id, d.company, `device:${d.id}`);
 
       db.prepare(`UPDATE sessions SET state='QUEUED', submitted_at=? WHERE id=?`)
         .run(nowIso(), id);
       audit(db, `device:${d.id}`, 'SESSION_HELD_FOR_PRODUCT', id,
-        `${unresolved.n} line(s) waiting on ${creating.join(', ')}`);
+        `${unresolved.n} line(s); creating ${creating.join(', ') || 'none'}` +
+        `${needName.length ? `; needs a name: ${needName.join(', ')}` : ''}`);
+
       return {
         sessionId: id,
         state: 'QUEUED',
         dispatched: false,
         unresolvedLines: unresolved.n,
         waiting: true,
-        message: `Adding ${creating.length === 1 ? 'a new product' : `${creating.length} new products`} ` +
-          'to Tally. Nothing is lost -- this posts by itself in a moment.',
+        needName,
+        message: needName.length
+          ? `${needName.join(', ')} ${needName.length === 1 ? 'has' : 'have'} no description, ` +
+            'so this cannot post yet. Add one and it goes straight through.'
+          : `Adding ${creating.length === 1 ? 'a new product' : `${creating.length} new products`} ` +
+            'to Tally. Nothing is lost -- this posts by itself in a moment.',
       };
     }
     return reply.code(400).send({

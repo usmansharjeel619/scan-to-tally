@@ -18,6 +18,11 @@ process.env.STT_DB = ':memory:';
 process.env.STT_PORT = '0';
 process.env.STT_CONNECTOR_SECRET = 'test-secret';
 process.env.LOG_LEVEL = 'silent';
+// The merging is OFF in production until TallyPrime's real way of naming a
+// voucher is known -- it answered a request to alter voucher 999999 by
+// creating voucher 51. These still describe what it must do once it is on,
+// and the case for it being off is locked down at the bottom of this file.
+process.env.STT_MERGE_VOUCHERS = '1';
 
 const { app, db, applyJobResult } = await import('../src/server.ts');
 const { applySync, nowIso } = await import('../src/db.ts');
@@ -207,4 +212,31 @@ test('a despatch is never folded into a standing voucher', async () => {
   const { jobs } = buildJobs(db, outId);
   assert.equal(jobs[0]!.alterMasterId, undefined);
   assert.equal(jobs[0]!.lines[0]!.boxes.length, 1, 'a despatch sends only what is going out');
+});
+
+test('with merging off, nothing is altered and no earlier box is re-sent', async () => {
+  // THE SAFETY PROPERTY, while TallyPrime's alter is not understood.
+  //
+  // Both halves have to go together. Sending the earlier boxes to a voucher
+  // that is being CREATED rather than replaced counts every previous carton a
+  // second time -- worse than the duplicate voucher it was meant to avoid.
+  const first = await receipt([{ pid: PID, box: 'HIA634', qty: 35 }]);
+  await submit(first);
+  tallyAccepts(first, () => '39');
+
+  const second = await receipt([{ pid: PID, box: 'HLA133', qty: 35 }]);
+
+  const was = process.env.STT_MERGE_VOUCHERS;
+  process.env.STT_MERGE_VOUCHERS = '';
+  try {
+    // Imported with the flag ALREADY clear -- the module reads it once, at
+    // load, so a copy imported beforehand would still have it set.
+    const { buildJobs: build } = await import('../src/job.ts?merge-off');
+    const { jobs } = build(db, second);
+    assert.equal(jobs[0]!.alterMasterId, undefined, 'must not ask Tally to alter anything');
+    assert.deepEqual(jobs[0]!.lines[0]!.boxes.map((b) => b.boxSerial), ['HLA133'],
+      'only the boxes just scanned; the earlier one is already in its own voucher');
+  } finally {
+    process.env.STT_MERGE_VOUCHERS = was;
+  }
 });

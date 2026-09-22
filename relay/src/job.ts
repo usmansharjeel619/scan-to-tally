@@ -73,6 +73,28 @@ export interface BuildResult {
 }
 
 /**
+ * Whether a later receipt joins the voucher its product already has.
+ *
+ * OFF, because TallyPrime does not do what this needs. Asked to alter voucher
+ * 999999 -- a number it cannot have -- it created voucher 51 instead of
+ * reporting that there was nothing to alter. So ACTION="Alter" with a
+ * <MASTERID> child is not how that version identifies a voucher, and every
+ * merge would instead be a duplicate: the product's stock counted twice, in
+ * two vouchers, from one pallet.
+ *
+ * The connector catches that and refuses (ALTER_BECAME_CREATE) -- but only
+ * AFTER Tally has already made the voucher, so the refusal is a report, not a
+ * defence. Until the right way to name a voucher is known, not asking is the
+ * only safe position.
+ *
+ * Both halves are gated together on purpose. With merging off, a job must
+ * carry ONLY the boxes just scanned: sending the earlier ones as well, to a
+ * voucher that is now being created rather than replaced, would count every
+ * previous carton a second time.
+ */
+const MERGE_INTO_ONE_VOUCHER = process.env.STT_MERGE_VOUCHERS === '1';
+
+/**
  * Builds every voucher a session should become.
  *
  * ONE VOUCHER PER PRODUCT. A pallet of four products becomes four Physical
@@ -211,7 +233,7 @@ function existing(
   db: DB, kind: string, company: string, godown: string,
   stockItemName: string, exceptSessionId: string,
 ): { masterId?: string; boxes: JobBox[] } {
-  if (kind !== 'INCOMING') return { boxes: [] };
+  if (kind !== 'INCOMING' || !MERGE_INTO_ONE_VOUCHER) return { boxes: [] };
 
   const v = db.prepare(
     `SELECT master_id FROM item_vouchers

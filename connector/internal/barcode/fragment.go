@@ -69,6 +69,19 @@ var (
 	reBoxID = regexp.MustCompile(`^[A-Z]{2,4}[0-9]{3,6}$`)
 
 	reDigits = regexp.MustCompile(`^[0-9]+$`)
+
+	// The part number, which is NOT the PID and must never be taken for one.
+	//
+	// A Simplex carton prints both: PID 2084-9009 and part no 0635484, inches
+	// apart, and only the PID identifies the product in Tally. Reading the
+	// part number instead creates a second product called "0635484" with no
+	// description, holding stock that belongs to the real one -- which is
+	// exactly what happened on the dock.
+	//
+	// Eight bare digits are the one genuine ambiguity, and those go to the
+	// PID: that spelling is on real cartons and is what resolves.
+	reDashlessPID = regexp.MustCompile(`^[0-9]{8}$`)
+	rePartNumber  = regexp.MustCompile(`^[0-9]{5,9}[A-Z]{0,4}$`)
 )
 
 // ClassifyFragment decides which slot a lone barcode belongs in.
@@ -202,6 +215,16 @@ func ClassifyFragmentFor(raw string, want Slot) Fragment {
 		// they are refused because each is a barcode printed inches away on
 		// the same label: the 16-digit box serial, the small bare number under
 		// QTY, and the two-letter country of origin.
+		// The eight-digit spelling of a PID, before anything mistakes it for
+		// a part number.
+		if reDashlessPID.MatchString(v) {
+			return Fragment{Kind: FragmentProduct, Value: v, Raw: raw}
+		}
+		// The barcode printed beside the one they wanted. Redirected rather
+		// than accepted: taking it would invent a product.
+		if rePartNumber.MatchString(v) {
+			return Fragment{Kind: FragmentNotMine, Hint: HintPartNo, Raw: raw}
+		}
 		if reSerial16.MatchString(v) ||
 			(reDigits.MatchString(v) && len(v) <= 4) ||
 			len(v) < 3 || len(v) > MaxSerialLen {

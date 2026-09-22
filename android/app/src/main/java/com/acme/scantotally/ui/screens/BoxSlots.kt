@@ -283,8 +283,16 @@ fun SlotEntryDialog(
             if (unusual) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "Most product codes look like 4098-9792. Check it, or carry on " +
-                        "if this supplier is different.",
+                    // Said plainly, because this is the mistake that actually
+                    // happens: the part number is printed inches from the PID
+                    // and reads like a product code. Taking it invents a
+                    // product and puts real stock on it.
+                    if (looksLikeAPartNumber(value))
+                        "That looks like the PART NUMBER, not the PID. The PID is " +
+                            "printed under PID or Type, like 2084-9009."
+                    else
+                        "Most product codes look like 4098-9792. Check it, or carry on " +
+                            "if this supplier is different.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = LocalSemantics.current.review.fg,
                 )
@@ -298,4 +306,17 @@ fun SlotEntryDialog(
         },
         dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
     )
+}
+
+/**
+ * Five to nine bare digits, optionally with a letter tail, and not the
+ * eight-digit spelling of a PID.
+ *
+ * Kept beside the dialog that says it out loud rather than in the classifier:
+ * the classifier's job is to refuse a scan, and this one's is to warn about
+ * something typed, which is always allowed through.
+ */
+private fun looksLikeAPartNumber(v: String): Boolean {
+    val s = v.trim().uppercase()
+    return !Regex("^[0-9]{8}$").matches(s) && Regex("^[0-9]{5,9}[A-Z]{0,4}$").matches(s)
 }

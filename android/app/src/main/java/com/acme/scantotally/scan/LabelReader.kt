@@ -95,11 +95,15 @@ private val DESCRIPTION_ENDS = setOf(
  */
 private val PRODUCT_RE = Regex("^[0-9]{4,6}-[0-9]{2,5}[A-Z]{0,4}$")
 
-/** The same part number with the dash dropped, and its lettered forms. Only
- *  ever read under an anchor, where the label says which field it is -- read
- *  blind, these are indistinguishable from half a dozen other numbers OCR
- *  finds on a carton. */
-private val PRODUCT_NODASH_RE = Regex("^[0-9]{6,8}[A-Z]{0,4}$")
+/** The same PID with the dash dropped: EXACTLY eight digits.
+ *
+ *  Widening this to six-to-nine digits was a mistake. A Simplex carton prints
+ *  a seven-digit part number (0635484) beside its PID, and the wider pattern
+ *  let the camera read that as the product -- inventing an item called
+ *  "0635484" with no description, holding stock that belongs to 2084-9009.
+ *
+ *  Only ever read under an anchor, where the label says which field it is. */
+private val PRODUCT_NODASH_RE = Regex("^[0-9]{8}$")
 private val BOXID_RE = Regex("^[A-Z]{2,4}[0-9]{3,6}$")
 private val SERIAL16_RE = Regex("^[0-9]{16}$")
 private val NUMBER_RE = Regex("^[0-9]{1,6}$")

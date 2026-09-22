@@ -594,6 +594,31 @@
       "raw": "CN",
       "want": "PRODUCT",
       "kind": "NOT_MINE"
+    },
+    {
+      "name": "asked for the product, given the part number beside it",
+      "raw": "0635484",
+      "want": "PRODUCT",
+      "kind": "NOT_MINE"
+    },
+    {
+      "name": "asked for the product, given a seven-digit part number",
+      "raw": "2084000",
+      "want": "PRODUCT",
+      "kind": "NOT_MINE"
+    },
+    {
+      "name": "asked for the product, given a part number with a letter tail",
+      "raw": "0677197CN",
+      "want": "PRODUCT",
+      "kind": "NOT_MINE"
+    },
+    {
+      "name": "asked for the product, given a real PID",
+      "raw": "2084-9009",
+      "want": "PRODUCT",
+      "kind": "PRODUCT",
+      "value": "2084-9009"
     }
   ]
 }

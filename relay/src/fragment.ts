@@ -48,6 +48,21 @@ const SERIAL16 = /^[0-9]{16}$/;
  */
 const BOX_ID = /^[A-Z]{2,4}[0-9]{3,6}$/;
 
+/**
+ * The part number, which is NOT the PID and must never be taken for one.
+ *
+ * A Simplex carton prints both: PID 2084-9009 and part no 0635484, inches
+ * apart, and only the PID identifies the product in Tally. Reading the part
+ * number instead creates a second product called "0635484" with no
+ * description, holding stock that belongs to the real one -- which is exactly
+ * what happened on the dock.
+ *
+ * Eight bare digits are the one genuine ambiguity, and those go to the PID:
+ * that spelling is on real cartons and is what resolves.
+ */
+const DASHLESS_PID = /^[0-9]{8}$/;
+const PART_NUMBER = /^[0-9]{5,9}[A-Z]{0,4}$/;
+
 const DIGITS = /^[0-9]+$/;
 
 /**
@@ -148,6 +163,12 @@ export function classifyFragmentFor(raw: string, want: Slot): Fragment {
       // are refused because each is a barcode printed inches away on the same
       // label: the 16-digit box serial, the small bare number under QTY, and
       // the two-letter country of origin.
+      // The eight-digit spelling of a PID, before anything mistakes it for a
+      // part number.
+      if (DASHLESS_PID.test(v)) return { kind: 'PRODUCT', value: v, raw };
+      // The barcode printed beside the one they wanted. Redirected rather than
+      // accepted: taking it would invent a product.
+      if (PART_NUMBER.test(v)) return { kind: 'NOT_MINE', hint: 'PART_NO', raw };
       if (SERIAL16.test(v) || (DIGITS.test(v) && v.length <= 4) ||
           v.length < 3 || v.length > MAX_SERIAL_LEN) {
         return { kind: 'NOT_MINE', hint: 'PART_NO', raw };

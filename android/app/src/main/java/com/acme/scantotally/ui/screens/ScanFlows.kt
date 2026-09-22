@@ -122,6 +122,8 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
     var defaultUnit by remember { mutableStateOf("") }
     var submitting by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<String?>(null) }
+    /** Products on this receipt that nobody has named. Asked about once. */
+    var unnamedPrompt by remember { mutableStateOf<List<String>?>(null) }
 
     LaunchedEffect(Unit) {
         val r = app.repository()
@@ -269,20 +271,13 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
         }
     }
 
-    ScanScaffold(
-        title = "Incoming",
-        subtitle = draft.waitingFor(),
-        nav = nav,
-        sessionId = sessionId,
-        last = last,
-        lines = lines,
-        submitting = submitting,
-        result = result,
-        submitLabel = "Done · post stock entry",
-        onSubmit = {
-            scope.launch {
-                val r = repo ?: return@launch
-                val sid = sessionId ?: return@launch
+    // One place that posts, called from the Done button and from the answer to
+    // the unnamed-products prompt.
+    val submitNow: () -> Unit = {
+        scope.launch {
+            val r = repo
+            val sid = sessionId
+            if (r != null && sid != null) {
                 submitting = true
                 val resp = r.submit(sid)
                 submitting = false
@@ -303,6 +298,33 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                     else -> "Saved. Waiting for Tally to come back."
                 }
             }
+        }
+        Unit
+    }
+
+    ScanScaffold(
+        title = "Incoming",
+        subtitle = draft.waitingFor(),
+        nav = nav,
+        sessionId = sessionId,
+        last = last,
+        lines = lines,
+        submitting = submitting,
+        result = result,
+        submitLabel = "Done · post stock entry",
+        onSubmit = {
+            // A product nobody named reaches Tally as a bare part number with
+            // no description -- "0635484" sitting in the day book, holding
+            // stock that belongs to a product that has a proper name. That
+            // used to happen silently, at submit, with nothing said.
+            //
+            // So it is said, ONCE, and it is still their decision: the boxes
+            // are counted either way and posting is one tap away. Asking twice
+            // is how a prompt gets learned as something to dismiss.
+            val unnamed = lines.filter { it.flags.contains("UNRESOLVED_PID") }
+                .map { it.pid }.distinct()
+            if (unnamed.isNotEmpty() && unnamedPrompt == null) unnamedPrompt = unnamed
+            else submitNow()
         },
         slots = {
             BoxSlots(
@@ -406,6 +428,35 @@ fun IncomingScreen(nav: NavController, scans: Flow<RawScan>, resumeId: String? =
                     app.feedback.play(d.beep)
                 }
             },
+        )
+    }
+
+    unnamedPrompt?.let { pids ->
+        UnnamedProductsDialog(
+            pids = pids,
+            onName = {
+                // Straight to the prompt for the first one, with the carton's
+                // own line to hand. Naming it clears the flag, so the next tap
+                // on Done asks about whatever is still left.
+                unnamedPrompt = null
+                val line = lines.firstOrNull { it.pid == pids.first() }
+                if (line != null) {
+                    newProduct = ScanDecision(
+                        outcome = Outcome2.FLAGGED, beep = Beep.FLAGGED,
+                        message = "New product ${line.pid}",
+                        pid = line.pid, boxSerial = line.boxSerial,
+                        labelQty = line.qty, flags = listOf("UNRESOLVED_PID"),
+                    )
+                }
+            },
+            onPostAnyway = {
+                // Kept non-null so the next Done goes straight through: they
+                // have answered, and asking twice is how a prompt gets learned
+                // as something to dismiss.
+                unnamedPrompt = emptyList()
+                submitNow()
+            },
+            onCancel = { unnamedPrompt = null },
         )
     }
 
@@ -1442,4 +1493,57 @@ private fun BoxDraft.Slot.toScanSlot(): ScanSlot = when (this) {
     BoxDraft.Slot.PRODUCT -> ScanSlot.PRODUCT
     BoxDraft.Slot.BOX -> ScanSlot.BOX
     BoxDraft.Slot.QUANTITY -> ScanSlot.QUANTITY
+}
+
+/**
+ * Saying, once, that some products on this receipt have no name.
+ *
+ * An unnamed product is created in Tally under its bare part number --
+ * "0635484", no description -- and it is almost never what anyone wanted: it
+ * is usually the part-number barcode read where the PID was meant, so the
+ * stock lands on an invented product instead of the real one.
+ *
+ * It does not block. The cartons are counted whatever is decided here, and
+ * posting is one tap away -- the earlier rule stands that a scanned box always
+ * becomes stock. What changed is that it no longer happens in silence.
+ */
+@Composable
+private fun UnnamedProductsDialog(
+    pids: List<String>,
+    onName: () -> Unit,
+    onPostAnyway: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    SuspendScanCapture()
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text(if (pids.size == 1) "One product has no name" else "${pids.size} products have no name") },
+        text = {
+            Column {
+                Text(
+                    "These go into Tally as just their number, with no description:",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(10.dp))
+                for (pid in pids) {
+                    Text(
+                        pid,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "If a number here is the PART NUMBER rather than the PID, the " +
+                        "stock will land on a product that does not really exist. " +
+                        "The PID is the code printed under PID or Type.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = LocalSemantics.current.review.fg,
+                )
+            }
+        },
+        confirmButton = { Button(onClick = onName) { Text("Name them") } },
+        dismissButton = { TextButton(onClick = onPostAnyway) { Text("Post anyway") } },
+    )
 }

@@ -122,7 +122,14 @@ export class ConnectorHub {
               connectedAt: nowIso(),
             },
           });
-          audit(this.db, `connector:${id}`, 'CONNECTED', p.company ?? '', p.hostname ?? '');
+          // The VERSION goes in the record, not just the hostname.
+          //
+          // Whether a connector understands a newly shipped job is a question
+          // that comes up every time one is deployed, and answering it by
+          // asking the person at the other end -- who has to go and look --
+          // wastes their time and mine.
+          audit(this.db, `connector:${id}`, 'CONNECTED', p.company ?? '',
+            `${p.hostname ?? ''} v${p.version || '?'}`);
           socket.send(JSON.stringify({ type: 'hello_ack', payload: { ok: true } }));
           // A connector that has just reconnected may have missed jobs while it
           // was away, so hand it everything still outstanding.

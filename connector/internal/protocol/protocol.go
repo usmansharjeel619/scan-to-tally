@@ -205,14 +205,18 @@ type PostVoucherJob struct {
 	DeviceID  string    `json:"deviceId,omitempty"`
 	Narration string    `json:"narration,omitempty"`
 
-	// AlterMasterID names an existing Tally voucher to REPLACE rather than
-	// create, so a product keeps ONE Physical Stock voucher and new cartons are
-	// added to it.
+	// RemoteID is the relay's own name for the voucher, written into Tally's
+	// REMOTEID attribute so a later receipt can find it again.
+	RemoteID string `json:"remoteId,omitempty"`
+
+	// Alter REPLACES the voucher carrying RemoteID rather than creating one,
+	// so a product keeps ONE Physical Stock voucher and new cartons are added
+	// to it.
 	//
 	// When it is set, Lines carry every box the voucher must end up holding --
 	// the ones already on it as well as the ones just scanned -- because Tally
 	// replaces a voucher on alter instead of merging into it.
-	AlterMasterID string `json:"alterMasterId,omitempty"`
+	Alter bool `json:"alter,omitempty"`
 
 	Lines []Line `json:"lines"`
 }

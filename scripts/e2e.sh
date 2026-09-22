@@ -52,6 +52,7 @@ say "starting relay on :$RELAY_PORT"
 cd "$ROOT/relay"
 [ -d node_modules ] || npm install --no-audit --no-fund >/dev/null 2>&1
 STT_PORT=$RELAY_PORT STT_DB="$WORK/relay.db" STT_CONNECTOR_SECRET="$SECRET" LOG_LEVEL=warn \
+  STT_MERGE_VOUCHERS=1 \
   node --experimental-strip-types src/server.ts > "$WORK/relay.log" 2>&1 &
 RELAY_PID=$!
 wait_for "http://127.0.0.1:$RELAY_PORT/health"

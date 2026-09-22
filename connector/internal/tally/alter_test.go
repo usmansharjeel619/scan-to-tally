@@ -11,13 +11,17 @@ import (
 
 // One Physical Stock voucher per product, added to rather than repeated.
 //
-// The dangerous edge is that ACTION="Alter" without a MASTERID does not fail --
-// Tally creates ANOTHER voucher, the counters say success, and the stock is
-// doubled on the books until somebody counts a shelf weeks later. So the
-// request has to carry the id, and the answer has to be read rather than
-// assumed.
+// The voucher is named by the REMOTEID ATTRIBUTE, which is what this company's
+// own export turned out to use:
+//
+//	<VOUCHER REMOTEID="b86e20e1-...-0000003f" VCHKEY="..." VCHTYPE="Physical Stock" ACTION="Create">
+//
+// A <MASTERID> child element names nothing on the way in. Sending ACTION="Alter"
+// with one was answered by TallyPrime CREATING a second voucher -- counters all
+// reporting success, stock doubled on the books. So the attribute has to be
+// there, and the answer has to be read rather than assumed.
 
-func physicalStockFor(masterID string) Voucher {
+func physicalStockFor(remoteID string, alter bool) Voucher {
 	v := NewPhysicalStock("sess#0", "Mobile scan", time.Now(), []InventoryEntry{{
 		StockItemName: "4090-5201 MINI IAM",
 		Qty:           Qty{Value: 70, Unit: "Nos"},
@@ -26,12 +30,13 @@ func physicalStockFor(masterID string) Voucher {
 			{BatchName: "HLA133", GodownName: "Main Location", Qty: Qty{Value: 35, Unit: "Nos"}},
 		},
 	}})
-	v.AlterMasterID = masterID
+	v.RemoteID = remoteID
+	v.Alter = alter
 	return v
 }
 
-func TestBuildImportCreatesWhenNoVoucherIsNamed(t *testing.T) {
-	xml, err := BuildImport("ACME", physicalStockFor(""))
+func TestBuildImportCreatesWhenNotAltering(t *testing.T) {
+	xml, err := BuildImport("ACME", physicalStockFor("STT-sess-0", false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,13 +44,14 @@ func TestBuildImportCreatesWhenNoVoucherIsNamed(t *testing.T) {
 	if !strings.Contains(got, `ACTION="Create"`) {
 		t.Errorf("expected a create; got:\n%s", got)
 	}
-	if strings.Contains(got, "MASTERID") {
-		t.Errorf("a create must not name a voucher to replace; got:\n%s", got)
+	// The name still goes on, so the NEXT receipt can find this voucher.
+	if !strings.Contains(got, `REMOTEID="STT-sess-0"`) {
+		t.Errorf("a create must still name itself for later; got:\n%s", got)
 	}
 }
 
 func TestBuildImportAltersTheVoucherItNames(t *testing.T) {
-	xml, err := BuildImport("ACME", physicalStockFor("39"))
+	xml, err := BuildImport("ACME", physicalStockFor("STT-sess-0", true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,9 +59,13 @@ func TestBuildImportAltersTheVoucherItNames(t *testing.T) {
 	if !strings.Contains(got, `ACTION="Alter"`) {
 		t.Errorf("expected an alter; got:\n%s", got)
 	}
-	// Without this Tally creates a second voucher and reports success.
-	if !strings.Contains(got, "<MASTERID>39</MASTERID>") {
+	// As an ATTRIBUTE. A <MASTERID> child was ignored and Tally created a
+	// second voucher, reporting success in every counter.
+	if !strings.Contains(got, `REMOTEID="STT-sess-0"`) {
 		t.Errorf("an alter must name the voucher it replaces; got:\n%s", got)
+	}
+	if strings.Contains(got, "<MASTERID>") {
+		t.Errorf("MASTERID as a child element identifies nothing; got:\n%s", got)
 	}
 	// Every box the voucher should end up holding, because Tally replaces.
 	for _, batch := range []string{"HIA634", "HLA133"} {
@@ -82,7 +92,7 @@ func TestAlterThatCreatedAVoucherIsRefused(t *testing.T) {
  <CREATED>1</CREATED><ALTERED>0</ALTERED><DELETED>0</DELETED>
  <LASTVCHID>43</LASTVCHID><ERRORS>0</ERRORS></RESPONSE>`)
 
-	_, err := c.Import(context.Background(), physicalStockFor("39"))
+	_, err := c.Import(context.Background(), physicalStockFor("STT-sess-0", true))
 	if err == nil {
 		t.Fatal("an alter that created a second voucher must not be reported as success")
 	}
@@ -96,7 +106,7 @@ func TestAlterOfAVoucherThatIsGoneIsNamedAsSuch(t *testing.T) {
  <CREATED>0</CREATED><ALTERED>0</ALTERED><DELETED>0</DELETED>
  <LASTVCHID>0</LASTVCHID><IGNORED>1</IGNORED><ERRORS>0</ERRORS></RESPONSE>`)
 
-	_, err := c.Import(context.Background(), physicalStockFor("39"))
+	_, err := c.Import(context.Background(), physicalStockFor("STT-sess-0", true))
 	if err == nil {
 		t.Fatal("expected the missing voucher to be reported")
 	}
@@ -112,7 +122,7 @@ func TestAlterThatAlteredIsSuccess(t *testing.T) {
  <CREATED>0</CREATED><ALTERED>1</ALTERED><DELETED>0</DELETED>
  <LASTVCHID>39</LASTVCHID><ERRORS>0</ERRORS></RESPONSE>`)
 
-	res, err := c.Import(context.Background(), physicalStockFor("39"))
+	res, err := c.Import(context.Background(), physicalStockFor("STT-sess-0", true))
 	if err != nil {
 		t.Fatalf("a successful alter was reported as a failure: %v", err)
 	}

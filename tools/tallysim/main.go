@@ -73,8 +73,10 @@ type salesOrder struct {
 
 type postedVoucher struct {
 	ID, Type, Reference, Narration string
-	Date                           time.Time
-	Lines                          int
+	// What the importer called it, echoed back on export the way Tally does.
+	RemoteID string
+	Date     time.Time
+	Lines    int
 	// What went out, so a later "how much of this order is already gone"
 	// question can be answered the way Tally answers it.
 	Despatched []despatchedLine
@@ -182,9 +184,12 @@ type reqEnvelope struct {
 }
 
 type simVoucher struct {
-	VchType         string `xml:"VCHTYPE,attr"`
-	Action          string `xml:"ACTION,attr"`
-	MasterID        string `xml:"MASTERID"`
+	VchType string `xml:"VCHTYPE,attr"`
+	Action  string `xml:"ACTION,attr"`
+	// An ATTRIBUTE, which is how the real thing carries it. A <MASTERID> child
+	// names nothing on the way in -- real TallyPrime answered an alter that
+	// used one by creating a second voucher.
+	RemoteID        string `xml:"REMOTEID,attr"`
 	Date            string `xml:"DATE"`
 	VoucherTypeName string `xml:"VOUCHERTYPENAME"`
 	Reference       string `xml:"REFERENCE"`
@@ -268,12 +273,12 @@ func (s *sim) export(w http.ResponseWriter, id string, godown string) {
 		var d strings.Builder
 		d.WriteString("<ENVELOPE>\n <HEADER><VERSION>1</VERSION><STATUS>1</STATUS></HEADER>\n <BODY><DATA><TALLYMESSAGE>\n")
 		for _, v := range s.vouchers {
-			fmt.Fprintf(&d, "<VOUCHER VCHTYPE=%q ACTION=\"None\" OBJVIEW=\"Invoice Voucher View\">"+
+			fmt.Fprintf(&d, "<VOUCHER REMOTEID=%q VCHTYPE=%q ACTION=\"Create\" OBJVIEW=\"Invoice Voucher View\">"+
 				"<MASTERID>%s</MASTERID><ALTERID>%s</ALTERID>"+
 				"<DATE>%s</DATE><VOUCHERTYPENAME>%s</VOUCHERTYPENAME>"+
 				"<VOUCHERNUMBER>%s</VOUCHERNUMBER><NARRATION>%s</NARRATION>"+
 				"<PERSISTEDVIEW>Invoice Voucher View</PERSISTEDVIEW></VOUCHER>\n",
-				v.Type, v.ID, v.ID, v.Date.Format("20060102"), v.Type, v.ID, esc(v.Narration))
+				v.RemoteID, v.Type, v.ID, v.ID, v.Date.Format("20060102"), v.Type, v.ID, esc(v.Narration))
 		}
 		d.WriteString(" </TALLYMESSAGE></DATA></BODY>\n</ENVELOPE>\n")
 		w.Header().Set("Content-Type", "text/xml")
@@ -489,7 +494,7 @@ func (s *sim) importVoucher(w http.ResponseWriter, env reqEnvelope, fault string
 	var target *postedVoucher
 	if altering {
 		for i := range s.vouchers {
-			if s.vouchers[i].ID == v.MasterID {
+			if v.RemoteID != "" && s.vouchers[i].RemoteID == v.RemoteID {
 				target = &s.vouchers[i]
 				break
 			}
@@ -497,7 +502,7 @@ func (s *sim) importVoucher(w http.ResponseWriter, env reqEnvelope, fault string
 		if target == nil {
 			// Nothing altered and nothing created, which is what real Tally
 			// reports when the voucher named is not there.
-			log.Printf("alter of unknown voucher %s -- nothing to alter", v.MasterID)
+			log.Printf("alter of unknown voucher %q -- nothing to alter", v.RemoteID)
 			w.Header().Set("Content-Type", "text/xml")
 			fmt.Fprint(w, `<RESPONSE>
  <CREATED>0</CREATED><ALTERED>0</ALTERED><DELETED>0</DELETED>
@@ -548,7 +553,7 @@ func (s *sim) importVoucher(w http.ResponseWriter, env reqEnvelope, fault string
 	}
 
 	s.vouchers = append(s.vouchers, postedVoucher{
-		ID: id, Type: v.VoucherTypeName, Reference: v.Reference,
+		ID: id, Type: v.VoucherTypeName, Reference: v.Reference, RemoteID: v.RemoteID,
 		Narration: v.Narration, Date: time.Now(), Lines: len(v.Entries),
 		Despatched: despatched, Applied: applied,
 	})

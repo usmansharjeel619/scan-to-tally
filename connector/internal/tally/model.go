@@ -133,17 +133,31 @@ type Voucher struct {
 	PartyLedgerName string
 	VoucherNumber   string // usually left empty so Tally auto-numbers
 
-	// AlterMasterID names an existing voucher to REPLACE rather than create.
+	// RemoteID is OUR name for this voucher, carried in the REMOTEID ATTRIBUTE
+	// of <VOUCHER>. It is how a later receipt finds the voucher again.
 	//
-	// It is Tally's own id for that voucher -- the LASTVCHID it answered with
-	// when the voucher was made. Set for a Physical Stock voucher that a
-	// product already has, so a new carton is added to the one entry for that
-	// product instead of raising another beside it.
+	// The attribute is the whole point. Tally's own export writes
 	//
-	// Tally REPLACES a voucher on alter; it does not merge. Entries must
-	// therefore carry every batch the voucher should end up holding, old ones
-	// included. Sending only the new batches deletes the rest.
-	AlterMasterID string
+	//   <VOUCHER REMOTEID="b86e20e1-...-0000003f" VCHKEY="b86e20e1-...-00000008"
+	//            VCHTYPE="Physical Stock" ACTION="Create" ...>
+	//
+	// -- REMOTEID and VCHKEY are attributes, and MASTERID is a child element
+	// that identifies nothing on the way in. Sending ACTION="Alter" with a
+	// <MASTERID> child was answered by TallyPrime creating a NEW voucher,
+	// which doubles the stock and reports success.
+	//
+	// The value is ours and deliberately unlike Tally's own, which are
+	// "<company GUID>-<masterid in hex>". Minting one in that shape would risk
+	// colliding with a voucher Tally numbers that way later, and the collision
+	// would mean altering somebody else's entry.
+	RemoteID string
+
+	// Alter REPLACES the voucher carrying RemoteID rather than creating one.
+	//
+	// Tally replaces; it does not merge. Entries must therefore carry every
+	// batch the voucher should end up holding, old ones included. Sending only
+	// the new batches deletes the rest.
+	Alter bool
 
 	Entries []InventoryEntry
 }

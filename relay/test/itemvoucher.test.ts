@@ -77,6 +77,14 @@ async function receipt(boxes: Array<{ pid: string; box: string; qty: number }>):
   return id;
 }
 
+/** The name the relay gave the voucher that a session became. */
+function remoteIdOf(sessionId: string, item: string = ITEM): string {
+  const v = db.prepare(
+    `SELECT voucher_key FROM session_vouchers WHERE session_id=? AND stock_item_name=?`,
+  ).get(sessionId, item) as { voucher_key: string };
+  return `STT-${v.voucher_key}`;
+}
+
 /** Posts a session the way the connector would: one result per voucher. */
 function tallyAccepts(sessionId: string, masterIdFor: (item: string) => string): void {
   const vouchers = db.prepare(
@@ -105,7 +113,10 @@ test('the second receipt of a product alters the first voucher instead of making
   const { jobs } = buildJobs(db, second);
 
   assert.equal(jobs.length, 1);
-  assert.equal(jobs[0]!.alterMasterId, '39', 'the new carton must go into the voucher that exists');
+  assert.equal(jobs[0]!.alter, true, 'the new carton must go INTO the voucher that exists');
+  assert.equal(jobs[0]!.remoteId, remoteIdOf(first),
+    'and it must name that voucher by the id we gave it -- an ATTRIBUTE Tally answers to, ' +
+    'not its internal MASTERID, which names nothing on the way in');
 });
 
 test('an alter carries the boxes the voucher already has, or Tally deletes them', async () => {
@@ -145,8 +156,10 @@ test('each product keeps its own voucher', async () => {
   const { jobs } = buildJobs(db, third);
 
   const byItem = new Map(jobs.map((j) => [j.lines[0]!.stockItemName, j]));
-  assert.equal(byItem.get(ITEM)!.alterMasterId, '39');
-  assert.equal(byItem.get(OTHER_ITEM)!.alterMasterId, '40');
+  assert.equal(byItem.get(ITEM)!.remoteId, remoteIdOf(first, ITEM));
+  assert.equal(byItem.get(OTHER_ITEM)!.remoteId, remoteIdOf(second, OTHER_ITEM));
+  assert.equal(byItem.get(ITEM)!.alter, true);
+  assert.equal(byItem.get(OTHER_ITEM)!.alter, true);
   assert.equal(byItem.get(ITEM)!.lines[0]!.boxes.length, 2);
   assert.equal(byItem.get(OTHER_ITEM)!.lines[0]!.boxes.length, 2);
 });
@@ -188,7 +201,7 @@ test('a voucher Tally no longer has is forgotten, so the retry raises a new one'
 
   // The boxes are kept, so the new voucher still gets all of them.
   const { jobs } = buildJobs(db, second);
-  assert.equal(jobs[0]!.alterMasterId, undefined, 'nothing to alter now -- create');
+  assert.equal(jobs[0]!.alter, false, 'nothing to alter now -- create');
   assert.deepEqual(jobs[0]!.lines[0]!.boxes.map((b) => b.boxSerial).sort(),
     ['HIA634', 'HLA133']);
 });
@@ -210,7 +223,7 @@ test('a despatch is never folded into a standing voucher', async () => {
     .run(outId, PID, 'HIA634', 5, 'Nos', ITEM, nowIso());
 
   const { jobs } = buildJobs(db, outId);
-  assert.equal(jobs[0]!.alterMasterId, undefined);
+  assert.equal(jobs[0]!.alter, false);
   assert.equal(jobs[0]!.lines[0]!.boxes.length, 1, 'a despatch sends only what is going out');
 });
 
@@ -233,7 +246,7 @@ test('with merging off, nothing is altered and no earlier box is re-sent', async
     // load, so a copy imported beforehand would still have it set.
     const { buildJobs: build } = await import('../src/job.ts?merge-off');
     const { jobs } = build(db, second);
-    assert.equal(jobs[0]!.alterMasterId, undefined, 'must not ask Tally to alter anything');
+    assert.equal(jobs[0]!.alter, false, 'must not ask Tally to alter anything');
     assert.deepEqual(jobs[0]!.lines[0]!.boxes.map((b) => b.boxSerial), ['HLA133'],
       'only the boxes just scanned; the earlier one is already in its own voucher');
   } finally {

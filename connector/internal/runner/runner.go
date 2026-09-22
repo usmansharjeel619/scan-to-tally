@@ -142,13 +142,13 @@ func (r *Runner) processOne(ctx context.Context, job store.Job) {
 		// The content is EXPECTED to grow between attempts: another receipt of
 		// the same product lands in the meantime and its boxes join the set.
 		// Refusing that stranded the receipt for a danger that does not exist.
-		if pj.AlterMasterID == "" {
+		if !pj.Alter {
 			log.Error("conflicting retry refused", "err", err)
 			r.fail(ctx, job, "CONFLICTING_RETRY", err.Error())
 			return
 		}
 		log.Info("content changed since the last attempt; safe for an alter",
-			"altering", pj.AlterMasterID)
+			"remoteId", pj.RemoteID)
 		// Both cleared, or the next check treats a handled condition as a
 		// store failure and retries this job for ever without ever sending it.
 		posted, err = nil, nil
@@ -348,7 +348,7 @@ func buildVoucher(pj protocol.PostVoucherJob) (tally.Voucher, error) {
 		// One voucher per product, added to rather than repeated. The relay has
 		// sent every box the voucher must end up holding, so replacing it
 		// wholesale is what is wanted.
-		v.AlterMasterID = pj.AlterMasterID
+		v.RemoteID, v.Alter = pj.RemoteID, pj.Alter
 		if pj.VoucherType != "" {
 			v.Type = tally.VoucherType(pj.VoucherType)
 			// Only a party-bearing type should carry the supplier; Physical

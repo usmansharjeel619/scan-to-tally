@@ -68,11 +68,13 @@ type wireVoucher struct {
 	VchType string `xml:"VCHTYPE,attr"`
 	Action  string `xml:"ACTION,attr"`
 
-	// MasterID names the voucher being altered. Tally matches on it, and it is
-	// the only thing that tells an alter from a create -- ACTION="Alter"
-	// without it silently creates another voucher, which is the failure this
-	// whole path exists to avoid.
-	MasterID string `xml:"MASTERID,omitempty"`
+	// RemoteID is how Tally finds an existing voucher, and it is an ATTRIBUTE.
+	//
+	// Confirmed against this company's own export:
+	//   <VOUCHER REMOTEID="b86e20e1-...-0000003f" VCHKEY="..." VCHTYPE="..." ACTION="Create">
+	// A <MASTERID> child element identifies nothing on the way in -- sending
+	// ACTION="Alter" with one made TallyPrime create a second voucher.
+	RemoteID string `xml:"REMOTEID,attr,omitempty"`
 
 	Date            string `xml:"DATE"`
 	EffectiveDate   string `xml:"EFFECTIVEDATE,omitempty"`
@@ -179,7 +181,7 @@ func BuildImport(company string, v Voucher) ([]byte, error) {
 	}
 
 	action := "Create"
-	if v.AlterMasterID != "" {
+	if v.Alter {
 		action = "Alter"
 	}
 
@@ -201,7 +203,7 @@ func BuildImport(company string, v Voucher) ([]byte, error) {
 							// boxes it had, because Tally replaces rather than
 							// merges.
 							Action:          action,
-							MasterID:        v.AlterMasterID,
+							RemoteID:        v.RemoteID,
 							Date:            v.Date.Format(dateFmt),
 							EffectiveDate:   v.Date.Format(dateFmt),
 							VoucherTypeName: string(v.Type),

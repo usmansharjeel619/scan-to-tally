@@ -244,13 +244,21 @@ CREATE INDEX IF NOT EXISTS idx_vouchers_session ON session_vouchers(session_id);
 -- the same sensor over a week are one entry in the day book with three boxes
 -- on it, which is how the warehouse thinks about it and how it was asked for.
 --
--- master_id is Tally's own id for that voucher (its LASTVCHID when created).
--- It is what lets the next receipt ALTER the voucher rather than create one.
+-- remote_id is OUR name for that voucher, written into Tally's REMOTEID
+-- attribute when it was created. It is what lets the next receipt ALTER the
+-- voucher rather than create one.
+--
+-- Tally's own internal id is no use for this. Its export shows REMOTEID and
+-- VCHKEY as ATTRIBUTES of <VOUCHER> while MASTERID is a child element that
+-- names nothing on the way in -- an alter carrying a <MASTERID> was answered
+-- by creating a second voucher. tally_master_id is kept only so a row can be
+-- matched to a day book by eye.
 CREATE TABLE IF NOT EXISTS item_vouchers (
   company          TEXT NOT NULL,
   godown           TEXT NOT NULL,
   stock_item_name  TEXT NOT NULL,
-  master_id        TEXT NOT NULL,
+  remote_id        TEXT NOT NULL,
+  tally_master_id  TEXT NOT NULL DEFAULT '',
   created_at       TEXT NOT NULL,
   updated_at       TEXT NOT NULL,
   PRIMARY KEY (company, godown, stock_item_name)

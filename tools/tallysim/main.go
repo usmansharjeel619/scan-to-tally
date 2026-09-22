@@ -259,6 +259,28 @@ func (s *sim) export(w http.ResponseWriter, id string, godown string) {
 	b.WriteString("<ENVELOPE>\n <HEADER>\n  <VERSION>1</VERSION>\n  <STATUS>1</STATUS>\n </HEADER>\n")
 	b.WriteString(" <BODY>\n  <DESC>\n   <CMPINFO>\n    <COMPANY>0</COMPANY>\n    <STOCKITEM>0</STOCKITEM>\n   </CMPINFO>\n  </DESC>\n  <DATA>\n   <COLLECTION>\n")
 
+	// The day book, which is how a voucher is read back out of Tally. Emitted
+	// with the identity fields a real voucher carries, because the whole point
+	// of reading it is to find out what an ALTER has to name -- and a
+	// simulator that invented a REMOTEID it does not really issue would send
+	// the connector hunting for something Tally never wrote.
+	if strings.EqualFold(id, "DayBook") {
+		var d strings.Builder
+		d.WriteString("<ENVELOPE>\n <HEADER><VERSION>1</VERSION><STATUS>1</STATUS></HEADER>\n <BODY><DATA><TALLYMESSAGE>\n")
+		for _, v := range s.vouchers {
+			fmt.Fprintf(&d, "<VOUCHER VCHTYPE=%q ACTION=\"None\" OBJVIEW=\"Invoice Voucher View\">"+
+				"<MASTERID>%s</MASTERID><ALTERID>%s</ALTERID>"+
+				"<DATE>%s</DATE><VOUCHERTYPENAME>%s</VOUCHERTYPENAME>"+
+				"<VOUCHERNUMBER>%s</VOUCHERNUMBER><NARRATION>%s</NARRATION>"+
+				"<PERSISTEDVIEW>Invoice Voucher View</PERSISTEDVIEW></VOUCHER>\n",
+				v.Type, v.ID, v.ID, v.Date.Format("20060102"), v.Type, v.ID, esc(v.Narration))
+		}
+		d.WriteString(" </TALLYMESSAGE></DATA></BODY>\n</ENVELOPE>\n")
+		w.Header().Set("Content-Type", "text/xml")
+		fmt.Fprint(w, d.String())
+		return
+	}
+
 	switch id {
 	case "STT_Companies":
 		fmt.Fprintf(&b, "<COMPANY NAME=%q><NAME>%s</NAME><STARTINGFROM>20250401</STARTINGFROM><GUID>sim-co-1</GUID></COMPANY>\n",

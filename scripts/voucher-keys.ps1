@@ -25,6 +25,8 @@
 
 param(
     [string] $Base = "http://127.0.0.1:9000",
+    [string] $Company = "",
+    [string] $InstallDir = "C:\ScanToTally",
     [int]    $DaysBack = 7
 )
 
@@ -42,27 +44,62 @@ Write-Host "Scan to Tally - reading how this Tally names a voucher" -ForegroundC
 Write-Host "Target: $Base   (nothing is changed)" -ForegroundColor DarkGray
 Write-Host ""
 
-# --- which company is open --------------------------------------------------
-$companies = Send-Tally @"
+# --- which company ----------------------------------------------------------
+#
+# The connector's own config first. It is the name the working connector is
+# already using, spelled exactly as Tally has it -- which is a better source
+# than anything this script can work out, and it is right there on the disk.
+#
+# Reading it from Tally came first and failed on a machine where the company
+# was plainly open: the query looked for a <NAME> element and Tally had put
+# the name in the NAME ATTRIBUTE of <COMPANY>. Both are read now.
+$company = $Company
+
+if (-not $company) {
+    $cfg = Join-Path $InstallDir "connector.json"
+    if (Test-Path $cfg) {
+        try {
+            $company = (Get-Content $cfg -Raw | ConvertFrom-Json).tally.company
+            if ($company) { Write-Host "Company (from the connector's config): $company" -ForegroundColor Green }
+        } catch { }
+    }
+}
+
+if (-not $company) {
+    $companies = Send-Tally @"
 <ENVELOPE>
  <HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST>
-  <TYPE>Collection</TYPE><ID>List of Companies</ID></HEADER>
+  <TYPE>Collection</TYPE><ID>STT_Companies</ID></HEADER>
  <BODY><DESC><STATICVARIABLES>
   <SVEXPORTFORMAT>`$`$SysName:XML</SVEXPORTFORMAT>
  </STATICVARIABLES>
- <TDL><TDLMESSAGE><COLLECTION NAME="List of Companies" ISMODIFY="No">
-  <TYPE>Company</TYPE><NATIVEMETHOD>Name</NATIVEMETHOD>
+ <TDL><TDLMESSAGE><COLLECTION NAME="STT_Companies" ISMODIFY="No">
+  <TYPE>Company</TYPE><NATIVEMETHOD>NAME</NATIVEMETHOD>
  </COLLECTION></TDLMESSAGE></TDL></DESC></BODY>
 </ENVELOPE>
 "@
 
-$company = ([regex]::Matches($companies, "<NAME>(.*?)</NAME>") |
-            ForEach-Object { $_.Groups[1].Value } | Select-Object -First 1)
+    # The attribute first, then the element. Tally uses one or the other
+    # depending on version and how the collection was asked for.
+    $company = ([regex]::Matches($companies, '<COMPANY\b[^>]*\bNAME="([^"]+)"') |
+                ForEach-Object { $_.Groups[1].Value } | Select-Object -First 1)
+    if (-not $company) {
+        $company = ([regex]::Matches($companies, "<NAME>(.*?)</NAME>") |
+                    ForEach-Object { $_.Groups[1].Value } | Select-Object -First 1)
+    }
+    if ($company) { Write-Host "Company (from Tally): $company" -ForegroundColor Green }
+}
+
 if (-not $company) {
-    Write-Host "Could not read the open company. Is TallyPrime running with a company loaded?" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Could not work out the company name." -ForegroundColor Red
+    Write-Host "Pass it directly:" -ForegroundColor Yellow
+    Write-Host '   & ([scriptblock]::Create((irm <this url>))) -Company "RGM16-9-2026"'
+    Write-Host ""
+    Write-Host "What Tally answered, so it can be read by hand:" -ForegroundColor DarkGray
+    if ($companies) { Write-Host ($companies.Substring(0, [Math]::Min(600, $companies.Length))) }
     return
 }
-Write-Host "Company: $company" -ForegroundColor Green
 
 # --- the day book, which is Tally's own XML for its own vouchers ------------
 $from = (Get-Date).AddDays(-$DaysBack).ToString("yyyyMMdd")
@@ -81,8 +118,36 @@ $daybook = Send-Tally @"
 "@
 
 if ($daybook -match "<LINEERROR>(.*?)</LINEERROR>") {
-    Write-Host "Tally said: $($Matches[1])" -ForegroundColor Yellow
-    return
+    Write-Host "DayBook: $($Matches[1])" -ForegroundColor DarkGray
+    Write-Host "Trying the Vouchers collection instead..." -ForegroundColor DarkGray
+
+    # Not every build answers to the DayBook report id. A collection of
+    # vouchers asks the same question a different way.
+    $daybook = Send-Tally @"
+<ENVELOPE>
+ <HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST>
+  <TYPE>Collection</TYPE><ID>STT_Vouchers</ID></HEADER>
+ <BODY><DESC><STATICVARIABLES>
+  <SVEXPORTFORMAT>`$`$SysName:XML</SVEXPORTFORMAT>
+  <SVCURRENTCOMPANY>$company</SVCURRENTCOMPANY>
+  <SVFROMDATE>$from</SVFROMDATE><SVTODATE>$to</SVTODATE>
+ </STATICVARIABLES>
+ <TDL><TDLMESSAGE><COLLECTION NAME="STT_Vouchers" ISMODIFY="No">
+  <TYPE>Voucher</TYPE>
+  <NATIVEMETHOD>MASTERID</NATIVEMETHOD>
+  <NATIVEMETHOD>ALTERID</NATIVEMETHOD>
+  <NATIVEMETHOD>VOUCHERNUMBER</NATIVEMETHOD>
+  <NATIVEMETHOD>VOUCHERTYPENAME</NATIVEMETHOD>
+  <NATIVEMETHOD>NARRATION</NATIVEMETHOD>
+ </COLLECTION></TDLMESSAGE></DESC></BODY>
+</ENVELOPE>
+"@
+
+    if ($daybook -match "<LINEERROR>(.*?)</LINEERROR>") {
+        Write-Host "Tally said: $($Matches[1])" -ForegroundColor Yellow
+        Write-Host "Neither the day book nor a voucher collection could be read." -ForegroundColor Yellow
+        return
+    }
 }
 
 # --- the opening tag of each voucher, verbatim ------------------------------

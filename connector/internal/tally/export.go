@@ -733,3 +733,92 @@ func firstNonEmpty(vals ...string) string {
 	}
 	return ""
 }
+
+// --- reading a voucher back -------------------------------------------------
+
+// VoucherIdentity is how Tally names one of its own vouchers.
+//
+// Every field here is read from Tally's export, never constructed. That is the
+// entire point of this type: two attempts to name a voucher ourselves were
+// both answered by TallyPrime CREATING one instead -- a <MASTERID> child
+// element, then a REMOTEID of our own choosing. Tally's own remote ids look
+// like "<company GUID>-<masterid in hex>", so it evidently parses them, and
+// anything it cannot parse it treats as a new voucher.
+//
+// So the only safe way to alter a voucher is to ask Tally what it calls that
+// voucher and hand the answer straight back.
+type VoucherIdentity struct {
+	// RemoteID is the REMOTEID attribute, verbatim. This is what an alter must
+	// carry.
+	RemoteID string
+	// VchKey is the VCHKEY attribute, kept for diagnosis.
+	VchKey string
+	// MasterID is Tally's internal id, which is what an import reports back as
+	// LASTVCHID. It is how a voucher we posted is found again here.
+	MasterID      string
+	VoucherNumber string
+	VoucherType   string
+	// Narration carries our [STT:...] marker, which is how a voucher is
+	// confirmed to be OURS before it is replaced.
+	Narration string
+}
+
+// ListVoucherIdentities reads the day book and returns how Tally names each
+// voucher in it.
+//
+// Deliberately narrow: it returns identities and narrations, not contents. The
+// connector has no business pulling whole vouchers out of an accounting system
+// and nothing here needs them.
+func (c *Client) ListVoucherIdentities(ctx context.Context, from, to time.Time) ([]VoucherIdentity, error) {
+	// Built through the encoder rather than by formatting a string, so a
+	// company name carrying an ampersand cannot produce a broken document.
+	env := exportEnvelope{
+		Header: exportHeader{Version: 1, TallyRequest: "Export", Type: "Data", ID: "DayBook"},
+		Body: exportBody{Desc: exportDesc{StaticVariables: staticVariables{
+			CurrentCompany: c.cfg.Company,
+			ExportFormat:   "$$SysName:XML",
+			FromDate:       from.Format(dateFmt),
+			ToDate:         to.Format(dateFmt),
+		}}},
+	}
+	var buf bytes.Buffer
+	enc := xml.NewEncoder(&buf)
+	enc.Indent("", " ")
+	if err := enc.Encode(env); err != nil {
+		return nil, business("BUILD_FAILED", err.Error())
+	}
+
+	body, err := c.post(ctx, buf.Bytes())
+	if err != nil {
+		return nil, err
+	}
+	if le := extractTag(string(body), "LINEERROR"); le != "" {
+		return nil, c.noteAppError(classifyMessage(le))
+	}
+
+	var out []VoucherIdentity
+	err = walk(body, "VOUCHER", func(d *xml.Decoder, se xml.StartElement) error {
+		var row struct {
+			MasterID      string `xml:"MASTERID"`
+			VoucherNumber string `xml:"VOUCHERNUMBER"`
+			VoucherType   string `xml:"VOUCHERTYPENAME"`
+			Narration     string `xml:"NARRATION"`
+		}
+		if err := d.DecodeElement(&row, &se); err != nil {
+			return nil // skip an unreadable voucher rather than losing the batch
+		}
+		out = append(out, VoucherIdentity{
+			RemoteID:      strings.TrimSpace(attr(se, "REMOTEID")),
+			VchKey:        strings.TrimSpace(attr(se, "VCHKEY")),
+			MasterID:      strings.TrimSpace(row.MasterID),
+			VoucherNumber: strings.TrimSpace(row.VoucherNumber),
+			VoucherType:   strings.TrimSpace(row.VoucherType),
+			Narration:     strings.TrimSpace(row.Narration),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, business("PARSE_FAILED", err.Error())
+	}
+	return out, nil
+}

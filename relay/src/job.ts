@@ -35,23 +35,26 @@ export interface PostJob {
    */
   sessionId: string;
   /**
-   * Our own name for the voucher, written into Tally's REMOTEID attribute.
-   *
-   * Set on every Physical Stock voucher so a later receipt of the same product
-   * can find it again. Deliberately unlike Tally's own remote ids, which are
-   * "<company GUID>-<masterid in hex>": minting one in that shape would risk
-   * colliding with a voucher Tally later numbers the same way, and the
-   * collision would mean altering somebody else's entry.
-   */
-  remoteId?: string;
-  /**
-   * Replace the voucher carrying remoteId rather than create one.
+   * Replace the product's existing voucher rather than create one.
    *
    * The lines then carry every box the voucher must end up holding, old and
    * new together, because Tally replaces a voucher on alter rather than
    * merging into it.
    */
   alter?: boolean;
+  /**
+   * Tally's own id for that voucher, the day it was posted, and the [STT:...]
+   * marker in its narration.
+   *
+   * None of this is sent to Tally as a name. The connector looks the voucher
+   * up in the day book with these and sends back whatever REMOTEID TALLY
+   * reports for it -- because naming a voucher ourselves was answered twice by
+   * Tally creating one instead, which doubles the stock and reports success.
+   * The marker is how a voucher that is not ours is never replaced.
+   */
+  alterMasterId?: string;
+  alterDate?: string;
+  alterMarker?: string;
   /** The session the voucher came from, for attributing the result back. */
   parentSessionId: string;
   kind: string;
@@ -218,10 +221,11 @@ export function buildJobs(
         // rather than posted again. Ordered by first appearance, so the index
         // is reproducible from the same session.
         sessionId: key,
-        // The voucher this product already has, or a fresh name for the one
-        // about to be made.
-        remoteId: held.remoteId ?? `STT-${key}`,
-        alter: held.remoteId !== undefined,
+        // The voucher this product already has, if it has one.
+        alter: held.masterId !== undefined,
+        alterMasterId: held.masterId,
+        alterDate: held.date,
+        alterMarker: held.marker,
         narration: s.narration ||
           `Mobile scan | operator ${s.operator ?? ''} | session ${s.id}`,
         lines: [{ ...line, boxes: mergeBoxes(held.boxes, line.boxes) }],
@@ -245,13 +249,14 @@ export function buildJobs(
 function existing(
   db: DB, kind: string, company: string, godown: string,
   stockItemName: string, exceptSessionId: string,
-): { remoteId?: string; boxes: JobBox[] } {
+): { masterId?: string; date?: string; marker?: string; boxes: JobBox[] } {
   if (kind !== 'INCOMING' || !MERGE_INTO_ONE_VOUCHER) return { boxes: [] };
 
   const v = db.prepare(
-    `SELECT remote_id FROM item_vouchers
+    `SELECT tally_master_id, voucher_date, marker FROM item_vouchers
       WHERE company = ? AND godown = ? AND stock_item_name = ?`,
-  ).get(company, godown, stockItemName) as { remote_id: string } | undefined;
+  ).get(company, godown, stockItemName) as
+    { tally_master_id: string; voucher_date: string; marker: string } | undefined;
 
   const posted = db.prepare(
     `SELECT box_serial, qty, mfg_date, pid FROM posted_batches
@@ -271,7 +276,9 @@ function existing(
     { box_serial: string; qty: number; mfg_date: string | null; pid: string }>;
 
   return {
-    remoteId: v?.remote_id || undefined,
+    masterId: v?.tally_master_id || undefined,
+    date: v?.voucher_date || undefined,
+    marker: v?.marker || undefined,
     boxes: [...posted, ...inFlight].map((b) => ({
       boxSerial: b.box_serial,
       qty: b.qty,

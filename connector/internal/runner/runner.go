@@ -148,7 +148,7 @@ func (r *Runner) processOne(ctx context.Context, job store.Job) {
 			return
 		}
 		log.Info("content changed since the last attempt; safe for an alter",
-			"remoteId", pj.RemoteID)
+			"voucher", pj.AlterMasterID)
 		// Both cleared, or the next check treats a handled condition as a
 		// store failure and retries this job for ever without ever sending it.
 		posted, err = nil, nil
@@ -192,6 +192,29 @@ func (r *Runner) processOne(ctx context.Context, job store.Job) {
 		return
 	}
 
+	// Altering means asking Tally what it calls that voucher and handing the
+	// answer straight back. Naming it ourselves was tried twice -- a MASTERID
+	// child, then a REMOTEID of our own -- and TallyPrime answered both by
+	// CREATING a voucher, reporting success while doubling the stock.
+	if pj.Alter {
+		id, err := r.resolveAlterTarget(ctx, pj)
+		if err != nil {
+			if tally.IsTransient(err) {
+				r.retry(ctx, job, "RESOLVE_TARGET", err.Error())
+			} else {
+				var te *tally.Error
+				code, msg := "ALTER_TARGET_MISSING", err.Error()
+				if errors.As(err, &te) {
+					code, msg = te.Code, te.Message
+				}
+				r.fail(ctx, job, code, msg)
+			}
+			return
+		}
+		voucher.RemoteID = id
+		log.Info("altering the voucher Tally named", "remoteId", id)
+	}
+
 	res, err := r.tc.Import(ctx, voucher)
 	if err != nil {
 		var te *tally.Error
@@ -224,6 +247,66 @@ func (r *Runner) processOne(ctx context.Context, job store.Job) {
 		SessionID: pj.SessionID, JobID: job.ID, OK: true,
 		TallyVoucherID: res.LastVchID, Attempts: job.Attempts + 1, CompletedAt: time.Now(),
 	})
+}
+
+// markerKey pulls the session key out of a "[STT:...]" narration marker.
+func markerKey(marker string) string {
+	m := strings.TrimSpace(marker)
+	prefix := "[" + tally.IdempotencyMarker + ":"
+	if !strings.HasPrefix(m, prefix) || !strings.HasSuffix(m, "]") {
+		return ""
+	}
+	return m[len(prefix) : len(m)-1]
+}
+
+// resolveAlterTarget asks Tally for its own name for the voucher being replaced.
+//
+// Nothing here is constructed. Tally's remote ids look like
+// "<company GUID>-<masterid in hex>", so it clearly parses them, and anything
+// it cannot parse it treats as a new voucher -- which is how two earlier
+// attempts at naming a voucher ended up doubling stock instead of merging it.
+//
+// The voucher must also carry OUR marker in its narration. Without that check
+// a wrong master id -- a restored backup, a renumbering, a bug here -- would
+// mean replacing a voucher belonging to somebody else, wiping whatever was on
+// it. A duplicate is an annoyance; that is destruction.
+func (r *Runner) resolveAlterTarget(ctx context.Context, pj protocol.PostVoucherJob) (string, error) {
+	if pj.AlterMasterID == "" {
+		return "", tally.NewBusiness("ALTER_TARGET_MISSING",
+			"There is no record of which voucher to add to.")
+	}
+
+	day := pj.AlterDate
+	if day.IsZero() {
+		day = time.Now()
+	}
+	// A day either side: the connector's clock and Tally's need not agree, and
+	// a voucher posted near midnight would otherwise be invisible.
+	ids, err := r.tc.ListVoucherIdentities(ctx, day.AddDate(0, 0, -1), day.AddDate(0, 0, 1))
+	if err != nil {
+		return "", err
+	}
+
+	for _, id := range ids {
+		if id.MasterID != pj.AlterMasterID {
+			continue
+		}
+		if pj.AlterMarker != "" && !strings.Contains(id.Narration, pj.AlterMarker) {
+			return "", tally.NewBusiness("ALTER_TARGET_NOT_OURS", fmt.Sprintf(
+				"Voucher %s is not the one this receipt created, so it will not be "+
+					"replaced. A new voucher will be raised instead.", pj.AlterMasterID))
+		}
+		if id.RemoteID == "" {
+			return "", tally.NewBusiness("ALTER_TARGET_UNNAMED", fmt.Sprintf(
+				"Tally gives voucher %s no REMOTEID, so it cannot be altered by name.",
+				pj.AlterMasterID))
+		}
+		return id.RemoteID, nil
+	}
+
+	return "", tally.NewBusiness("ALTER_TARGET_MISSING", fmt.Sprintf(
+		"Voucher %s is not in Tally any more, so there was nothing to add to. "+
+			"A new voucher will be raised for this product instead.", pj.AlterMasterID))
 }
 
 // preflight re-checks against LIVE Tally what the device could only check
@@ -348,7 +431,21 @@ func buildVoucher(pj protocol.PostVoucherJob) (tally.Voucher, error) {
 		// One voucher per product, added to rather than repeated. The relay has
 		// sent every box the voucher must end up holding, so replacing it
 		// wholesale is what is wanted.
-		v.RemoteID, v.Alter = pj.RemoteID, pj.Alter
+		v.Alter = pj.Alter
+
+		// A STANDING VOUCHER KEEPS ITS ORIGINAL MARKER.
+		//
+		// Tally replaces the narration along with everything else, so writing
+		// this receipt's marker would overwrite the one that identifies the
+		// voucher -- and the NEXT receipt, checking for the marker it recorded,
+		// would find a stranger's voucher and refuse to touch it. The whole
+		// merge then stops after exactly one carton. Caught end to end: "session
+		// did not recover, stuck in FAILED".
+		if pj.Alter {
+			if key := markerKey(pj.AlterMarker); key != "" {
+				v.IdempotencyKey = key
+			}
+		}
 		if pj.VoucherType != "" {
 			v.Type = tally.VoucherType(pj.VoucherType)
 			// Only a party-bearing type should carry the supplier; Physical

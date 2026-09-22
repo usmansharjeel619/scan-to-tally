@@ -93,6 +93,9 @@ type despatchedLine struct {
 	OrderNo string
 }
 
+// The company GUID Tally stamps into every remote id it issues.
+const simCompanyGUID = "b86e20e1-8fbd-4c2b-8d06-c43790530bd3"
+
 func newSim() *sim {
 	s := &sim{
 		company:   "ACME FIRE SYSTEMS",
@@ -499,7 +502,15 @@ func (s *sim) importVoucher(w http.ResponseWriter, env reqEnvelope, fault string
 				break
 			}
 		}
-		if target == nil {
+		// A name Tally never issued is not a miss -- the real thing CREATES a
+		// voucher, reports success, and doubles the stock. The simulator does
+		// the same, or the connector's guard against it is never exercised.
+		if target == nil && !strings.HasPrefix(v.RemoteID, simCompanyGUID+"-") {
+			log.Printf("alter with a remote id we never issued (%q) -- creating, as Tally does",
+				v.RemoteID)
+			altering = false
+		}
+		if altering && target == nil {
 			// Nothing altered and nothing created, which is what real Tally
 			// reports when the voucher named is not there.
 			log.Printf("alter of unknown voucher %q -- nothing to alter", v.RemoteID)
@@ -552,8 +563,14 @@ func (s *sim) importVoucher(w http.ResponseWriter, env reqEnvelope, fault string
 		}
 	}
 
+	// TALLY ISSUES THE NAME, NOT THE IMPORTER. Confirmed the hard way against
+	// the real thing: a REMOTEID of our own choosing was ignored and a second
+	// voucher created. Its own look like "<company GUID>-<masterid in hex>",
+	// so it evidently parses them and treats anything else as new.
+	remote := fmt.Sprintf("%s-%08x", simCompanyGUID, s.nextVchID)
+
 	s.vouchers = append(s.vouchers, postedVoucher{
-		ID: id, Type: v.VoucherTypeName, Reference: v.Reference, RemoteID: v.RemoteID,
+		ID: id, Type: v.VoucherTypeName, Reference: v.Reference, RemoteID: remote,
 		Narration: v.Narration, Date: time.Now(), Lines: len(v.Entries),
 		Despatched: despatched, Applied: applied,
 	})

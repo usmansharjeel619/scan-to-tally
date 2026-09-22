@@ -77,12 +77,12 @@ async function receipt(boxes: Array<{ pid: string; box: string; qty: number }>):
   return id;
 }
 
-/** The name the relay gave the voucher that a session became. */
-function remoteIdOf(sessionId: string, item: string = ITEM): string {
+/** The narration marker of the voucher a session became. */
+function markerOf(sessionId: string, item: string = ITEM): string {
   const v = db.prepare(
     `SELECT voucher_key FROM session_vouchers WHERE session_id=? AND stock_item_name=?`,
   ).get(sessionId, item) as { voucher_key: string };
-  return `STT-${v.voucher_key}`;
+  return `[STT:${v.voucher_key}]`;
 }
 
 /** Posts a session the way the connector would: one result per voucher. */
@@ -114,9 +114,9 @@ test('the second receipt of a product alters the first voucher instead of making
 
   assert.equal(jobs.length, 1);
   assert.equal(jobs[0]!.alter, true, 'the new carton must go INTO the voucher that exists');
-  assert.equal(jobs[0]!.remoteId, remoteIdOf(first),
-    'and it must name that voucher by the id we gave it -- an ATTRIBUTE Tally answers to, ' +
-    'not its internal MASTERID, which names nothing on the way in');
+  assert.equal(jobs[0]!.alterMasterId, '39', "Tally's own id, to look that voucher up");
+  assert.equal(jobs[0]!.alterMarker, markerOf(first),
+    'and our marker, so a voucher that is not ours is never replaced');
 });
 
 test('an alter carries the boxes the voucher already has, or Tally deletes them', async () => {
@@ -156,8 +156,10 @@ test('each product keeps its own voucher', async () => {
   const { jobs } = buildJobs(db, third);
 
   const byItem = new Map(jobs.map((j) => [j.lines[0]!.stockItemName, j]));
-  assert.equal(byItem.get(ITEM)!.remoteId, remoteIdOf(first, ITEM));
-  assert.equal(byItem.get(OTHER_ITEM)!.remoteId, remoteIdOf(second, OTHER_ITEM));
+  assert.equal(byItem.get(ITEM)!.alterMasterId, '39');
+  assert.equal(byItem.get(OTHER_ITEM)!.alterMasterId, '40');
+  assert.equal(byItem.get(ITEM)!.alterMarker, markerOf(first, ITEM));
+  assert.equal(byItem.get(OTHER_ITEM)!.alterMarker, markerOf(second, OTHER_ITEM));
   assert.equal(byItem.get(ITEM)!.alter, true);
   assert.equal(byItem.get(OTHER_ITEM)!.alter, true);
   assert.equal(byItem.get(ITEM)!.lines[0]!.boxes.length, 2);

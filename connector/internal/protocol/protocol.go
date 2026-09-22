@@ -205,18 +205,32 @@ type PostVoucherJob struct {
 	DeviceID  string    `json:"deviceId,omitempty"`
 	Narration string    `json:"narration,omitempty"`
 
-	// RemoteID is the relay's own name for the voucher, written into Tally's
-	// REMOTEID attribute so a later receipt can find it again.
-	RemoteID string `json:"remoteId,omitempty"`
-
-	// Alter REPLACES the voucher carrying RemoteID rather than creating one,
-	// so a product keeps ONE Physical Stock voucher and new cartons are added
-	// to it.
+	// Alter REPLACES an existing voucher rather than creating one, so a product
+	// keeps ONE Physical Stock voucher and new cartons are added to it.
 	//
 	// When it is set, Lines carry every box the voucher must end up holding --
 	// the ones already on it as well as the ones just scanned -- because Tally
 	// replaces a voucher on alter instead of merging into it.
 	Alter bool `json:"alter,omitempty"`
+
+	// AlterMasterID is Tally's own id for the voucher to replace: the
+	// LASTVCHID it reported when that voucher was created.
+	//
+	// It is NOT sent to Tally. Tally ignores a <MASTERID> on the way in -- and
+	// ignores a REMOTEID it did not issue, creating a voucher instead of
+	// altering one. Both were tried and both silently doubled the stock. So
+	// this is used to look the voucher UP in the day book, and whatever
+	// REMOTEID Tally reports for it is what gets sent back.
+	AlterMasterID string `json:"alterMasterId,omitempty"`
+
+	// AlterDate is the day that voucher was posted, to narrow the day book
+	// read to one day instead of the whole year.
+	AlterDate time.Time `json:"alterDate,omitempty"`
+
+	// AlterMarker is the [STT:...] key written into that voucher's narration.
+	// The voucher found must carry it, or it is not ours and is left alone --
+	// replacing a stranger's voucher is worse than any duplicate.
+	AlterMarker string `json:"alterMarker,omitempty"`
 
 	Lines []Line `json:"lines"`
 }

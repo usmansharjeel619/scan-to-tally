@@ -186,7 +186,7 @@ function applyJobResult(r: JobResult): void {
     // product goes INTO it rather than beside it. The name is the one WE gave
     // it, which is the one Tally will answer to.
     rememberItemVoucher(sessionId, voucher?.stock_item_name ?? '',
-      `STT-${r.sessionId}`, r.tallyVoucherId ?? '');
+      r.tallyVoucherId ?? '', `[STT:${r.sessionId}]`);
   } else {
     // A failed post NEVER vanishes. It goes to the review queue with Tally's
     // own words shown verbatim.
@@ -350,7 +350,7 @@ function applyItemCreationResult(r: JobResult): void {
  * a voucher that does not exist would send every later receipt into a failure.
  */
 function rememberItemVoucher(
-  sessionId: string, stockItemName: string, remoteId: string, tallyMasterId: string,
+  sessionId: string, stockItemName: string, tallyMasterId: string, marker: string,
 ): void {
   if (!stockItemName) return;
 
@@ -368,18 +368,21 @@ function rememberItemVoucher(
 
   const at = nowIso();
   const tx = db.transaction(() => {
-    if (remoteId) {
-      // The remote id is NOT overwritten once set. It names the voucher every
-      // later receipt of this product adds to; replacing it with the newest
-      // receipt's own name would point at a voucher that was never created,
-      // and the next carton would raise a second entry.
+    if (tallyMasterId) {
+      // NOT overwritten once set. These point at the voucher every later
+      // receipt of this product adds to; replacing them with the newest
+      // receipt's own would point at a voucher that only ever held one box,
+      // and the merge would silently start again from there.
+      //
+      // An alter reports the SAME master id back, so re-running this after a
+      // merge changes nothing, which is what it should do.
       db.prepare(`
-        INSERT INTO item_vouchers (company, godown, stock_item_name, remote_id,
-                                   tally_master_id, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?)
+        INSERT INTO item_vouchers (company, godown, stock_item_name, tally_master_id,
+                                   voucher_date, marker, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?)
         ON CONFLICT(company, godown, stock_item_name) DO UPDATE SET
-          tally_master_id = excluded.tally_master_id, updated_at = excluded.updated_at`)
-        .run(s.company, s.godown, stockItemName, remoteId, tallyMasterId, at, at);
+          updated_at = excluded.updated_at`)
+        .run(s.company, s.godown, stockItemName, tallyMasterId, at, marker, at, at);
     }
 
     for (const l of lines) {

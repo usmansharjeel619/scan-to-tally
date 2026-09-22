@@ -59,6 +59,10 @@ func transient(code, msg string, err error) *Error {
 	return &Error{Class: Transient, Code: code, Message: msg, Err: err}
 }
 
+// NewBusiness builds an error that will not be retried, for callers outside
+// this package. The runner needs it to report a voucher it refuses to replace.
+func NewBusiness(code, msg string) *Error { return business(code, msg) }
+
 func business(code, msg string) *Error {
 	return &Error{Class: Business, Code: msg2code(code), Message: msg}
 }

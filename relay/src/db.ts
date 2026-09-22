@@ -244,21 +244,30 @@ CREATE INDEX IF NOT EXISTS idx_vouchers_session ON session_vouchers(session_id);
 -- the same sensor over a week are one entry in the day book with three boxes
 -- on it, which is how the warehouse thinks about it and how it was asked for.
 --
--- remote_id is OUR name for that voucher, written into Tally's REMOTEID
--- attribute when it was created. It is what lets the next receipt ALTER the
--- voucher rather than create one.
+-- NOTHING HERE IS A NAME WE INVENTED.
 --
--- Tally's own internal id is no use for this. Its export shows REMOTEID and
--- VCHKEY as ATTRIBUTES of <VOUCHER> while MASTERID is a child element that
--- names nothing on the way in -- an alter carrying a <MASTERID> was answered
--- by creating a second voucher. tally_master_id is kept only so a row can be
--- matched to a day book by eye.
+-- Naming the voucher ourselves was tried twice against the real TallyPrime and
+-- both attempts made it CREATE a voucher instead of altering one, reporting
+-- success while doubling the stock: first ACTION="Alter" with a <MASTERID>
+-- child, then a REMOTEID of our own choosing. Tally's own remote ids look like
+-- "<company GUID>-<masterid in hex>", so it parses them, and what it cannot
+-- parse it treats as new.
+--
+-- So the connector looks the voucher up in the day book at posting time and
+-- sends back whatever REMOTEID Tally reports. What is kept here is only what
+-- is needed to FIND it again:
+--
+--   tally_master_id  Tally's own id, as reported by LASTVCHID when posted
+--   voucher_date     the day it was posted, to read one day of the day book
+--   marker           the [STT:...] key in its narration, so a voucher that is
+--                    not ours is never replaced
 CREATE TABLE IF NOT EXISTS item_vouchers (
   company          TEXT NOT NULL,
   godown           TEXT NOT NULL,
   stock_item_name  TEXT NOT NULL,
-  remote_id        TEXT NOT NULL,
   tally_master_id  TEXT NOT NULL DEFAULT '',
+  voucher_date     TEXT NOT NULL DEFAULT '',
+  marker           TEXT NOT NULL DEFAULT '',
   created_at       TEXT NOT NULL,
   updated_at       TEXT NOT NULL,
   PRIMARY KEY (company, godown, stock_item_name)
@@ -303,7 +312,65 @@ export function openDb(path: string): DB {
   const db = new Database(path);
   db.pragma('busy_timeout = 5000');
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+/**
+ * Schema changes that CREATE TABLE IF NOT EXISTS cannot make.
+ *
+ * A table that already exists is left exactly as it was, however the statement
+ * above it has changed -- so a renamed or added column simply never appears on
+ * a database that has been running. That is not hypothetical: item_vouchers
+ * went out with master_id renamed to remote_id, the live relay kept the old
+ * shape, and the first thing to touch it failed with "no such column".
+ */
+function migrate(db: DB): void {
+  const columns = (table: string): string[] => {
+    try {
+      return (db.prepare(`SELECT name FROM pragma_table_info(?)`).all(table) as
+        Array<{ name: string }>).map((r) => r.name);
+    } catch { return []; }
+  };
+
+  // item_vouchers: master_id (Tally's internal id, which turned out to
+  // identify nothing on the way in) -> remote_id (the name we give a voucher,
+  // in its REMOTEID attribute, which is what Tally answers to).
+  //
+  // Any old master_id is carried across as tally_master_id, for reading by
+  // eye, and remote_id is left empty. Empty means "no standing voucher known",
+  // so the next receipt of that product raises a fresh one and adopts it --
+  // which is right, because those vouchers never carried a REMOTEID and can
+  // never be altered.
+  const iv = columns('item_vouchers');
+  if (iv.length > 0 && !iv.includes('marker')) {
+    // Both earlier shapes reach here: the original master_id, and the
+    // short-lived remote_id that held a name we chose -- which Tally does not
+    // answer to, so carrying those values forward would be worse than useless.
+    const tallyId = iv.includes('tally_master_id') ? 'tally_master_id'
+      : iv.includes('master_id') ? 'master_id' : `''`;
+    db.exec(`
+      ALTER TABLE item_vouchers RENAME TO item_vouchers_old;
+      CREATE TABLE item_vouchers (
+        company          TEXT NOT NULL,
+        godown           TEXT NOT NULL,
+        stock_item_name  TEXT NOT NULL,
+        tally_master_id  TEXT NOT NULL DEFAULT '',
+        voucher_date     TEXT NOT NULL DEFAULT '',
+        marker           TEXT NOT NULL DEFAULT '',
+        created_at       TEXT NOT NULL,
+        updated_at       TEXT NOT NULL,
+        PRIMARY KEY (company, godown, stock_item_name)
+      );
+      INSERT INTO item_vouchers
+        (company, godown, stock_item_name, tally_master_id, voucher_date, marker,
+         created_at, updated_at)
+        SELECT company, godown, stock_item_name, ${tallyId}, created_at, '',
+               created_at, updated_at
+          FROM item_vouchers_old;
+      DROP TABLE item_vouchers_old;
+    `);
+  }
 }
 
 export function nowIso(): string {

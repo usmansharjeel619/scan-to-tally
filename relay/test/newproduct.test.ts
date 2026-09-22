@@ -203,3 +203,47 @@ test('a box with no part number or no box number is refused outright', async () 
   assert.equal((db.prepare(`SELECT COUNT(*) c FROM session_lines WHERE session_id=?`)
     .get(id) as any).c, 0, 'none of them may be recorded');
 });
+
+test('a database still carrying the old item_vouchers shape is migrated', async () => {
+  // CREATE TABLE IF NOT EXISTS leaves an existing table exactly as it was, so
+  // a renamed column never appears on a relay that has been running. The live
+  // one kept master_id and the first thing to touch it failed with "no such
+  // column". Proven here against a real old-shaped table rather than trusted.
+  const { openDb } = await import('../src/db.ts');
+  const Database = (await import('better-sqlite3')).default;
+
+  const old = new Database(':memory:');
+  old.exec(`
+    CREATE TABLE item_vouchers (
+      company TEXT NOT NULL, godown TEXT NOT NULL, stock_item_name TEXT NOT NULL,
+      master_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (company, godown, stock_item_name));
+    INSERT INTO item_vouchers VALUES ('Co','Main','4090-5201 MINI IAM','39','x','x');
+  `);
+
+  // openDb runs the schema and then the migration, the way a restart does.
+  const file = `${process.env.TMPDIR ?? '/tmp'}/stt-migrate-${Date.now()}.db`;
+  const seed = new Database(file);
+  seed.exec(`
+    CREATE TABLE item_vouchers (
+      company TEXT NOT NULL, godown TEXT NOT NULL, stock_item_name TEXT NOT NULL,
+      master_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (company, godown, stock_item_name));
+    INSERT INTO item_vouchers VALUES ('Co','Main','4090-5201 MINI IAM','39','x','x');
+  `);
+  seed.close();
+
+  const migrated = openDb(file);
+  const cols = (migrated.prepare(`SELECT name FROM pragma_table_info('item_vouchers')`)
+    .all() as Array<{ name: string }>).map((r) => r.name);
+  for (const c of ['tally_master_id', 'voucher_date', 'marker']) {
+    assert.ok(cols.includes(c), `${c} must exist after a restart`);
+  }
+
+  const row = migrated.prepare(`SELECT * FROM item_vouchers`).get() as any;
+  assert.equal(row.tally_master_id, '39', "Tally's own id is carried across");
+  assert.equal(row.marker, '',
+    'and no marker is invented: without one, that voucher can never be confirmed as ours');
+  migrated.close();
+  old.close();
+});

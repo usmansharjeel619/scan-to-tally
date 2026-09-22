@@ -70,6 +70,17 @@ const SESSIONS = ['session_vouchers', 'session_lines', 'sessions'];
 const BINDINGS = ['pid_bindings'];
 
 /**
+ * The standing Physical Stock voucher each product has, and the boxes on it.
+ *
+ * These name vouchers by Tally's own id, and those ids belong to ONE set of
+ * books. Carried into a different company they point at whatever voucher
+ * happens to hold that number there -- so the next receipt would alter a
+ * stranger's voucher, or fail against one that does not exist. The boxes go
+ * with them: they are the contents of a voucher that is no longer ours.
+ */
+const VOUCHERS = ['posted_batches', 'item_vouchers'];
+
+/**
  * Cached Tally masters. These DO heal on the next sync, but clearing them means
  * a supervisor searching the item master before that sync lands cannot pick an
  * item belonging to the company you just left.
@@ -116,7 +127,7 @@ const count = (t) => {
 };
 
 const targets = [
-  ...HISTORY, ...SESSIONS,
+  ...HISTORY, ...SESSIONS, ...VOUCHERS,
   ...(keepBindings ? [] : BINDINGS),
   ...MASTERS, ...PROPOSALS,
 ].filter((t) => present.has(t));
@@ -124,7 +135,7 @@ const targets = [
 // A named table that does not exist is a silent no-op, and that is exactly how
 // proposed_items survived a reset once. Say so instead.
 const missing = [
-  ...HISTORY, ...SESSIONS, ...BINDINGS, ...MASTERS, ...PROPOSALS,
+  ...HISTORY, ...SESSIONS, ...VOUCHERS, ...BINDINGS, ...MASTERS, ...PROPOSALS,
 ].filter((t) => !present.has(t));
 if (missing.length) {
   console.log(`\nWARNING: named but not present: ${missing.join(', ')}`);

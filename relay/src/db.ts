@@ -236,6 +236,47 @@ CREATE TABLE IF NOT EXISTS session_vouchers (
 );
 CREATE INDEX IF NOT EXISTS idx_vouchers_session ON session_vouchers(session_id);
 
+-- ONE PHYSICAL STOCK VOUCHER PER PRODUCT, kept and added to.
+--
+-- A Physical Stock voucher states what exists, so the natural thing to do with
+-- a new carton of a product already counted is to put it in the voucher that
+-- counts that product, not to raise another one beside it. Three receipts of
+-- the same sensor over a week are one entry in the day book with three boxes
+-- on it, which is how the warehouse thinks about it and how it was asked for.
+--
+-- master_id is Tally's own id for that voucher (its LASTVCHID when created).
+-- It is what lets the next receipt ALTER the voucher rather than create one.
+CREATE TABLE IF NOT EXISTS item_vouchers (
+  company          TEXT NOT NULL,
+  godown           TEXT NOT NULL,
+  stock_item_name  TEXT NOT NULL,
+  master_id        TEXT NOT NULL,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  PRIMARY KEY (company, godown, stock_item_name)
+);
+
+-- Every box that voucher is holding.
+--
+-- Tally REPLACES a voucher on alter -- it does not merge -- so every later
+-- receipt has to re-send every box the voucher already had. Sending only the
+-- new ones would silently delete the earlier cartons from the books, which is
+-- the single most dangerous thing this system could do, so the whole set is
+-- kept here rather than read back from Tally on each post.
+CREATE TABLE IF NOT EXISTS posted_batches (
+  company          TEXT NOT NULL,
+  godown           TEXT NOT NULL,
+  stock_item_name  TEXT NOT NULL,
+  box_serial       TEXT NOT NULL,
+  qty              REAL NOT NULL,
+  mfg_date         TEXT,
+  pid              TEXT NOT NULL DEFAULT '',
+  posted_at        TEXT NOT NULL,
+  PRIMARY KEY (company, godown, stock_item_name, box_serial)
+);
+CREATE INDEX IF NOT EXISTS idx_posted_batches_item
+  ON posted_batches(company, godown, stock_item_name);
+
 CREATE TABLE IF NOT EXISTS audit_log (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
   at        TEXT NOT NULL,

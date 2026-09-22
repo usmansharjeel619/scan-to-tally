@@ -68,6 +68,12 @@ type wireVoucher struct {
 	VchType string `xml:"VCHTYPE,attr"`
 	Action  string `xml:"ACTION,attr"`
 
+	// MasterID names the voucher being altered. Tally matches on it, and it is
+	// the only thing that tells an alter from a create -- ACTION="Alter"
+	// without it silently creates another voucher, which is the failure this
+	// whole path exists to avoid.
+	MasterID string `xml:"MASTERID,omitempty"`
+
 	Date            string `xml:"DATE"`
 	EffectiveDate   string `xml:"EFFECTIVEDATE,omitempty"`
 	VoucherTypeName string `xml:"VOUCHERTYPENAME"`
@@ -172,6 +178,11 @@ func BuildImport(company string, v Voucher) ([]byte, error) {
 		entries = append(entries, we)
 	}
 
+	action := "Create"
+	if v.AlterMasterID != "" {
+		action = "Alter"
+	}
+
 	env := importEnvelope{
 		Header: importHeader{TallyRequest: "Import Data"},
 		Body: importBody{
@@ -184,8 +195,13 @@ func BuildImport(company string, v Voucher) ([]byte, error) {
 					TallyMessage: tallyMessage{
 						UDFNamespace: "TallyUDF",
 						Voucher: &wireVoucher{
-							VchType:         string(v.Type),
-							Action:          "Create",
+							VchType: string(v.Type),
+							// Altering keeps ONE voucher per product and adds
+							// the new cartons to it. Entries already carry the
+							// boxes it had, because Tally replaces rather than
+							// merges.
+							Action:          action,
+							MasterID:        v.AlterMasterID,
 							Date:            v.Date.Format(dateFmt),
 							EffectiveDate:   v.Date.Format(dateFmt),
 							VoucherTypeName: string(v.Type),

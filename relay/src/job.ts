@@ -34,6 +34,15 @@ export interface PostJob {
    * against being posted twice.
    */
   sessionId: string;
+  /**
+   * Tally's id for the voucher this REPLACES, when the product already has
+   * one. Empty means create a new voucher.
+   *
+   * The lines then carry every box the voucher must end up holding, old and
+   * new together, because Tally replaces a voucher on alter rather than
+   * merging into it.
+   */
+  alterMasterId?: string;
   /** The session the voucher came from, for attributing the result back. */
   parentSessionId: string;
   kind: string;
@@ -159,18 +168,96 @@ export function buildJobs(
 
   return {
     unresolved: 0,
-    jobs: products.map((line, i) => ({
-      ...base,
-      // Derived, and STABLE: the same session and product always produce the
-      // same key, so a redelivery is recognised as the voucher it already is
-      // rather than posted again. Ordered by first appearance, so the index is
-      // reproducible from the same session.
-      sessionId: voucherKey(s.id, line.stockItemName, i),
-      narration: s.narration ||
-        `Mobile scan | operator ${s.operator ?? ''} | session ${s.id}`,
-      lines: [line],
+    jobs: products.map((line, i) => {
+      // ONE VOUCHER PER PRODUCT, KEPT AND ADDED TO. A product counted before
+      // already has a voucher, and a new carton of it belongs in that voucher
+      // rather than beside it.
+      //
+      // Tally REPLACES a voucher on alter, so this has to carry every box the
+      // voucher should end up holding -- the ones it already has as well as
+      // the ones just scanned. Sending only the new ones would delete the
+      // earlier cartons from the books.
+      const held = existing(db, s.kind, base.company, base.godown, line.stockItemName, s.id);
+
+      return {
+        ...base,
+        // Derived, and STABLE: the same session and product always produce the
+        // same key, so a redelivery is recognised as the voucher it already is
+        // rather than posted again. Ordered by first appearance, so the index
+        // is reproducible from the same session.
+        sessionId: voucherKey(s.id, line.stockItemName, i),
+        alterMasterId: held.masterId,
+        narration: s.narration ||
+          `Mobile scan | operator ${s.operator ?? ''} | session ${s.id}`,
+        lines: [{ ...line, boxes: mergeBoxes(held.boxes, line.boxes) }],
+      };
+    }),
+  };
+}
+
+/**
+ * The voucher a product already has, and every box on it.
+ *
+ * Only for INCOMING. A despatch removes stock and a stock check adjusts it;
+ * neither accumulates into a standing voucher, and altering somebody's
+ * delivery note a week later would be indefensible.
+ *
+ * Boxes still in flight are included as well as boxes already posted. Two
+ * receipts of the same product submitted seconds apart would otherwise each
+ * carry only what the other had not yet finished recording, and the one that
+ * landed second would erase the one that landed first.
+ */
+function existing(
+  db: DB, kind: string, company: string, godown: string,
+  stockItemName: string, exceptSessionId: string,
+): { masterId?: string; boxes: JobBox[] } {
+  if (kind !== 'INCOMING') return { boxes: [] };
+
+  const v = db.prepare(
+    `SELECT master_id FROM item_vouchers
+      WHERE company = ? AND godown = ? AND stock_item_name = ?`,
+  ).get(company, godown, stockItemName) as { master_id: string } | undefined;
+
+  const posted = db.prepare(
+    `SELECT box_serial, qty, mfg_date, pid FROM posted_batches
+      WHERE company = ? AND godown = ? AND stock_item_name = ?
+      ORDER BY posted_at, box_serial`,
+  ).all(company, godown, stockItemName) as Array<
+    { box_serial: string; qty: number; mfg_date: string | null; pid: string }>;
+
+  const inFlight = db.prepare(
+    `SELECT l.box_serial, l.qty, l.mfg_date, l.pid
+       FROM session_vouchers v
+       JOIN session_lines l ON l.session_id = v.session_id
+      WHERE v.stock_item_name = ? AND v.state IN ('QUEUED','POSTING')
+        AND v.session_id <> ? AND l.stock_item_name = ?
+      ORDER BY l.id`,
+  ).all(stockItemName, exceptSessionId, stockItemName) as Array<
+    { box_serial: string; qty: number; mfg_date: string | null; pid: string }>;
+
+  return {
+    masterId: v?.master_id || undefined,
+    boxes: [...posted, ...inFlight].map((b) => ({
+      boxSerial: b.box_serial,
+      qty: b.qty,
+      mfgDate: b.mfg_date ?? undefined,
+      pid: b.pid,
     })),
   };
+}
+
+/**
+ * Old boxes then new ones, each box once.
+ *
+ * A box scanned again on a later receipt is the SAME carton -- the duplicate
+ * check upstream is what makes that true -- so the later count wins rather
+ * than being added to the earlier one. Anything else would double the stock of
+ * a box that was merely re-counted.
+ */
+function mergeBoxes(held: JobBox[], fresh: JobBox[]): JobBox[] {
+  const by = new Map<string, JobBox>();
+  for (const b of [...held, ...fresh]) by.set(b.boxSerial, b);
+  return [...by.values()];
 }
 
 /**

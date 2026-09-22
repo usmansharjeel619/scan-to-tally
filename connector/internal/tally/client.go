@@ -232,13 +232,41 @@ func (c *Client) Import(ctx context.Context, v Voucher) (*ImportResult, error) {
 		return nil, business("INVALID_VOUCHER", err.Error())
 	}
 	c.log.Info("importing voucher",
-		"type", v.Type, "ref", v.Reference, "entries", len(v.Entries))
+		"type", v.Type, "ref", v.Reference, "entries", len(v.Entries),
+		"altering", v.AlterMasterID)
 
 	body, err := c.post(ctx, payload)
 	if err != nil {
 		return nil, err
 	}
 	res, err := ParseImportResponse(body)
+
+	// Reading the answer rather than assuming the request was honoured.
+	//
+	// An ALTER that CREATED something is the one outcome worse than failing:
+	// asking Tally to replace voucher 39 and having it raise voucher 43
+	// instead doubles the stock on the books, looks like success in every
+	// counter, and is found weeks later by somebody counting a shelf.
+	//
+	// And an alter that did nothing means the voucher is gone -- deleted by
+	// hand, or the books restored from an older backup. That is not the
+	// generic "created nothing" it would otherwise be reported as: it has its
+	// own recovery, which is to forget the id and raise a fresh voucher.
+	if v.AlterMasterID != "" && res != nil {
+		switch {
+		case res.Created > 0:
+			return res, c.noteAppError(business("ALTER_BECAME_CREATE", fmt.Sprintf(
+				"Asked Tally to update voucher %s and it created a new one (%s) instead. "+
+					"That would double the stock, so this has been stopped. The new "+
+					"voucher needs deleting by hand.", v.AlterMasterID, res.LastVchID)))
+		case res.Altered == 0 && res.Errors == 0 && res.LineError == "":
+			return res, c.noteAppError(business("ALTER_TARGET_MISSING", fmt.Sprintf(
+				"Voucher %s is not in Tally any more, so there was nothing to add to. "+
+					"A new voucher will be raised for this product instead.",
+				v.AlterMasterID)))
+		}
+	}
+
 	if err != nil {
 		return res, c.noteAppError(err)
 	}

@@ -78,6 +78,11 @@ type postedVoucher struct {
 	// What went out, so a later "how much of this order is already gone"
 	// question can be answered the way Tally answers it.
 	Despatched []despatchedLine
+	// What this voucher did to the balances, so altering it can undo that
+	// first. Tally REPLACES a voucher on alter rather than merging into it,
+	// and a simulator that merged instead would hide exactly the bug the
+	// connector most needs to be caught.
+	Applied map[batchKey]float64
 }
 
 type despatchedLine struct {
@@ -178,6 +183,8 @@ type reqEnvelope struct {
 
 type simVoucher struct {
 	VchType         string `xml:"VCHTYPE,attr"`
+	Action          string `xml:"ACTION,attr"`
+	MasterID        string `xml:"MASTERID"`
 	Date            string `xml:"DATE"`
 	VoucherTypeName string `xml:"VOUCHERTYPENAME"`
 	Reference       string `xml:"REFERENCE"`
@@ -451,8 +458,56 @@ func (s *sim) importVoucher(w http.ResponseWriter, env reqEnvelope, fault string
 		}
 	}
 
+	// ALTER REPLACES. Real Tally does not merge the new lines into the old
+	// voucher; it throws the old ones away. So the earlier effect is undone
+	// before the new one is applied, and a connector that sends only the new
+	// boxes will see the earlier ones vanish -- which is the whole reason the
+	// relay sends every box the voucher should end up holding.
+	altering := strings.EqualFold(v.Action, "Alter")
+	var target *postedVoucher
+	if altering {
+		for i := range s.vouchers {
+			if s.vouchers[i].ID == v.MasterID {
+				target = &s.vouchers[i]
+				break
+			}
+		}
+		if target == nil {
+			// Nothing altered and nothing created, which is what real Tally
+			// reports when the voucher named is not there.
+			log.Printf("alter of unknown voucher %s -- nothing to alter", v.MasterID)
+			w.Header().Set("Content-Type", "text/xml")
+			fmt.Fprint(w, `<RESPONSE>
+ <CREATED>0</CREATED><ALTERED>0</ALTERED><DELETED>0</DELETED>
+ <LASTVCHID>0</LASTVCHID><LASTMID>0</LASTMID>
+ <COMBINED>0</COMBINED><IGNORED>1</IGNORED><ERRORS>0</ERRORS><CANCELLED>0</CANCELLED>
+</RESPONSE>`)
+			return
+		}
+		for k, q := range target.Applied {
+			s.balances[k] -= q
+		}
+	}
+
+	applied := map[batchKey]float64{}
 	for _, d := range deltas {
 		s.balances[d.key] += d.qty
+		applied[d.key] += d.qty
+	}
+
+	if altering {
+		target.Applied = applied
+		target.Lines = len(v.Entries)
+		target.Narration = v.Narration
+		log.Printf("altered %s %s ref=%s entries=%d", target.Type, target.ID,
+			v.Reference, len(v.Entries))
+		w.Header().Set("Content-Type", "text/xml")
+		fmt.Fprintf(w, `<RESPONSE>
+ <CREATED>0</CREATED><ALTERED>1</ALTERED><DELETED>0</DELETED>
+ <LASTVCHID>%s</LASTVCHID><LASTMID>0</LASTMID>
+ <COMBINED>0</COMBINED><IGNORED>0</IGNORED><ERRORS>0</ERRORS><CANCELLED>0</CANCELLED>
+</RESPONSE>`, target.ID)
+		return
 	}
 
 	s.nextVchID++
@@ -473,7 +528,7 @@ func (s *sim) importVoucher(w http.ResponseWriter, env reqEnvelope, fault string
 	s.vouchers = append(s.vouchers, postedVoucher{
 		ID: id, Type: v.VoucherTypeName, Reference: v.Reference,
 		Narration: v.Narration, Date: time.Now(), Lines: len(v.Entries),
-		Despatched: despatched,
+		Despatched: despatched, Applied: applied,
 	})
 	log.Printf("created %s %s ref=%s entries=%d", v.VoucherTypeName, id, v.Reference, len(v.Entries))
 

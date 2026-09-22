@@ -159,7 +159,15 @@ func (s *Store) RecordPosted(ctx context.Context, p Posted) error {
 		INSERT INTO posted_vouchers
 		  (session_id, reference, voucher_type, tally_vch_id, company, posted_at, payload_hash)
 		VALUES (?,?,?,?,?,?,?)
-		ON CONFLICT(session_id) DO NOTHING`,
+		-- The hash moves forward so the next delivery of the SAME content is
+		-- recognised and short-circuits without touching Tally. Only an ALTER
+		-- ever gets here twice: a conflicting CREATE is refused a layer up and
+		-- never reaches this, so the record of an original create cannot be
+		-- overwritten by a different voucher.
+		ON CONFLICT(session_id) DO UPDATE SET
+		  payload_hash = excluded.payload_hash,
+		  tally_vch_id = excluded.tally_vch_id,
+		  posted_at    = excluded.posted_at`,
 		p.SessionID, p.Reference, p.VoucherType, p.TallyVchID, p.Company, p.PostedAt, p.PayloadHash)
 	if err != nil {
 		return fmt.Errorf("record posted: %w", err)

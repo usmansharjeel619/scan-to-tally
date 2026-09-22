@@ -133,6 +133,18 @@ type Voucher struct {
 	PartyLedgerName string
 	VoucherNumber   string // usually left empty so Tally auto-numbers
 
+	// AlterMasterID names an existing voucher to REPLACE rather than create.
+	//
+	// It is Tally's own id for that voucher -- the LASTVCHID it answered with
+	// when the voucher was made. Set for a Physical Stock voucher that a
+	// product already has, so a new carton is added to the one entry for that
+	// product instead of raising another beside it.
+	//
+	// Tally REPLACES a voucher on alter; it does not merge. Entries must
+	// therefore carry every batch the voucher should end up holding, old ones
+	// included. Sending only the new batches deletes the rest.
+	AlterMasterID string
+
 	Entries []InventoryEntry
 }
 

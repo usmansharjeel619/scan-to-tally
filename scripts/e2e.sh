@@ -219,6 +219,44 @@ done
 echo "   Delivery Note posted; box now drawn down in Tally"
 curl -fsS "http://127.0.0.1:$SIM_PORT/_sim/state" | grep "1124241658336425" | sed 's/^/   /'
 
+# --- 6b. one voucher per product, added to ------------------------------------
+say "the SAME product received again must go INTO its voucher, not beside it"
+BEFORE_VCH=$(curl -fsS "http://127.0.0.1:$SIM_PORT/_sim/state" | grep -c "ref=" || true)
+
+AGAIN="e2e-again-$(date +%s)"
+api POST /api/v1/sessions "{\"sessionId\":\"$AGAIN\",\"kind\":\"INCOMING\",\"party\":\"Simplex Supplies\"}" >/dev/null
+api POST "/api/v1/sessions/$AGAIN/scan" \
+  '{"raw":"4098-9792|1124249900001004|18|","symbology":"CODE128"}' >/dev/null
+api POST "/api/v1/sessions/$AGAIN/submit" '{}' >/dev/null
+for _ in $(seq 1 60); do
+  state=$(api GET "/api/v1/sessions/$AGAIN" | jqf session.state)
+  [ "$state" = "POSTED" ] && break
+  [ "$state" = "FAILED" ] && fail "second receipt failed: $(api GET /api/v1/sessions/$AGAIN)"
+  sleep 0.5
+done
+[ "$state" = "POSTED" ] || fail "second receipt stuck in $state"
+
+AFTER_VCH=$(curl -fsS "http://127.0.0.1:$SIM_PORT/_sim/state" | grep -c "ref=" || true)
+[ "$BEFORE_VCH" = "$AFTER_VCH" ] ||
+  fail "a second voucher was raised for a product that already had one ($BEFORE_VCH -> $AFTER_VCH)"
+echo "   voucher count unchanged at $AFTER_VCH -- it was altered, not repeated"
+
+# The dangerous half. Tally REPLACES a voucher on alter, so if the relay had
+# sent only the new box the three earlier ones would have been deleted from the
+# books by this very post.
+say "and the boxes it already held are still there, at their full quantity"
+# The QUANTITY, not merely the batch name. An alter that dropped the earlier
+# boxes leaves their batches behind at zero, so checking that the serial still
+# appears anywhere in the state proves nothing at all -- this check passed with
+# the fix reverted until it started reading the number.
+for serial in 1124249900001001 1124249900001002 1124249900001003 1124249900001004; do
+  qty=$(curl -fsS "http://127.0.0.1:$SIM_PORT/_sim/state" |
+        awk -v s="$serial" '$0 ~ s { print $NF }' | head -1)
+  [ "${qty:-0}" = "18" ] ||
+    fail "box $serial holds ${qty:-nothing} after the alter, not 18 -- the earlier cartons were wiped from Tally"
+done
+echo "   all four boxes present at 18 each on the one voucher"
+
 # --- 7. Tally goes away -------------------------------------------------------
 say "closing the company in Tally; the operator must not be blocked"
 curl -fsS "http://127.0.0.1:$SIM_PORT/_sim/fault?mode=closed" >/dev/null

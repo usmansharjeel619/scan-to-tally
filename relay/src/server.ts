@@ -153,8 +153,8 @@ function applyJobResult(r: JobResult): void {
   // A result arrives keyed by VOUCHER, and a session may have several. Find
   // which session it belongs to before doing anything with it.
   const voucher = db.prepare(
-    `SELECT session_id FROM session_vouchers WHERE voucher_key = ?`,
-  ).get(r.sessionId) as { session_id: string } | undefined;
+    `SELECT session_id, stock_item_name FROM session_vouchers WHERE voucher_key = ?`,
+  ).get(r.sessionId) as { session_id: string; stock_item_name: string } | undefined;
 
   const sessionId = voucher?.session_id ?? r.sessionId;
 
@@ -181,6 +181,10 @@ function applyJobResult(r: JobResult): void {
 
     audit(db, 'connector', 'POSTED', sessionId,
       `voucher ${r.tallyVoucherId}${r.duplicate ? ' (duplicate, not reposted)' : ''}`);
+
+    // Remember the voucher and everything on it, so the next carton of this
+    // product goes INTO it rather than beside it.
+    rememberItemVoucher(sessionId, voucher?.stock_item_name ?? '', r.tallyVoucherId ?? '');
   } else {
     // A failed post NEVER vanishes. It goes to the review queue with Tally's
     // own words shown verbatim.
@@ -189,6 +193,15 @@ function applyJobResult(r: JobResult): void {
         completed_at=? WHERE voucher_key=?`)
       .run(r.errorCode ?? '', r.errorMessage ?? '', nowIso(), r.sessionId);
     audit(db, 'connector', 'FAILED', sessionId, `${r.errorCode}: ${r.errorMessage}`);
+
+    // The voucher this was meant to add to is not there any more -- deleted in
+    // Tally by hand, or the books restored from a backup taken before it. The
+    // stale id is forgotten so the retry raises a fresh voucher instead of
+    // failing against a ghost for ever. The boxes on it are kept: they still
+    // have to be re-sent, into whatever voucher comes next.
+    if (r.errorCode === 'ALTER_TARGET_MISSING') {
+      forgetItemVoucher(sessionId, voucher?.stock_item_name ?? '');
+    }
   }
 
   // The session is only finished when EVERY voucher it became is. Calling it
@@ -323,6 +336,71 @@ function applyItemCreationResult(r: JobResult): void {
   releaseHeldSessions();
 
   audit(db, 'connector', 'ITEM_CREATED', pid, name);
+}
+
+/**
+ * Records the voucher a product now has, and every box that went onto it.
+ *
+ * This is what makes the next receipt an ALTER instead of a second voucher.
+ * Written only after Tally has confirmed, because a master id we invented for
+ * a voucher that does not exist would send every later receipt into a failure.
+ */
+function rememberItemVoucher(sessionId: string, stockItemName: string, masterId: string): void {
+  if (!stockItemName) return;
+
+  const s = db.prepare(`SELECT kind, company, godown FROM sessions WHERE id = ?`)
+    .get(sessionId) as { kind: string; company: string; godown: string } | undefined;
+  // Incoming only. A despatch takes stock out and a count adjusts it; neither
+  // belongs in a standing voucher that gets added to.
+  if (!s || s.kind !== 'INCOMING') return;
+
+  const lines = db.prepare(
+    `SELECT pid, box_serial, qty, mfg_date FROM session_lines
+      WHERE session_id = ? AND stock_item_name = ?`,
+  ).all(sessionId, stockItemName) as Array<
+    { pid: string; box_serial: string; qty: number; mfg_date: string | null }>;
+
+  const at = nowIso();
+  const tx = db.transaction(() => {
+    if (masterId) {
+      db.prepare(`
+        INSERT INTO item_vouchers (company, godown, stock_item_name, master_id,
+                                   created_at, updated_at)
+        VALUES (?,?,?,?,?,?)
+        ON CONFLICT(company, godown, stock_item_name) DO UPDATE SET
+          master_id = excluded.master_id, updated_at = excluded.updated_at`)
+        .run(s.company, s.godown, stockItemName, masterId, at, at);
+    }
+
+    for (const l of lines) {
+      // A box counted again on a later receipt REPLACES its earlier count. It
+      // is the same carton -- the duplicate check is what makes that true --
+      // so adding the two together would double stock that was only recounted.
+      db.prepare(`
+        INSERT INTO posted_batches (company, godown, stock_item_name, box_serial,
+                                    qty, mfg_date, pid, posted_at)
+        VALUES (?,?,?,?,?,?,?,?)
+        ON CONFLICT(company, godown, stock_item_name, box_serial) DO UPDATE SET
+          qty = excluded.qty, mfg_date = excluded.mfg_date, posted_at = excluded.posted_at`)
+        .run(s.company, s.godown, stockItemName, l.box_serial, l.qty,
+          l.mfg_date, l.pid, at);
+    }
+  });
+  tx();
+}
+
+/** Drops a voucher id Tally no longer recognises. The boxes are kept. */
+function forgetItemVoucher(sessionId: string, stockItemName: string): void {
+  if (!stockItemName) return;
+  const s = db.prepare(`SELECT company, godown FROM sessions WHERE id = ?`)
+    .get(sessionId) as { company: string; godown: string } | undefined;
+  if (!s) return;
+
+  db.prepare(`DELETE FROM item_vouchers
+               WHERE company=? AND godown=? AND stock_item_name=?`)
+    .run(s.company, s.godown, stockItemName);
+  audit(db, 'relay', 'ITEM_VOUCHER_FORGOTTEN', stockItemName,
+    'Tally no longer has that voucher; the next receipt will raise a new one.');
 }
 
 /** After a successful post, remember every box so future scans can detect it. */

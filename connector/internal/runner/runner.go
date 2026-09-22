@@ -132,11 +132,26 @@ func (r *Runner) processOne(ctx context.Context, job store.Job) {
 	// crashed job safe.
 	posted, err := r.st.AlreadyPosted(ctx, pj.SessionID, hash)
 	if errors.Is(err, store.ErrConflictingRetry) {
-		// Same session id, different content. Never a network retry -- a bug
-		// upstream. Refusing is the only safe move.
-		log.Error("conflicting retry refused", "err", err)
-		r.fail(ctx, job, "CONFLICTING_RETRY", err.Error())
-		return
+		// Same identity, different content. For a CREATE that is always a bug
+		// upstream, and refusing is the only safe move -- posting it would put
+		// a second, different voucher into the books under one identity.
+		//
+		// An ALTER is a different thing entirely. It names the voucher it
+		// replaces and states everything that voucher should hold, so sending
+		// it twice leaves Tally in exactly the same place as sending it once.
+		// The content is EXPECTED to grow between attempts: another receipt of
+		// the same product lands in the meantime and its boxes join the set.
+		// Refusing that stranded the receipt for a danger that does not exist.
+		if pj.AlterMasterID == "" {
+			log.Error("conflicting retry refused", "err", err)
+			r.fail(ctx, job, "CONFLICTING_RETRY", err.Error())
+			return
+		}
+		log.Info("content changed since the last attempt; safe for an alter",
+			"altering", pj.AlterMasterID)
+		// Both cleared, or the next check treats a handled condition as a
+		// store failure and retries this job for ever without ever sending it.
+		posted, err = nil, nil
 	}
 	if err != nil {
 		r.retry(ctx, job, "STORE_ERROR", err.Error())
@@ -330,6 +345,10 @@ func buildVoucher(pj protocol.PostVoucherJob) (tally.Voucher, error) {
 		// received once -- if that ever stops being true, this is the line that
 		// makes a second receipt overwrite the first instead of adding to it.
 		v := tally.NewPhysicalStock(pj.SessionID, narration, pj.Date, entries)
+		// One voucher per product, added to rather than repeated. The relay has
+		// sent every box the voucher must end up holding, so replacing it
+		// wholesale is what is wanted.
+		v.AlterMasterID = pj.AlterMasterID
 		if pj.VoucherType != "" {
 			v.Type = tally.VoucherType(pj.VoucherType)
 			// Only a party-bearing type should carry the supplier; Physical

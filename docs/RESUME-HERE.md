@@ -1,5 +1,8 @@
 # Resume here
 
+**24 September 2026:** The notes below are historical. Current voucher-merge
+work and verification status: [MERGE-FIX.md](MERGE-FIX.md).
+
 Last worked: 16 Sep 2026. Everything is built and running; one thing is
 unverified. This is the five-minute version.
 

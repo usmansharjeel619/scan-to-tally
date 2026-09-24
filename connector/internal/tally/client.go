@@ -233,7 +233,7 @@ func (c *Client) Import(ctx context.Context, v Voucher) (*ImportResult, error) {
 	}
 	c.log.Info("importing voucher",
 		"type", v.Type, "ref", v.Reference, "entries", len(v.Entries),
-		"remoteId", v.RemoteID, "altering", v.Alter)
+		"masterId", v.AlterMasterID, "altering", v.Alter)
 
 	body, err := c.post(ctx, payload)
 	if err != nil {
@@ -258,12 +258,12 @@ func (c *Client) Import(ctx context.Context, v Voucher) (*ImportResult, error) {
 			return res, c.noteAppError(business("ALTER_BECAME_CREATE", fmt.Sprintf(
 				"Asked Tally to update voucher %s and it created a new one (%s) instead. "+
 					"That would double the stock, so this has been stopped. The new "+
-					"voucher needs deleting by hand.", v.RemoteID, res.LastVchID)))
+					"voucher needs deleting by hand.", v.AlterMasterID, res.LastVchID)))
 		case res.Altered == 0 && res.Errors == 0 && res.LineError == "":
 			return res, c.noteAppError(business("ALTER_TARGET_MISSING", fmt.Sprintf(
 				"Voucher %s is not in Tally any more, so there was nothing to add to. "+
 					"A new voucher will be raised for this product instead.",
-				v.RemoteID)))
+				v.AlterMasterID)))
 		}
 	}
 

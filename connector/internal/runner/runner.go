@@ -192,10 +192,7 @@ func (r *Runner) processOne(ctx context.Context, job store.Job) {
 		return
 	}
 
-	// Altering means asking Tally what it calls that voucher and handing the
-	// answer straight back. Naming it ourselves was tried twice -- a MASTERID
-	// child, then a REMOTEID of our own -- and TallyPrime answered both by
-	// CREATING a voucher, reporting success while doubling the stock.
+	// Verify the target in Tally before selecting it by master ID.
 	if pj.Alter {
 		id, err := r.resolveAlterTarget(ctx, pj)
 		if err != nil {
@@ -211,8 +208,16 @@ func (r *Runner) processOne(ctx context.Context, job store.Job) {
 			}
 			return
 		}
-		voucher.RemoteID = id
-		log.Info("altering the voucher Tally named", "remoteId", id)
+		voucher.AlterMasterID = id.MasterID
+		voucher.AlterDate, err = time.Parse("20060102", id.Date)
+		if err != nil {
+			r.fail(ctx, job, "ALTER_TARGET_INVALID", "Tally returned an invalid voucher date")
+			return
+		}
+		// Keep the original date: the relay retains it to find this standing
+		// voucher on future receipts, including receipts on later days.
+		voucher.Date = voucher.AlterDate
+		log.Info("altering verified voucher", "masterId", id.MasterID)
 	}
 
 	res, err := r.tc.Import(ctx, voucher)
@@ -259,20 +264,10 @@ func markerKey(marker string) string {
 	return m[len(prefix) : len(m)-1]
 }
 
-// resolveAlterTarget asks Tally for its own name for the voucher being replaced.
-//
-// Nothing here is constructed. Tally's remote ids look like
-// "<company GUID>-<masterid in hex>", so it clearly parses them, and anything
-// it cannot parse it treats as a new voucher -- which is how two earlier
-// attempts at naming a voucher ended up doubling stock instead of merging it.
-//
-// The voucher must also carry OUR marker in its narration. Without that check
-// a wrong master id -- a restored backup, a renumbering, a bug here -- would
-// mean replacing a voucher belonging to somebody else, wiping whatever was on
-// it. A duplicate is an annoyance; that is destruction.
-func (r *Runner) resolveAlterTarget(ctx context.Context, pj protocol.PostVoucherJob) (string, error) {
+// resolveAlterTarget verifies identity and ownership before replacing a voucher.
+func (r *Runner) resolveAlterTarget(ctx context.Context, pj protocol.PostVoucherJob) (tally.VoucherIdentity, error) {
 	if pj.AlterMasterID == "" {
-		return "", tally.NewBusiness("ALTER_TARGET_MISSING",
+		return tally.VoucherIdentity{}, tally.NewBusiness("ALTER_TARGET_MISSING",
 			"There is no record of which voucher to add to.")
 	}
 
@@ -284,27 +279,22 @@ func (r *Runner) resolveAlterTarget(ctx context.Context, pj protocol.PostVoucher
 	// a voucher posted near midnight would otherwise be invisible.
 	ids, err := r.tc.ListVoucherIdentities(ctx, day.AddDate(0, 0, -1), day.AddDate(0, 0, 1))
 	if err != nil {
-		return "", err
+		return tally.VoucherIdentity{}, err
 	}
 
 	for _, id := range ids {
 		if id.MasterID != pj.AlterMasterID {
 			continue
 		}
-		if pj.AlterMarker != "" && !strings.Contains(id.Narration, pj.AlterMarker) {
-			return "", tally.NewBusiness("ALTER_TARGET_NOT_OURS", fmt.Sprintf(
+		if markerKey(pj.AlterMarker) == "" || !strings.Contains(id.Narration, pj.AlterMarker) || id.VoucherType != string(tally.PhysicalStock) {
+			return tally.VoucherIdentity{}, tally.NewBusiness("ALTER_TARGET_NOT_OURS", fmt.Sprintf(
 				"Voucher %s is not the one this receipt created, so it will not be "+
 					"replaced. A new voucher will be raised instead.", pj.AlterMasterID))
 		}
-		if id.RemoteID == "" {
-			return "", tally.NewBusiness("ALTER_TARGET_UNNAMED", fmt.Sprintf(
-				"Tally gives voucher %s no REMOTEID, so it cannot be altered by name.",
-				pj.AlterMasterID))
-		}
-		return id.RemoteID, nil
+		return id, nil
 	}
 
-	return "", tally.NewBusiness("ALTER_TARGET_MISSING", fmt.Sprintf(
+	return tally.VoucherIdentity{}, tally.NewBusiness("ALTER_TARGET_MISSING", fmt.Sprintf(
 		"Voucher %s is not in Tally any more, so there was nothing to add to. "+
 			"A new voucher will be raised for this product instead.", pj.AlterMasterID))
 }

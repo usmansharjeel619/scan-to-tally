@@ -133,31 +133,14 @@ type Voucher struct {
 	PartyLedgerName string
 	VoucherNumber   string // usually left empty so Tally auto-numbers
 
-	// RemoteID is OUR name for this voucher, carried in the REMOTEID ATTRIBUTE
-	// of <VOUCHER>. It is how a later receipt finds the voucher again.
-	//
-	// The attribute is the whole point. Tally's own export writes
-	//
-	//   <VOUCHER REMOTEID="b86e20e1-...-0000003f" VCHKEY="b86e20e1-...-00000008"
-	//            VCHTYPE="Physical Stock" ACTION="Create" ...>
-	//
-	// -- REMOTEID and VCHKEY are attributes, and MASTERID is a child element
-	// that identifies nothing on the way in. Sending ACTION="Alter" with a
-	// <MASTERID> child was answered by TallyPrime creating a NEW voucher,
-	// which doubles the stock and reports success.
-	//
-	// The value is ours and deliberately unlike Tally's own, which are
-	// "<company GUID>-<masterid in hex>". Minting one in that shape would risk
-	// colliding with a voucher Tally numbers that way later, and the collision
-	// would mean altering somebody else's entry.
+	// RemoteID is export metadata, not the selector for an alteration.
 	RemoteID string
 
-	// Alter REPLACES the voucher carrying RemoteID rather than creating one.
-	//
-	// Tally replaces; it does not merge. Entries must therefore carry every
-	// batch the voucher should end up holding, old ones included. Sending only
-	// the new batches deletes the rest.
-	Alter bool
+	// Alter replaces all entries on a voucher selected by its verified master
+	// ID and original date. Entries must include every batch to retain.
+	Alter         bool
+	AlterMasterID string
+	AlterDate     time.Time
 
 	Entries []InventoryEntry
 }

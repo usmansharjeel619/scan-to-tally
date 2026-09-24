@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/xml"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -68,13 +69,12 @@ type wireVoucher struct {
 	VchType string `xml:"VCHTYPE,attr"`
 	Action  string `xml:"ACTION,attr"`
 
-	// RemoteID is how Tally finds an existing voucher, and it is an ATTRIBUTE.
-	//
-	// Confirmed against this company's own export:
-	//   <VOUCHER REMOTEID="b86e20e1-...-0000003f" VCHKEY="..." VCHTYPE="..." ACTION="Create">
-	// A <MASTERID> child element identifies nothing on the way in -- sending
-	// ACTION="Alter" with one made TallyPrime create a second voucher.
-	RemoteID string `xml:"REMOTEID,attr,omitempty"`
+	// Tally's alteration selector is an attribute pair, not a MASTERID child
+	// or REMOTEID. See https://help.tallysolutions.com/scenario-2/.
+	TagName    string `xml:"TAGNAME,attr,omitempty"`
+	TagValue   string `xml:"TAGVALUE,attr,omitempty"`
+	TargetDate string `xml:"DATE,attr,omitempty"`
+	RemoteID   string `xml:"REMOTEID,attr,omitempty"`
 
 	Date            string `xml:"DATE"`
 	EffectiveDate   string `xml:"EFFECTIVEDATE,omitempty"`
@@ -131,6 +131,12 @@ type wireBatch struct {
 // SVCURRENTCOMPANY, which is how a single connector serves several companies
 // from one running Tally.
 func BuildImport(company string, v Voucher) ([]byte, error) {
+	if v.Alter {
+		id, err := strconv.ParseUint(v.AlterMasterID, 10, 64)
+		if err != nil || id == 0 || v.AlterDate.IsZero() {
+			return nil, fmt.Errorf("alter requires a positive master ID and original voucher date")
+		}
+	}
 	if err := v.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid voucher: %w", err)
 	}
@@ -181,8 +187,11 @@ func BuildImport(company string, v Voucher) ([]byte, error) {
 	}
 
 	action := "Create"
+	tagName, tagValue, targetDate := "", "", ""
 	if v.Alter {
 		action = "Alter"
+		tagName, tagValue = "MASTER ID", v.AlterMasterID
+		targetDate = v.AlterDate.Format("02-Jan-2006")
 	}
 
 	env := importEnvelope{
@@ -203,6 +212,9 @@ func BuildImport(company string, v Voucher) ([]byte, error) {
 							// boxes it had, because Tally replaces rather than
 							// merges.
 							Action:          action,
+							TagName:         tagName,
+							TagValue:        tagValue,
+							TargetDate:      targetDate,
 							RemoteID:        v.RemoteID,
 							Date:            v.Date.Format(dateFmt),
 							EffectiveDate:   v.Date.Format(dateFmt),

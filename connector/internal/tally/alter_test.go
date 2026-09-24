@@ -9,18 +9,7 @@ import (
 	"time"
 )
 
-// One Physical Stock voucher per product, added to rather than repeated.
-//
-// The voucher is named by the REMOTEID ATTRIBUTE, which is what this company's
-// own export turned out to use:
-//
-//	<VOUCHER REMOTEID="b86e20e1-...-0000003f" VCHKEY="..." VCHTYPE="Physical Stock" ACTION="Create">
-//
-// A <MASTERID> child element names nothing on the way in. Sending ACTION="Alter"
-// with one was answered by TallyPrime CREATING a second voucher -- counters all
-// reporting success, stock doubled on the books. So the attribute has to be
-// there, and the answer has to be read rather than assumed.
-
+// The documented master-ID selector must be present on every alteration.
 func physicalStockFor(remoteID string, alter bool) Voucher {
 	v := NewPhysicalStock("sess#0", "Mobile scan", time.Now(), []InventoryEntry{{
 		StockItemName: "4090-5201 MINI IAM",
@@ -32,6 +21,10 @@ func physicalStockFor(remoteID string, alter bool) Voucher {
 	}})
 	v.RemoteID = remoteID
 	v.Alter = alter
+	if alter {
+		v.AlterMasterID = "39"
+		v.AlterDate = time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC)
+	}
 	return v
 }
 
@@ -44,7 +37,10 @@ func TestBuildImportCreatesWhenNotAltering(t *testing.T) {
 	if !strings.Contains(got, `ACTION="Create"`) {
 		t.Errorf("expected a create; got:\n%s", got)
 	}
-	// The name still goes on, so the NEXT receipt can find this voucher.
+	// Create preserves caller metadata without an alteration selector.
+	if strings.Contains(got, "TAGNAME=") || strings.Contains(got, "TAGVALUE=") {
+		t.Fatal("create has alteration selector")
+	}
 	if !strings.Contains(got, `REMOTEID="STT-sess-0"`) {
 		t.Errorf("a create must still name itself for later; got:\n%s", got)
 	}
@@ -59,13 +55,10 @@ func TestBuildImportAltersTheVoucherItNames(t *testing.T) {
 	if !strings.Contains(got, `ACTION="Alter"`) {
 		t.Errorf("expected an alter; got:\n%s", got)
 	}
-	// As an ATTRIBUTE. A <MASTERID> child was ignored and Tally created a
-	// second voucher, reporting success in every counter.
-	if !strings.Contains(got, `REMOTEID="STT-sess-0"`) {
-		t.Errorf("an alter must name the voucher it replaces; got:\n%s", got)
-	}
-	if strings.Contains(got, "<MASTERID>") {
-		t.Errorf("MASTERID as a child element identifies nothing; got:\n%s", got)
+	for _, want := range []string{`TAGNAME="MASTER ID"`, `TAGVALUE="39"`, `DATE="22-Sep-2026"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing selector %s: %s", want, got)
+		}
 	}
 	// Every box the voucher should end up holding, because Tally replaces.
 	for _, batch := range []string{"HIA634", "HLA133"} {
@@ -128,5 +121,20 @@ func TestAlterThatAlteredIsSuccess(t *testing.T) {
 	}
 	if res.LastVchID != "39" {
 		t.Errorf("voucher id = %q, want the voucher that was altered", res.LastVchID)
+	}
+}
+
+func TestAlterWithoutVerifiedIdentityDoesNotSend(t *testing.T) {
+	for _, id := range []string{"", "0", "-1", "REMOTE-ID"} {
+		v := physicalStockFor("exported-remote-id", true)
+		v.AlterMasterID = id
+		if _, err := BuildImport("ACME", v); err == nil {
+			t.Errorf("accepted invalid target %q", id)
+		}
+	}
+	v := physicalStockFor("exported-remote-id", true)
+	v.AlterDate = time.Time{}
+	if _, err := BuildImport("ACME", v); err == nil {
+		t.Fatal("accepted missing target date")
 	}
 }

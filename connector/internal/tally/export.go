@@ -736,26 +736,16 @@ func firstNonEmpty(vals ...string) string {
 
 // --- reading a voucher back -------------------------------------------------
 
-// VoucherIdentity is how Tally names one of its own vouchers.
-//
-// Every field here is read from Tally's export, never constructed. That is the
-// entire point of this type: two attempts to name a voucher ourselves were
-// both answered by TallyPrime CREATING one instead -- a <MASTERID> child
-// element, then a REMOTEID of our own choosing. Tally's own remote ids look
-// like "<company GUID>-<masterid in hex>", so it evidently parses them, and
-// anything it cannot parse it treats as a new voucher.
-//
-// So the only safe way to alter a voucher is to ask Tally what it calls that
-// voucher and hand the answer straight back.
+// VoucherIdentity contains the identity and ownership fields read from Tally.
 type VoucherIdentity struct {
-	// RemoteID is the REMOTEID attribute, verbatim. This is what an alter must
-	// carry.
+	// RemoteID is retained as export metadata; it does not select an alteration.
 	RemoteID string
 	// VchKey is the VCHKEY attribute, kept for diagnosis.
 	VchKey string
 	// MasterID is Tally's internal id, which is what an import reports back as
 	// LASTVCHID. It is how a voucher we posted is found again here.
 	MasterID      string
+	Date          string
 	VoucherNumber string
 	VoucherType   string
 	// Narration carries our [STT:...] marker, which is how a voucher is
@@ -800,6 +790,7 @@ func (c *Client) ListVoucherIdentities(ctx context.Context, from, to time.Time) 
 	err = walk(body, "VOUCHER", func(d *xml.Decoder, se xml.StartElement) error {
 		var row struct {
 			MasterID      string `xml:"MASTERID"`
+			Date          string `xml:"DATE"`
 			VoucherNumber string `xml:"VOUCHERNUMBER"`
 			VoucherType   string `xml:"VOUCHERTYPENAME"`
 			Narration     string `xml:"NARRATION"`
@@ -811,6 +802,7 @@ func (c *Client) ListVoucherIdentities(ctx context.Context, from, to time.Time) 
 			RemoteID:      strings.TrimSpace(attr(se, "REMOTEID")),
 			VchKey:        strings.TrimSpace(attr(se, "VCHKEY")),
 			MasterID:      strings.TrimSpace(row.MasterID),
+			Date:          strings.TrimSpace(row.Date),
 			VoucherNumber: strings.TrimSpace(row.VoucherNumber),
 			VoucherType:   strings.TrimSpace(row.VoucherType),
 			Narration:     strings.TrimSpace(row.Narration),

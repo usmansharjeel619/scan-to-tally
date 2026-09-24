@@ -187,8 +187,11 @@ type reqEnvelope struct {
 }
 
 type simVoucher struct {
-	VchType string `xml:"VCHTYPE,attr"`
-	Action  string `xml:"ACTION,attr"`
+	TagName    string `xml:"TAGNAME,attr"`
+	TagValue   string `xml:"TAGVALUE,attr"`
+	TargetDate string `xml:"DATE,attr"`
+	VchType    string `xml:"VCHTYPE,attr"`
+	Action     string `xml:"ACTION,attr"`
 	// An ATTRIBUTE, which is how the real thing carries it. A <MASTERID> child
 	// names nothing on the way in -- real TallyPrime answered an alter that
 	// used one by creating a second voucher.
@@ -495,31 +498,22 @@ func (s *sim) importVoucher(w http.ResponseWriter, env reqEnvelope, fault string
 	// relay sends every box the voucher should end up holding.
 	altering := strings.EqualFold(v.Action, "Alter")
 	var target *postedVoucher
+	if altering && (v.TagName != "MASTER ID" || v.TagValue == "" || v.TargetDate == "") {
+		// Real Tally created duplicates even with its own exported REMOTEID.
+		// Reproduce that failure when the documented selector is absent.
+		altering = false
+	}
 	if altering {
 		for i := range s.vouchers {
-			if v.RemoteID != "" && s.vouchers[i].RemoteID == v.RemoteID {
+			if s.vouchers[i].ID == v.TagValue && s.vouchers[i].Type == v.VchType &&
+				s.vouchers[i].Date.Format("02-Jan-2006") == v.TargetDate {
 				target = &s.vouchers[i]
 				break
 			}
 		}
-		// A name Tally never issued is not a miss -- the real thing CREATES a
-		// voucher, reports success, and doubles the stock. The simulator does
-		// the same, or the connector's guard against it is never exercised.
-		if target == nil && !strings.HasPrefix(v.RemoteID, simCompanyGUID+"-") {
-			log.Printf("alter with a remote id we never issued (%q) -- creating, as Tally does",
-				v.RemoteID)
-			altering = false
-		}
-		if altering && target == nil {
-			// Nothing altered and nothing created, which is what real Tally
-			// reports when the voucher named is not there.
-			log.Printf("alter of unknown voucher %q -- nothing to alter", v.RemoteID)
+		if target == nil {
 			w.Header().Set("Content-Type", "text/xml")
-			fmt.Fprint(w, `<RESPONSE>
- <CREATED>0</CREATED><ALTERED>0</ALTERED><DELETED>0</DELETED>
- <LASTVCHID>0</LASTVCHID><LASTMID>0</LASTMID>
- <COMBINED>0</COMBINED><IGNORED>1</IGNORED><ERRORS>0</ERRORS><CANCELLED>0</CANCELLED>
-</RESPONSE>`)
+			fmt.Fprint(w, `<RESPONSE><CREATED>0</CREATED><ALTERED>0</ALTERED><LASTVCHID>0</LASTVCHID><IGNORED>1</IGNORED><ERRORS>0</ERRORS></RESPONSE>`)
 			return
 		}
 		for k, q := range target.Applied {
@@ -563,10 +557,7 @@ func (s *sim) importVoucher(w http.ResponseWriter, env reqEnvelope, fault string
 		}
 	}
 
-	// TALLY ISSUES THE NAME, NOT THE IMPORTER. Confirmed the hard way against
-	// the real thing: a REMOTEID of our own choosing was ignored and a second
-	// voucher created. Its own look like "<company GUID>-<masterid in hex>",
-	// so it evidently parses them and treats anything else as new.
+	// Export metadata follows the observed Tally shape.
 	remote := fmt.Sprintf("%s-%08x", simCompanyGUID, s.nextVchID)
 
 	s.vouchers = append(s.vouchers, postedVoucher{

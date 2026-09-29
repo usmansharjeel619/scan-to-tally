@@ -208,6 +208,31 @@ func (r *Runner) processOne(ctx context.Context, job store.Job) {
 			}
 			return
 		}
+		// A box removed in Tally must never be reintroduced from relay cache.
+		if len(pj.RetainedBoxes) > 0 {
+			history, historyErr := r.tc.ListVoucherHistory(ctx)
+			if historyErr != nil {
+				r.retry(ctx, job, "HISTORY_CHECK", historyErr.Error())
+				return
+			}
+			present := map[string]bool{}
+			for _, v := range history {
+				if v.MasterID != id.MasterID {
+					continue
+				}
+				for _, b := range v.Batches {
+					if b.Godown == pj.Godown && len(pj.Lines) > 0 && b.Item == pj.Lines[0].StockItemName {
+						present[b.Box] = true
+					}
+				}
+			}
+			for _, box := range pj.RetainedBoxes {
+				if !present[box] {
+					r.fail(ctx, job, "TALLY_HISTORY_CHANGED", "This voucher changed in Tally. Wait for history sync, then retry this receipt; deleted boxes will not be recreated.")
+					return
+				}
+			}
+		}
 		voucher.AlterMasterID = id.MasterID
 		voucher.AlterDate, err = time.Parse("20060102", id.Date)
 		if err != nil {

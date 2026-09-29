@@ -281,4 +281,21 @@ done
 [ "$state" = "POSTED" ] || fail "session did not recover, stuck in $state"
 echo "   recovered and POSTED without anyone touching it"
 
+# Deleting in Tally must clear the relay's duplicate memory automatically.
+say "delete the standing voucher in Tally; wait for two confirmed history exports"
+voucher_id=$(api GET "/api/v1/sessions/$OFF_SESSION" | jqf session.tally_voucher_id)
+curl -fsS -X POST "http://127.0.0.1:$SIM_PORT/_sim/delete-voucher?id=$voucher_id" >/dev/null
+for _ in $(seq 1 100); do
+  sync_json=$(api GET /api/v1/sync)
+  remaining=$(printf '%s' "$sync_json" | node -e '
+    let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).receivedBoxes.length));')
+  [ "$remaining" = "0" ] && break
+  sleep 1
+done
+[ "$remaining" = "0" ] || fail "deleted voucher still blocks incoming boxes"
+removals=$(printf '%s' "$sync_json" | node -e '
+  let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).historyRemovals.length));')
+[ "$removals" -ge 5 ] || fail "phone did not receive removal records"
+echo "   duplicate memory cleared; $removals removals delivered to the phone sync API"
+
 printf '\n\033[32m== ALL END-TO-END CHECKS PASSED ==\033[0m\n\n'

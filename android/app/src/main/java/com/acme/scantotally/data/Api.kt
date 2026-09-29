@@ -43,6 +43,14 @@ data class SyncResponse(
     val proposals: List<ApiProposal> = emptyList(),
     val catalogue: List<ApiCatalogue> = emptyList(),
     val orders: List<ApiOrder> = emptyList(),
+    val historyRemovals: List<ApiHistoryRemoval> = emptyList(),
+)
+
+@Serializable
+data class ApiHistoryRemoval(
+    val sessionId: String,
+    val stockItemName: String,
+    val boxSerial: String,
 )
 
 /** What became of a product the operator described. */

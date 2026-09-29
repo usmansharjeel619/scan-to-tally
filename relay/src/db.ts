@@ -294,6 +294,19 @@ CREATE TABLE IF NOT EXISTS posted_batches (
 CREATE INDEX IF NOT EXISTS idx_posted_batches_item
   ON posted_batches(company, godown, stock_item_name);
 
+CREATE TABLE IF NOT EXISTS tally_history_sync (
+ company TEXT PRIMARY KEY, snapshot_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tally_history_missing (
+ company TEXT NOT NULL, record_key TEXT NOT NULL, observed_at TEXT NOT NULL,
+ PRIMARY KEY(company,record_key)
+);
+CREATE TABLE IF NOT EXISTS tally_history_removals (
+ company TEXT NOT NULL, device_id TEXT NOT NULL, session_id TEXT NOT NULL,
+ stock_item_name TEXT NOT NULL, box_serial TEXT NOT NULL, removed_at TEXT NOT NULL,
+ PRIMARY KEY(company,session_id,stock_item_name,box_serial)
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
   at        TEXT NOT NULL,
@@ -450,6 +463,9 @@ export function applySync(
         `DELETE FROM pid_bindings
           WHERE stock_item_name NOT IN (SELECT name FROM stock_items)`,
       ).run().changes;
+
+      db.prepare(`DELETE FROM proposed_items WHERE state='CREATED'
+        AND name NOT IN (SELECT name FROM stock_items)`).run();
 
       if (removed || orphaned) {
         syncRemovals = { items: removed, bindings: orphaned };

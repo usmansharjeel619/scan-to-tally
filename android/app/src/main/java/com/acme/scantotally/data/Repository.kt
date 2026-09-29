@@ -15,6 +15,8 @@ import com.acme.scantotally.scan.RawScan
 import com.acme.scantotally.scan.rejectMessage
 import com.acme.scantotally.scan.tailOf
 import com.acme.scantotally.scan.wrongBarcodeMessage
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import java.util.UUID
@@ -1025,7 +1027,9 @@ class Repository(context: Context, private val api: RelayApi?) {
     // --- master sync ---
 
     /** Pulls everything the device needs to keep working without a network. */
-    suspend fun syncMasters(): Boolean = runCatching {
+    private val masterSyncMutex = Mutex()
+
+    suspend fun syncMasters(): Boolean = masterSyncMutex.withLock { runCatching {
         val s = api?.sync() ?: return false
 
         // Keep the unit the relay will actually use, so the new-product
@@ -1052,6 +1056,8 @@ class Repository(context: Context, private val api: RelayApi?) {
             return false
         }
         wrongCompany = null
+
+        dao.applyHistoryRemovals(s.historyRemovals)
 
         // A product the operator described is bound here the moment they
         // describe it, so the rest of the pallet does not prompt again. Until
@@ -1124,7 +1130,7 @@ class Repository(context: Context, private val api: RelayApi?) {
         )
         dao.upsertCatalogue(s.catalogue.map { CatalogueEntity(it.pid, it.description, it.alternates) })
         true
-    }.getOrDefault(false)
+    }.getOrDefault(false) }
 
     /** Re-asks the relay about everything still in flight. */
     suspend fun refreshPending() {

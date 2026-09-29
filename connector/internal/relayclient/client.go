@@ -381,7 +381,7 @@ func (c *Client) pushSync(ctx context.Context) {
 		c.log.Warn("master sync failed", "err", err)
 		return
 	}
-	c.lastSyncErr.Store("")
+	c.lastSyncErr.Store(snap.HistoryError)
 	if err := c.send(ctx, protocol.Frame{Type: protocol.MsgSyncPush, Payload: snap}); err != nil {
 		c.log.Warn("could not push master data", "err", err)
 		return

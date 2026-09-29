@@ -1,5 +1,8 @@
 # Resume here
 
+**29 September 2026:** Automatic Tally deletion reconciliation is described in
+[TALLY-HISTORY-SYNC.md](TALLY-HISTORY-SYNC.md).
+
 **24 September 2026:** The notes below are historical. Current voucher-merge
 work and verification status: [MERGE-FIX.md](MERGE-FIX.md).
 

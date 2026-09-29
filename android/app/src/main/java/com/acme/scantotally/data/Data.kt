@@ -10,6 +10,7 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -515,6 +516,23 @@ interface ScanDao {
 
     @Query("SELECT * FROM session_lines WHERE id = :id")
     suspend fun line(id: Long): SessionLineEntity?
+
+    @Query("""DELETE FROM session_lines WHERE sessionId = :sessionId
+        AND stockItemName = :item AND boxSerial = :box AND synced = 1
+        AND EXISTS (SELECT 1 FROM sessions WHERE id = :sessionId AND state = 'POSTED')""")
+    suspend fun removeTallyHistoryLine(sessionId: String, item: String, box: String)
+
+    @Query("""DELETE FROM sessions WHERE id = :sessionId AND state = 'POSTED'
+        AND NOT EXISTS (SELECT 1 FROM session_lines WHERE sessionId = :sessionId)""")
+    suspend fun removeEmptyTallyHistorySession(sessionId: String)
+
+    @Transaction
+    suspend fun applyHistoryRemovals(removals: List<ApiHistoryRemoval>) {
+        for (r in removals) {
+            removeTallyHistoryLine(r.sessionId, r.stockItemName, r.boxSerial)
+            removeEmptyTallyHistorySession(r.sessionId)
+        }
+    }
 
     @Query("DELETE FROM session_lines WHERE id = :id")
     suspend fun deleteLine(id: Long)

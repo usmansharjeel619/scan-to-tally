@@ -13,6 +13,7 @@
  */
 
 import Fastify from 'fastify';
+import { reconcileHistory } from './reconcile.ts';
 import websocket from '@fastify/websocket';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
@@ -109,6 +110,11 @@ const hub = new ConnectorHub(
         lines: o.lines ?? [],
       })),
     });
+    if (p?.company === company && !p?.historyError) {
+      const deleted = reconcileHistory(db, company, p?.historyStartedAt, p?.voucherHistory);
+      if (deleted) app.log.info({ company, deleted }, 'Tally deletions reconciled');
+    }
+    if (p?.historyError) app.log.warn({ company, error: p.historyError }, 'Tally history sync failed; retaining history');
     app.log.info(
       { items: p?.items?.length, balances: p?.balances?.length, orders: p?.orders?.length },
       'master data synced',
@@ -196,14 +202,10 @@ function applyJobResult(r: JobResult): void {
       .run(r.errorCode ?? '', r.errorMessage ?? '', nowIso(), r.sessionId);
     audit(db, 'connector', 'FAILED', sessionId, `${r.errorCode}: ${r.errorMessage}`);
 
-    // The voucher this was meant to add to is not there any more -- deleted in
-    // Tally by hand, or the books restored from a backup taken before it. The
-    // stale id is forgotten so the retry raises a fresh voucher instead of
-    // failing against a ghost for ever. The boxes on it are kept: they still
-    // have to be re-sent, into whatever voucher comes next.
-    if (r.errorCode === 'ALTER_TARGET_MISSING') {
-      forgetItemVoucher(sessionId, voucher?.stock_item_name ?? '');
-    }
+    // A missing voucher may have been deliberately deleted in Tally. Keep
+    // the mapping until reconciliation removes its old boxes; dropping only
+    // the ID would recreate deleted stock on the next retry.
+
   }
 
   // The session is only finished when EVERY voucher it became is. Calling it
@@ -402,19 +404,7 @@ function rememberItemVoucher(
   tx();
 }
 
-/** Drops a voucher id Tally no longer recognises. The boxes are kept. */
-function forgetItemVoucher(sessionId: string, stockItemName: string): void {
-  if (!stockItemName) return;
-  const s = db.prepare(`SELECT company, godown FROM sessions WHERE id = ?`)
-    .get(sessionId) as { company: string; godown: string } | undefined;
-  if (!s) return;
 
-  db.prepare(`DELETE FROM item_vouchers
-               WHERE company=? AND godown=? AND stock_item_name=?`)
-    .run(s.company, s.godown, stockItemName);
-  audit(db, 'relay', 'ITEM_VOUCHER_FORGOTTEN', stockItemName,
-    'Tally no longer has that voucher; the next receipt will raise a new one.');
-}
 
 /** After a successful post, remember every box so future scans can detect it. */
 function recordBoxHistory(sessionId: string, kind: string): void {
@@ -705,6 +695,8 @@ app.get('/api/v1/sync', async (req, reply) => {
     godown: d.godown,
     company: d.company,
     items, bindings, balances, receivedBoxes, catalogue, proposals,
+    historyRemovals: db.prepare(`SELECT session_id AS sessionId, stock_item_name AS stockItemName,
+      box_serial AS boxSerial FROM tally_history_removals WHERE company=? AND device_id=?`).all(d.company,d.id),
     orders: orders.map((o) => ({
       ...o,
       lines: orderLines.filter((l) => l.voucher_number === o.voucher_number),

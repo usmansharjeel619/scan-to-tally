@@ -78,7 +78,7 @@ const BINDINGS = ['pid_bindings'];
  * stranger's voucher, or fail against one that does not exist. The boxes go
  * with them: they are the contents of a voucher that is no longer ours.
  */
-const VOUCHERS = ['posted_batches', 'item_vouchers'];
+const VOUCHERS = ['posted_batches', 'item_vouchers', 'tally_history_sync', 'tally_history_missing', 'tally_history_removals'];
 
 /**
  * Cached Tally masters. These DO heal on the next sync, but clearing them means

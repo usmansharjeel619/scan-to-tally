@@ -55,6 +55,7 @@ export interface PostJob {
   alterMasterId?: string;
   alterDate?: string;
   alterMarker?: string;
+  retainedBoxes?: string[];
   /** The session the voucher came from, for attributing the result back. */
   parentSessionId: string;
   kind: string;
@@ -226,6 +227,7 @@ export function buildJobs(
         alterMasterId: held.masterId,
         alterDate: held.date,
         alterMarker: held.marker,
+        retainedBoxes: held.retainedBoxes,
         narration: s.narration ||
           `Mobile scan | operator ${s.operator ?? ''} | session ${s.id}`,
         lines: [{ ...line, boxes: mergeBoxes(held.boxes, line.boxes) }],
@@ -249,7 +251,7 @@ export function buildJobs(
 function existing(
   db: DB, kind: string, company: string, godown: string,
   stockItemName: string, exceptSessionId: string,
-): { masterId?: string; date?: string; marker?: string; boxes: JobBox[] } {
+): { masterId?: string; date?: string; marker?: string; retainedBoxes?: string[]; boxes: JobBox[] } {
   if (kind !== 'INCOMING' || !MERGE_INTO_ONE_VOUCHER) return { boxes: [] };
 
   const v = db.prepare(
@@ -279,6 +281,7 @@ function existing(
     masterId: v?.tally_master_id || undefined,
     date: v?.voucher_date || undefined,
     marker: v?.marker || undefined,
+    retainedBoxes: posted.map(b => b.box_serial),
     boxes: [...posted, ...inFlight].map((b) => ({
       boxSerial: b.box_serial,
       qty: b.qty,

@@ -15,6 +15,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 private val Context.dataStore by preferencesDataStore("scan-to-tally")
 
@@ -101,6 +103,18 @@ class ScanToTallyApp : Application() {
         super.onCreate()
         config = DeviceConfig(this)
         feedback = Feedback(this)
+        // While the process is alive, pick up Tally removals without asking
+        // the operator to remember a manual refresh.
+        scope.launch {
+            while (isActive) {
+                runCatching {
+                    val repo = repository()
+                    repo.refreshPending()
+                    repo.syncMasters()
+                }
+                delay(30_000)
+            }
+        }
     }
 
     /**

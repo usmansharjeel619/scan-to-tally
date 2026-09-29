@@ -181,7 +181,7 @@ test('a box recounted on a later receipt replaces its earlier count, never doubl
   assert.equal(boxes[0]!.qty, 30, 'the later count wins');
 });
 
-test('a voucher Tally no longer has is forgotten, so the retry raises a new one', async () => {
+test('a missing voucher cannot recreate deleted stock before reconciliation', async () => {
   const first = await receipt([{ pid: PID, box: 'HIA634', qty: 35 }]);
   await submit(first);
   tallyAccepts(first, () => '39');
@@ -197,13 +197,13 @@ test('a voucher Tally no longer has is forgotten, so the retry raises a new one'
   } as any);
 
   assert.equal(
-    db.prepare(`SELECT COUNT(*) c FROM item_vouchers WHERE stock_item_name=?`).get(ITEM).c, 0,
-    'a stale voucher id must not fail every future receipt of this product',
+    db.prepare(`SELECT COUNT(*) c FROM item_vouchers WHERE stock_item_name=?`).get(ITEM).c, 1,
+    'keep the identity until reconciliation can remove its deleted boxes',
   );
 
-  // The boxes are kept, so the new voucher still gets all of them.
+  // Retrying cannot silently recreate the deleted voucher.
   const { jobs } = buildJobs(db, second);
-  assert.equal(jobs[0]!.alter, false, 'nothing to alter now -- create');
+  assert.equal(jobs[0]!.alter, true, 'must reconcile deletion before creating a replacement');
   assert.deepEqual(jobs[0]!.lines[0]!.boxes.map((b) => b.boxSerial).sort(),
     ['HIA634', 'HLA133']);
 });

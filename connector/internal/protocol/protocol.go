@@ -14,7 +14,10 @@
 //	           cached figure is minutes old and stock may have moved.
 package protocol
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // MsgType identifies a frame on the connector's WebSocket.
 type MsgType string
@@ -230,7 +233,8 @@ type PostVoucherJob struct {
 	// AlterMarker is the [STT:...] key written into that voucher's narration.
 	// The voucher found must carry it, or it is not ours and is left alone --
 	// replacing a stranger's voucher is worse than any duplicate.
-	AlterMarker string `json:"alterMarker,omitempty"`
+	AlterMarker   string   `json:"alterMarker,omitempty"`
+	RetainedBoxes []string `json:"retainedBoxes,omitempty"`
 
 	Lines []Line `json:"lines"`
 }
@@ -260,8 +264,11 @@ type JobResult struct {
 // SyncPush carries what the relay caches and fans out to devices, so scanning
 // and validation keep working with no signal at the dock.
 type SyncPush struct {
-	Company  string    `json:"company"`
-	SyncedAt time.Time `json:"syncedAt"`
+	HistoryStartedAt time.Time       `json:"historyStartedAt,omitempty"`
+	VoucherHistory   json.RawMessage `json:"voucherHistory,omitempty"`
+	HistoryError     string          `json:"historyError,omitempty"`
+	Company          string          `json:"company"`
+	SyncedAt         time.Time       `json:"syncedAt"`
 	// Deliberately NOT omitempty.
 	//
 	// An empty list is a fact -- "Tally has no stock items" -- and omitting it

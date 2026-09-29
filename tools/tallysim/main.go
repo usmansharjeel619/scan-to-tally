@@ -270,6 +270,19 @@ func (s *sim) export(w http.ResponseWriter, id string, godown string) {
 	b.WriteString("<ENVELOPE>\n <HEADER>\n  <VERSION>1</VERSION>\n  <STATUS>1</STATUS>\n </HEADER>\n")
 	b.WriteString(" <BODY>\n  <DESC>\n   <CMPINFO>\n    <COMPANY>0</COMPANY>\n    <STOCKITEM>0</STOCKITEM>\n   </CMPINFO>\n  </DESC>\n  <DATA>\n   <COLLECTION>\n")
 
+	if id == "STT_VoucherHistory" {
+		fmt.Fprint(w, `<ENVELOPE><HEADER><STATUS>1</STATUS></HEADER><BODY><DATA><COLLECTION>`)
+		for _, v := range s.vouchers {
+			fmt.Fprintf(w, "<VOUCHER><MASTERID>%s</MASTERID><NARRATION>%s</NARRATION>", v.ID, esc(v.Narration))
+			for key := range v.Applied {
+				fmt.Fprintf(w, "<ALLINVENTORYENTRIES.LIST><STOCKITEMNAME>%s</STOCKITEMNAME><BATCHALLOCATIONS.LIST><GODOWNNAME>%s</GODOWNNAME><BATCHNAME>%s</BATCHNAME></BATCHALLOCATIONS.LIST></ALLINVENTORYENTRIES.LIST>", esc(key.Item), esc(key.Godown), esc(key.Batch))
+			}
+			fmt.Fprint(w, "</VOUCHER>")
+		}
+		fmt.Fprint(w, `</COLLECTION></DATA></BODY></ENVELOPE>`)
+		return
+	}
+
 	// The day book, which is how a voucher is read back out of Tally. Emitted
 	// with the identity fields a real voucher carries, because the whole point
 	// of reading it is to find out what an ALTER has to name -- and a
@@ -645,6 +658,28 @@ func main() {
 		s.mu.Unlock()
 		fmt.Fprintf(w, "fault=%q\n", mode)
 		log.Printf("fault mode set to %q", mode)
+	})
+
+	mux.HandleFunc("/_sim/delete-voucher", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		id := r.URL.Query().Get("id")
+		for i, v := range s.vouchers {
+			if v.ID != id {
+				continue
+			}
+			for k, q := range v.Applied {
+				s.balances[k] -= q
+			}
+			s.vouchers = append(s.vouchers[:i], s.vouchers[i+1:]...)
+			fmt.Fprint(w, "deleted")
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
 	})
 
 	mux.HandleFunc("/_sim/state", func(w http.ResponseWriter, r *http.Request) {

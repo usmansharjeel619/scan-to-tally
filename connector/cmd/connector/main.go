@@ -300,6 +300,15 @@ func makeSyncer(tc *tally.Client) relayclient.Syncer {
 		}
 
 		out := &protocol.SyncPush{Company: tc.Company(), SyncedAt: time.Now()}
+		// History failures must not become empty successful snapshots.
+		out.HistoryStartedAt = time.Now()
+		history, historyErr := tc.ListVoucherHistory(ctx)
+		if historyErr != nil {
+			out.HistoryError = historyErr.Error()
+		} else {
+			out.VoucherHistory, _ = json.Marshal(history)
+		}
+
 		// Never nil: an empty list has to reach the relay as an empty list, or
 		// it cannot tell that everything has been deleted.
 		out.Items = []protocol.SyncItem{}

@@ -69,7 +69,12 @@ fun ConnectionBanner(
         "ONLINE" -> Triple(sem.accept.bg, sem.accept.fg, "Tally connected")
         "BUSY" -> Triple(sem.review.bg, sem.review.fg, "Tally busy")
         "COMPANY_CLOSED" -> Triple(sem.review.bg, sem.review.fg, "Company not open in Tally")
-        "OFFLINE" -> Triple(sem.reject.bg, sem.reject.fg, "Tally unreachable")
+        "OFFLINE" -> Triple(sem.reject.bg, sem.reject.fg, "Windows connector disconnected")
+        "SETUP_REQUIRED" -> Triple(sem.review.bg, sem.review.fg, "App connection settings required")
+        "AUTH_REQUIRED" -> Triple(sem.reject.bg, sem.reject.fg, "Device token rejected — reload settings")
+        "RELAY_UNREACHABLE" -> Triple(sem.reject.bg, sem.reject.fg, "App cannot reach relay")
+        "RELAY_ERROR" -> Triple(sem.reject.bg, sem.reject.fg, "Relay returned an error")
+        "UNKNOWN" -> Triple(sem.review.bg, sem.review.fg, "Waiting for connector heartbeat")
         else -> Triple(
             MaterialTheme.colorScheme.surfaceVariant,
             MaterialTheme.colorScheme.onSurfaceVariant,

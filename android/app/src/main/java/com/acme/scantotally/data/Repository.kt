@@ -15,6 +15,7 @@ import com.acme.scantotally.scan.RawScan
 import com.acme.scantotally.scan.rejectMessage
 import com.acme.scantotally.scan.tailOf
 import com.acme.scantotally.scan.wrongBarcodeMessage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.Flow
@@ -994,9 +995,21 @@ class Repository(context: Context, private val api: RelayApi?) {
      * Null when the relay cannot be reached at all, which is a different thing
      * from Tally being down and is shown differently.
      */
-    suspend fun tallyHealth(): String? = runCatching {
-        api?.status()?.connector?.health
-    }.getOrNull()
+    suspend fun connectionStatus(): ConnectorStatus {
+        val relay = api ?: return ConnectorStatus(health = "SETUP_REQUIRED")
+        return try {
+            relay.status().connector
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: RelayHttpException) {
+            ConnectorStatus(health = if (e.code == 401 || e.code == 403) "AUTH_REQUIRED" else "RELAY_ERROR",
+                lastError = "Relay returned HTTP ${e.code}")
+        } catch (e: Exception) {
+            ConnectorStatus(health = "RELAY_UNREACHABLE")
+        }
+    }
+
+    suspend fun tallyHealth(): String = connectionStatus().health
 
     /**
      * Which company this handset is feeding, and whether that is the right one.
@@ -1018,9 +1031,9 @@ class Repository(context: Context, private val api: RelayApi?) {
      * the relay cannot be reached, so the warning does not disappear the moment
      * the signal does -- which is exactly when it matters most.
      */
-    suspend fun companyCheck(): CompanyCheck {
+    suspend fun companyCheck(liveCompany: String? = null): CompanyCheck {
         val pinned = configCompany()
-        val live = runCatching { api?.status()?.connector?.company }.getOrNull()
+        val live = liveCompany ?: runCatching { api?.status()?.connector?.company }.getOrNull()
         return CompanyCheck(pinned, live?.takeIf { it.isNotBlank() } ?: wrongCompany.orEmpty())
     }
 

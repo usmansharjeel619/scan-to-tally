@@ -99,6 +99,9 @@ class ScanToTallyApp : Application() {
     @Volatile
     private var cachedToken: String = ""
 
+    @Volatile
+    private var cachedUrl: String = ""
+
     override fun onCreate() {
         super.onCreate()
         config = DeviceConfig(this)
@@ -127,12 +130,13 @@ class ScanToTallyApp : Application() {
     suspend fun repository(): Repository {
         val url = config.relayUrl.first()
         val token = config.token.first()
-        cachedRepo?.let { if (token == cachedToken) return it }
+        cachedRepo?.let { if (token == cachedToken && url == cachedUrl) return it }
 
         val api = if (url.isNotBlank() && token.isNotBlank()) RelayApi(url, token) else null
         return Repository(this, api).also {
             cachedRepo = it
             cachedToken = token
+            cachedUrl = url
         }
     }
 

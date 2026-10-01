@@ -133,7 +133,7 @@ data class ConnectorStatus(
 
 @Serializable
 data class StatusResponse(
-    val connector: ConnectorStatus = ConnectorStatus(),
+    val connector: ConnectorStatus,
     val pending: Int = 0,
     val failed: Int = 0,
 )
@@ -255,6 +255,8 @@ data class ProposeItemResponse(
     val message: String? = null,
 )
 
+class RelayHttpException(val code: Int) : Exception("Relay returned HTTP $code")
+
 class RelayApi(
     private val baseUrl: String,
     private val token: String,
@@ -275,9 +277,21 @@ class RelayApi(
         }
     }
 
-    suspend fun status(): StatusResponse = client.get("$baseUrl/api/v1/status").body()
+    suspend fun status(): StatusResponse {
+        val response = client.get("$baseUrl/api/v1/status")
+        if (!response.status.isSuccess()) throw RelayHttpException(response.status.value)
+        return response.body()
+    }
 
-    suspend fun sync(): SyncResponse = client.get("$baseUrl/api/v1/sync").body()
+    suspend fun sync(): SyncResponse {
+        val response = client.get("$baseUrl/api/v1/sync")
+        if (!response.status.isSuccess()) throw RelayHttpException(response.status.value)
+        val result: SyncResponse = response.body()
+        require(result.company.isNotBlank() && result.syncedAt.isNotBlank()) {
+            "Relay returned an incomplete sync response"
+        }
+        return result
+    }
 
     /**
      * Opens a session on the relay, reporting whether it was actually accepted.

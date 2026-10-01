@@ -77,7 +77,7 @@ import kotlinx.coroutines.launch
 private fun rememberRepo(): Repository? {
     val app = LocalContext.current.applicationContext as ScanToTallyApp
     var repo by remember { mutableStateOf<Repository?>(null) }
-    LaunchedEffect(Unit) { repo = app.repository() }
+    LaunchedEffect(Unit) { repo = runCatching { app.repository() }.getOrNull() }
     return repo
 }
 
@@ -297,8 +297,14 @@ fun SetupScreen(nav: NavController, scans: Flow<RawScan>? = null) {
                         if (ok) {
                             nav.navigate("home") { popUpTo("setup") { inclusive = true } }
                         } else {
-                            error = "Could not reach the relay, or the token was rejected. " +
-                                "The settings are saved; you can continue offline and sync later."
+                            val status = app.repository().connectionStatus()
+                            error = when (status.health) {
+                                "AUTH_REQUIRED" -> "Device token rejected. Load the current phone settings file, then save again."
+                                "SETUP_REQUIRED" -> "Relay address and device token are required."
+                                "RELAY_UNREACHABLE" -> "The app cannot reach the relay. Check its address and the phone's network access."
+                                "RELAY_ERROR" -> status.lastError
+                                else -> "Connected to the relay, but inventory sync failed. Your saved data is unchanged."
+                            }
                         }
                     }
                 },
@@ -480,7 +486,7 @@ fun HomeScreen(nav: NavController) {
     val repo = rememberRepo()
     val scope = rememberCoroutineScope()
 
-    var health by remember { mutableStateOf("UNKNOWN") }
+    var health by remember { mutableStateOf("CHECKING") }
     val pending by (repo?.pendingCountFlow()?.collectAsState(0) ?: remember { mutableStateOf(0) })
     val failed by (repo?.failedCountFlow()?.collectAsState(0) ?: remember { mutableStateOf(0) })
     var godown by remember { mutableStateOf("") }
@@ -495,13 +501,16 @@ fun HomeScreen(nav: NavController) {
     // This was declared and never wired up, so the banner sat on "Checking
     // Tally..." forever -- the one thing on screen whose whole job is to be
     // honest about the connection.
-    LaunchedEffect(repo) {
-        while (repo != null) {
+    LaunchedEffect(Unit) {
+        while (true) {
             val r = runCatching { app.repository() }.getOrNull()
-            if (r != null) {
-                health = r.tallyHealth() ?: "OFFLINE"
-                company = r.companyCheck()
-                r.refreshPending()
+            if (r == null) {
+                health = "SETUP_REQUIRED"
+            } else {
+                val status = r.connectionStatus()
+                health = status.health
+                company = r.companyCheck(status.company)
+                runCatching { r.refreshPending() }
             }
             delay(10_000)
         }

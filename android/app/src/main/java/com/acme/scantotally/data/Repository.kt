@@ -176,6 +176,16 @@ class Repository(context: Context, private val api: RelayApi?) {
     suspend fun orderLines(order: String) = dao.orderLines(order)
     suspend fun searchItems(q: String) = dao.searchItems(q)
 
+    /** Uses the same product resolution as receiving, without creating stock. */
+    suspend fun labelProduct(pid: String): Pair<String, String>? {
+        val product = resolve(pid)
+        val catalogue = pidVariants(pid).firstNotNullOfOrNull { dao.catalogue(it) }
+        if (product == null && catalogue == null) return null
+        val description = product?.description?.takeIf { it.isNotBlank() }
+            ?: catalogue?.description ?: product?.stockItemName.orEmpty()
+        return description to product?.unit.orEmpty()
+    }
+
     // --- resolution ---
 
     private data class Resolved(

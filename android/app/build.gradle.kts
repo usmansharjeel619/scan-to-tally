@@ -119,6 +119,7 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.4.1")
     implementation("androidx.camera:camera-view:1.4.1")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    implementation("com.google.zxing:core:3.5.3")
     // Reading the printed words on a label, which is the one thing a barcode
     // scanner cannot do: it sees "17" and "35" and cannot tell a week number
     // from a quantity. On-device, so it works at a dock with no signal and
@@ -126,5 +127,6 @@ dependencies {
     implementation("com.google.mlkit:text-recognition:16.0.1")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 }

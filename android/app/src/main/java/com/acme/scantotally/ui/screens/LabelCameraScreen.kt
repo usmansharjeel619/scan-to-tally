@@ -39,6 +39,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,15 +51,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.acme.scantotally.scan.LabelConsensus
+import com.acme.scantotally.scan.BarcodeRegistry
+import com.acme.scantotally.scan.ParsedBox
 import com.acme.scantotally.scan.LabelReading
 import com.acme.scantotally.scan.TextWord
 import com.acme.scantotally.scan.readLabel
 import com.acme.scantotally.ui.theme.LocalSemantics
 import com.acme.scantotally.ui.theme.TouchTarget
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Reading a label with the camera.
@@ -146,6 +151,7 @@ fun LabelCameraSheet(
     // is the kind of friction that ends with the light left off.
     var torchOn by remember { mutableStateOf(false) }
     var hasTorch by remember { mutableStateOf(false) }
+    var barcodeSeen by remember { mutableStateOf(false) }
 
     // Ready for the next carton, without leaving the camera.
     //
@@ -156,13 +162,31 @@ fun LabelCameraSheet(
         consensus = LabelConsensus(required = 4)
         seen = LabelReading()
         frames = 0
+        barcodeSeen = false
     }
 
     Box(Modifier.fillMaxSize()) {
         CameraFeed(
             torchOn = torchOn,
             onTorchAvailable = { hasTorch = it },
+            readBarcodes = !descriptionOnly,
+            onBoxes = { boxes ->
+                if (boxes.size == 1) {
+                    val box = boxes.single()
+                    barcodeSeen = true
+                    consensus = LabelConsensus(required = 4)
+                    seen = LabelReading(product = box.pid, box = box.boxSerial, qty = box.qty)
+                    frames = 0
+                } else if (boxes.size > 1) {
+                    // Never combine fields from multiple boxes in one frame.
+                    barcodeSeen = false
+                    consensus = LabelConsensus(required = 4)
+                    seen = LabelReading()
+                    frames = 0
+                }
+            },
         ) { words ->
+            if (barcodeSeen) return@CameraFeed
             consensus.offer(readLabel(words))
             frames = consensus.frames
             seen = LabelReading(
@@ -210,7 +234,7 @@ fun LabelCameraSheet(
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
                         Text(
-                            "Hold the label square on",
+                            if (barcodeSeen) "Barcode read — confirm this box" else "Hold one label square on",
                             style = MaterialTheme.typography.titleMedium,
                         )
                         if (added > 0) {
@@ -347,6 +371,7 @@ private fun Found(
  * worth reading late, and the next frame is a few milliseconds away.
  */
 @Composable
+@androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
 private fun CameraFeed(
     /**
      * The torch, for the aisles where the overhead lighting is not enough to
@@ -356,15 +381,23 @@ private fun CameraFeed(
     torchOn: Boolean = false,
     /** Not every device has a lamp; the control is hidden when none does. */
     onTorchAvailable: (Boolean) -> Unit = {},
+    readBarcodes: Boolean = true,
+    onBoxes: (List<ParsedBox>) -> Unit = {},
     // Last, so the frame handler reads as this composable's trailing lambda.
     onWords: (List<TextWord>) -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val executor = remember { Executors.newSingleThreadExecutor() }
+    val released = remember { AtomicBoolean(false) }
+    var boundProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
     val recognizer = remember {
         TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     }
+    val barcodeScanner = remember { BarcodeScanning.getClient() }
+    val latestWords by rememberUpdatedState(onWords)
+    val latestBoxes by rememberUpdatedState(onBoxes)
+    val latestReadBarcodes by rememberUpdatedState(readBarcodes)
 
     // Held so the torch can be switched after binding. The camera arrives
     // asynchronously, so the toggle cannot simply act on it directly.
@@ -377,11 +410,14 @@ private fun CameraFeed(
 
     DisposableEffect(Unit) {
         onDispose {
+            released.set(true)
             // Leaving a lamp burning after the sheet closes drains the handset
             // and blinds whoever picks it up next.
             camera?.takeIf { it.cameraInfo.hasFlashUnit() }?.cameraControl?.enableTorch(false)
+            boundProvider?.unbindAll()
             executor.shutdown()
             recognizer.close()
+            barcodeScanner.close()
         }
     }
 
@@ -392,7 +428,9 @@ private fun CameraFeed(
             val future = ProcessCameraProvider.getInstance(ctx)
 
             future.addListener({
+                if (released.get()) return@addListener
                 val provider = future.get()
+                boundProvider = provider
 
                 val preview = Preview.Builder().build().also {
                     it.setSurfaceProvider(view.surfaceProvider)
@@ -404,14 +442,18 @@ private fun CameraFeed(
 
                 analysis.setAnalyzer(executor) { proxy ->
                     val media = proxy.image
-                    if (media == null) {
+                    if (media == null || released.get()) {
                         proxy.close()
                         return@setAnalyzer
                     }
                     val image = InputImage.fromMediaImage(
                         media, proxy.imageInfo.rotationDegrees,
                     )
-                    recognizer.process(image)
+                    fun readWords() {
+                        if (released.get()) { proxy.close(); return }
+                        val task = try { recognizer.process(image) }
+                            catch (_: Exception) { proxy.close(); return }
+                        task
                         .addOnSuccessListener { text ->
                             val words = buildList {
                                 for (block in text.textBlocks) {
@@ -428,9 +470,26 @@ private fun CameraFeed(
                                     }
                                 }
                             }
-                            onWords(words)
+                            if (!released.get()) latestWords(words)
                         }
                         .addOnCompleteListener { proxy.close() }
+                    }
+                    if (!latestReadBarcodes) {
+                        readWords()
+                    } else {
+                        val barcodeTask = try { barcodeScanner.process(image) }
+                            catch (_: Exception) { proxy.close(); return@setAnalyzer }
+                        barcodeTask.addOnCompleteListener { task ->
+                            if (released.get()) { proxy.close(); return@addOnCompleteListener }
+                            val boxes = if (task.isSuccessful) task.result.orEmpty().mapNotNull { code ->
+                                code.rawValue?.let { BarcodeRegistry.default.parse("CAMERA", it).box }
+                            }.distinct() else emptyList()
+                            if (boxes.isNotEmpty()) {
+                                latestBoxes(boxes)
+                                proxy.close()
+                            } else readWords()
+                        }
+                    }
                 }
 
                 provider.unbindAll()

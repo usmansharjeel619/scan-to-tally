@@ -1,5 +1,9 @@
 # Resume here
 
+**6 October 2026:** Android 1.15.0 adds saved box-label generation and Zebra
+Wi-Fi/Bluetooth Classic printing. Workflow, constraints and hardware testing:
+[BOX-LABELS.md](BOX-LABELS.md).
+
 **29 September 2026:** Automatic Tally deletion reconciliation is described in
 [TALLY-HISTORY-SYNC.md](TALLY-HISTORY-SYNC.md).
 

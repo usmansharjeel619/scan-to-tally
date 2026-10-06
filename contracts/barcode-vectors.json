@@ -47,6 +47,19 @@
   "version": 1,
   "vectors": [
     {
+      "name": "app generated QR box label",
+      "raw": "4098-9792|ST0123456789ABCDEFGHIJKLMNOP|18|",
+      "symbology": "QR_CODE",
+      "outcome": "ACCEPT",
+      "expect": {
+        "pid": "4098-9792",
+        "boxSerial": "ST0123456789ABCDEFGHIJKLMNOP",
+        "qty": 18,
+        "firmware": null,
+        "mfgDate": null
+      }
+    },
+    {
       "name": "canonical label from photographed carton",
       "raw": "4098-9792|1124241658336425|18|",
       "symbology": "CODE128",

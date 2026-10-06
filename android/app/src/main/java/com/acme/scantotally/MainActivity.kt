@@ -24,6 +24,7 @@ import com.acme.scantotally.scan.KeyboardInputGuard
 import com.acme.scantotally.scan.KeystrokeScanner
 import com.acme.scantotally.scan.RawScan
 import com.acme.scantotally.ui.screens.HomeScreen
+import com.acme.scantotally.ui.screens.CreateLabelsScreen
 import com.acme.scantotally.ui.screens.IncomingScreen
 import com.acme.scantotally.ui.screens.OutgoingScreen
 import com.acme.scantotally.ui.screens.ReceiptsScreen
@@ -105,6 +106,7 @@ class MainActivity : ComponentActivity() {
                     ) {
                         composable("setup") { SetupScreen(nav, scans) }
                         composable("home") { HomeScreen(nav) }
+                        composable("labels") { CreateLabelsScreen(nav) }
                         // The session id is optional on each of these: absent
                         // starts a new one, present picks up an unsaved receipt
                         // from the queue rather than stranding it.

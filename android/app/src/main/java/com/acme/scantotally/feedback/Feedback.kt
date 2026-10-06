@@ -108,7 +108,7 @@ class Feedback(context: Context) {
         val v = vibrator ?: return
         runCatching {
             val effect = VibrationEffect.createWaveform(pattern, repeat)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 v.vibrate(effect, ALARM_ATTRS)
             } else {
                 v.vibrate(effect)
@@ -128,6 +128,7 @@ class Feedback(context: Context) {
          * muted notification stream. A scanner that has gone quiet is a scanner
          * the operator cannot trust.
          */
+        @get:androidx.annotation.RequiresApi(30)
         val ALARM_ATTRS: android.os.VibrationAttributes
             get() = android.os.VibrationAttributes.Builder()
                 .setUsage(android.os.VibrationAttributes.USAGE_ALARM)

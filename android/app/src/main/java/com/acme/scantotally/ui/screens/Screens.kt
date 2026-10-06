@@ -568,6 +568,11 @@ fun HomeScreen(nav: NavController) {
                 Spacer(Modifier.height(8.dp))
 
                 OutlinedButton(
+                    onClick = { nav.navigate("labels") },
+                    enabled = !company.mismatch,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                ) { Text("Create labels / Reprint") }
+                OutlinedButton(
                     onClick = { nav.navigate("receipts") },
                     modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
                     colors = if (failed > 0) {

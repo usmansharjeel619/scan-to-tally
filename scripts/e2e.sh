@@ -74,7 +74,7 @@ db.close();
 # --- 3. connector -------------------------------------------------------------
 say "starting connector"
 cd "$ROOT/connector"
-go build -p 4 -o "$WORK/connector" ./cmd/connector
+go build -p 4 -ldflags "-X main.version=1.15.1" -o "$WORK/connector" ./cmd/connector
 cat > "$WORK/connector.json" <<JSON
 {
   "tally":  { "baseUrl": "http://127.0.0.1:$SIM_PORT", "company": "ACME FIRE SYSTEMS",
@@ -280,6 +280,55 @@ for _ in $(seq 1 80); do
 done
 [ "$state" = "POSTED" ] || fail "session did not recover, stuck in $state"
 echo "   recovered and POSTED without anyone touching it"
+
+# Explicit retry must restart the failed connector job, not only the relay badge.
+say "a refused import can be retried without creating another voucher"
+curl -fsS "http://127.0.0.1:$SIM_PORT/_sim/fault?mode=refuse" >/dev/null
+RETRY_SESSION="e2e-retry-$(date +%s)"
+api POST /api/v1/sessions "{\"sessionId\":\"$RETRY_SESSION\",\"kind\":\"INCOMING\"}" >/dev/null
+api POST "/api/v1/sessions/$RETRY_SESSION/scan" \
+  '{"raw":"4098-9792|1124249900003001|18|","symbology":"CODE128"}' >/dev/null
+api POST "/api/v1/sessions/$RETRY_SESSION/submit" '{}' >/dev/null
+for _ in $(seq 1 60); do
+  state=$(api GET "/api/v1/sessions/$RETRY_SESSION" | jqf session.state)
+  [ "$state" = "FAILED" ] && break
+  sleep 0.5
+done
+[ "$state" = "FAILED" ] || fail "refused import did not become FAILED"
+curl -fsS "http://127.0.0.1:$SIM_PORT/_sim/fault?mode=none" >/dev/null
+BEFORE_RETRY=$(curl -fsS "http://127.0.0.1:$SIM_PORT/_sim/state" | grep -c "ref=" || true)
+api POST "/api/v1/sessions/$RETRY_SESSION/retry" '{}' >/dev/null
+for _ in $(seq 1 60); do
+  state=$(api GET "/api/v1/sessions/$RETRY_SESSION" | jqf session.state)
+  [ "$state" = "POSTED" ] && break
+  [ "$state" = "FAILED" ] && fail "explicit retry failed"
+  sleep 0.5
+done
+[ "$state" = "POSTED" ] || fail "explicit retry is stuck in $state"
+AFTER_RETRY=$(curl -fsS "http://127.0.0.1:$SIM_PORT/_sim/state" | grep -c "ref=" || true)
+[ "$BEFORE_RETRY" = "$AFTER_RETRY" ] || fail "retry duplicated the standing voucher"
+echo "   failed job restarted and posted; voucher count unchanged"
+
+say "two simultaneous receipts of one product preserve both boxes"
+for suffix in 1 2; do
+  sid="e2e-parallel-$suffix"
+  api POST /api/v1/sessions "{\"sessionId\":\"$sid\",\"kind\":\"INCOMING\"}" >/dev/null
+  api POST "/api/v1/sessions/$sid/scan" "{\"raw\":\"4098-9792|112424990000400$suffix|18|\",\"symbology\":\"CODE128\"}" >/dev/null
+  api POST "/api/v1/sessions/$sid/submit" '{}' >/dev/null
+done
+for suffix in 1 2; do
+  for _ in $(seq 1 60); do
+    state=$(api GET "/api/v1/sessions/e2e-parallel-$suffix" | jqf session.state)
+    [ "$state" = "POSTED" ] && break
+    [ "$state" = "FAILED" ] && fail "simultaneous receipt failed"
+    sleep 0.5
+  done
+  [ "$state" = "POSTED" ] || fail "simultaneous receipt stuck in $state"
+done
+for serial in 1124249900003001 1124249900004001 1124249900004002; do
+  qty=$(curl -fsS "http://127.0.0.1:$SIM_PORT/_sim/state" | awk -v s="$serial" '$0 ~ s { print $NF }' | head -1)
+  [ "${qty:-0}" = "18" ] || fail "concurrent merge lost box $serial"
+done
 
 # Deleting in Tally must clear the relay's duplicate memory automatically.
 say "delete the standing voucher in Tally; wait for two confirmed history exports"

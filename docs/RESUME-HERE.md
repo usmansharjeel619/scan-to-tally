@@ -1,5 +1,8 @@
 # Resume here
 
+**8 October 2026:** Connector 1.15.1 and relay fix stuck receipt retries and
+case-sensitive godown history checks. See [RETRY-FIX.md](RETRY-FIX.md).
+
 **6 October 2026:** Android 1.15.0 adds saved box-label generation and Zebra
 Wi-Fi/Bluetooth Classic printing. Workflow, constraints and hardware testing:
 [BOX-LABELS.md](BOX-LABELS.md).

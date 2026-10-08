@@ -44,7 +44,7 @@ export function reconcileHistory(db: DB, company: string, startedAt: unknown, hi
         const key = JSON.stringify([row.voucher_key,line.id]);
         active.add(key);
         // A present voucher without inventory details is not proof of box deletion.
-        const missing = !live || (live.batches.length > 0 && !live.batches.some(b=>b.item===line.stock_item_name && b.godown===row.godown && b.box===line.box_serial));
+        const missing = !live || (live.batches.length > 0 && !live.batches.some(b=>b.item===line.stock_item_name && b.godown.trim().toUpperCase()===row.godown.trim().toUpperCase() && b.box===line.box_serial));
         if (!missing) {
           db.prepare('DELETE FROM tally_history_missing WHERE company=? AND record_key=?').run(company,key);
           continue;

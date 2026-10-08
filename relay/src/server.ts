@@ -14,6 +14,7 @@
 
 import Fastify from 'fastify';
 import { reconcileHistory } from './reconcile.ts';
+import { deliveryId, supportsDurableRetry } from './delivery.ts';
 import websocket from '@fastify/websocket';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
@@ -216,6 +217,7 @@ function applyJobResult(r: JobResult): void {
   const after = db.prepare(`SELECT state FROM sessions WHERE id=?`)
     .get(sessionId) as { state: string } | undefined;
   if (after?.state === 'POSTED') recordBoxHistory(sessionId, session.kind);
+  releaseHeldSessions();
 }
 
 /**
@@ -441,7 +443,9 @@ function recordBoxHistory(sessionId: string, kind: string): void {
  */
 function releaseHeldSessions(): void {
   const held = db.prepare(
-    `SELECT id, company FROM sessions WHERE state='QUEUED' ORDER BY created_at`,
+    `SELECT id, company FROM sessions WHERE state='QUEUED' OR
+       (state='POSTING' AND EXISTS (SELECT 1 FROM session_vouchers v WHERE v.session_id=sessions.id AND v.state='QUEUED'))
+       ORDER BY created_at`,
   ).all() as Array<{ id: string; company: string }>;
 
   for (const row of held) {
@@ -460,8 +464,9 @@ function releaseHeldSessions(): void {
  * QUEUED and goes on the next sweep -- it is not lost, and it is not posted
  * twice, because its key is stable.
  */
-function dispatchSession(sessionId: string, company: string, jobs: PostJob[]): boolean {
+function dispatchSession(sessionId: string, company: string, jobs: PostJob[], redeliver = false): boolean {
   let sent = 0;
+  const attempt = (db.prepare('SELECT attempts FROM sessions WHERE id=?').get(sessionId) as { attempts: number }).attempts;
 
   const record = db.prepare(`
     INSERT INTO session_vouchers
@@ -477,9 +482,17 @@ function dispatchSession(sessionId: string, company: string, jobs: PostJob[]): b
     const existing = db.prepare(
       `SELECT state FROM session_vouchers WHERE voucher_key = ?`,
     ).get(job.sessionId) as { state: string } | undefined;
-    if (existing?.state === 'POSTED') continue;
+    if (existing?.state === 'POSTED' || existing?.state === 'FAILED') continue;
+    if (existing?.state === 'POSTING' && !redeliver) continue;
 
-    if (hub.dispatch(company, job.sessionId, job)) {
+    // A later receipt must be built AFTER the earlier merge is acknowledged,
+    // otherwise two retries of this product can overwrite each other's boxes.
+    if (job.kind === 'INCOMING' && db.prepare(`SELECT 1 FROM session_vouchers v
+      JOIN sessions s ON s.id=v.session_id WHERE v.voucher_key!=? AND v.state='POSTING'
+      AND s.kind='INCOMING' AND s.company=? AND UPPER(TRIM(s.godown))=UPPER(TRIM(?))
+      AND v.stock_item_name=? LIMIT 1`).get(job.sessionId, company, job.godown, item)) continue;
+
+    if (hub.dispatch(company, deliveryId(job.sessionId, attempt), job)) {
       db.prepare(`UPDATE session_vouchers SET state='POSTING' WHERE voucher_key=?`)
         .run(job.sessionId);
       sent += 1;
@@ -590,7 +603,7 @@ function resendOutstanding(company: string): void {
   ).all() as Array<{ id: string }>;
   for (const row of rows) {
     const { jobs } = buildJobs(db, row.id);
-    if (jobs.length) dispatchSession(row.id, company, jobs);
+    if (jobs.length) dispatchSession(row.id, company, jobs, true);
   }
   if (rows.length) app.log.info({ count: rows.length }, 'redelivered outstanding sessions');
 }
@@ -1203,14 +1216,20 @@ app.post('/api/v1/sessions/:id/retry', async (req, reply) => {
   if (!s) return reply.code(404).send({ error: 'no_such_session' });
   if (s.state !== 'FAILED') return reply.code(409).send({ error: 'not_failed', state: s.state });
 
+  if (!supportsDurableRetry(hub.stateFor(s.company)?.version ?? '')) {
+    return reply.code(409).send({ error: 'connector_update_required', message: 'Update the Windows connector to 1.15.1 or later before retrying. Your scans are saved.' });
+  }
+
   const { jobs } = buildJobs(db, id);
   if (!jobs.length) return reply.code(400).send({ error: 'nothing_to_post' });
 
-  db.prepare(`UPDATE sessions SET state='QUEUED', error_message='' WHERE id=?`).run(id);
+  db.transaction(() => {
+  db.prepare(`UPDATE sessions SET state='QUEUED', attempts=attempts+1, error_message='', completed_at=NULL WHERE id=?`).run(id);
   // Only the vouchers that did NOT post are resent; dispatchSession skips any
   // already POSTED, so a retry cannot double one that succeeded.
-  db.prepare(`UPDATE session_vouchers SET state='QUEUED', error_code='', error_message=''
+  db.prepare(`UPDATE session_vouchers SET state='QUEUED', error_code='', error_message='', completed_at=NULL
               WHERE session_id=? AND state='FAILED'`).run(id);
+  })();
   const sent = dispatchSession(id, s.company, jobs);
 
   audit(db, d.operator || `device:${d.id}`, 'SESSION_RETRIED', id);

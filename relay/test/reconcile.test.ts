@@ -18,6 +18,13 @@ function fixture() {
 }
 function apply(db:any,h:unknown,time=t1,company='ACME'){return reconcileHistory(db,company,time,h,new Date(time));}
 function count(db:any,table:string){return db.prepare('SELECT count(*) n FROM '+table).get().n;}
+test('godown capitalisation from Tally is not evidence of deletion',()=>{
+ const db=fixture();try {
+ const history=[{masterId:'74',narration:'',batches:['A','B'].map(box=>({item:'ITEM',godown:'MAIN',box}))}];
+ assert.equal(apply(db,history),0);assert.equal(apply(db,history,t2),0);
+ assert.equal(count(db,'received_boxes'),2);assert.equal(count(db,'tally_history_missing'),0);
+ }finally{db.close();}
+});
 test('deleted voucher is removed only after two exports; duplicate memory and mobile history are cleared',()=>{
  const db=fixture();try {
  assert.equal(apply(db,[]),0);assert.equal(count(db,'received_boxes'),2);

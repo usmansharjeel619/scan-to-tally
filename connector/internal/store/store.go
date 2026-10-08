@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -195,20 +196,38 @@ func (s *Store) FindByReference(ctx context.Context, reference string) (*Posted,
 
 // --- job queue --------------------------------------------------------------
 
-// Enqueue adds a job, ignoring a session we have already queued. The relay may
-// redeliver the same job after a reconnect; that must not create a second one.
+// Enqueue deduplicates deliveries. A fresh explicit retry attempt can restart
+// a failed job with corrected payload, while retaining its voucher identity.
+// Replaying that same attempt, or any queued/running/done job, changes nothing.
 func (s *Store) Enqueue(ctx context.Context, j Job) error {
 	now := time.Now()
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO jobs (id, session_id, kind, payload, state, attempts,
 		                  created_at, updated_at, next_retry_at)
 		VALUES (?,?,?,?,?,0,?,?,?)
-		ON CONFLICT(session_id) DO NOTHING`,
-		j.ID, j.SessionID, j.Kind, j.Payload, JobQueued, now, now, now)
+		ON CONFLICT(session_id) DO UPDATE SET
+		  id=excluded.id, payload=excluded.payload, state=excluded.state,
+		  attempts=0, last_error='', error_class='', updated_at=excluded.updated_at,
+		  next_retry_at=excluded.next_retry_at
+		WHERE jobs.state='failed' AND jobs.id != excluded.id AND ?`,
+		j.ID, j.SessionID, j.Kind, j.Payload, JobQueued, now, now, now,
+		strings.HasPrefix(j.ID, j.SessionID+":retry:"))
 	if err != nil {
 		return fmt.Errorf("enqueue: %w", err)
 	}
 	return nil
+}
+
+// DeliveryState lets reconnects replay terminal results instead of silently
+// accepting a job that the worker will never run again.
+func (s *Store) DeliveryState(ctx context.Context, sessionID string) (*Job, error) {
+	var j Job
+	err := s.db.QueryRowContext(ctx, `SELECT id,session_id,state,last_error,error_class,attempts,updated_at
+	  FROM jobs WHERE session_id=?`, sessionID).Scan(&j.ID, &j.SessionID, &j.State, &j.LastError, &j.ErrorClass, &j.Attempts, &j.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &j, nil
 }
 
 // NextDue claims the oldest job whose retry time has arrived.

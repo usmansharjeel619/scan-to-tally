@@ -215,22 +215,9 @@ func (r *Runner) processOne(ctx context.Context, job store.Job) {
 				r.retry(ctx, job, "HISTORY_CHECK", historyErr.Error())
 				return
 			}
-			present := map[string]bool{}
-			for _, v := range history {
-				if v.MasterID != id.MasterID {
-					continue
-				}
-				for _, b := range v.Batches {
-					if b.Godown == pj.Godown && len(pj.Lines) > 0 && b.Item == pj.Lines[0].StockItemName {
-						present[b.Box] = true
-					}
-				}
-			}
-			for _, box := range pj.RetainedBoxes {
-				if !present[box] {
-					r.fail(ctx, job, "TALLY_HISTORY_CHANGED", "This voucher changed in Tally. Wait for history sync, then retry this receipt; deleted boxes will not be recreated.")
-					return
-				}
+			if !retainedBoxesPresent(history, pj, id.MasterID) {
+				r.fail(ctx, job, "TALLY_HISTORY_CHANGED", "This voucher changed in Tally. Wait for history sync, then retry this receipt; deleted boxes will not be recreated.")
+				return
 			}
 		}
 		voucher.AlterMasterID = id.MasterID
@@ -280,6 +267,27 @@ func (r *Runner) processOne(ctx context.Context, job store.Job) {
 }
 
 // markerKey pulls the session key out of a "[STT:...]" narration marker.
+// Only the target voucher/product/godown can prove retained boxes still exist.
+func retainedBoxesPresent(history []tally.VoucherHistory, pj protocol.PostVoucherJob, masterID string) bool {
+	present := map[string]bool{}
+	for _, v := range history {
+		if v.MasterID != masterID {
+			continue
+		}
+		for _, b := range v.Batches {
+			if strings.EqualFold(strings.TrimSpace(b.Godown), strings.TrimSpace(pj.Godown)) && len(pj.Lines) > 0 && b.Item == pj.Lines[0].StockItemName {
+				present[b.Box] = true
+			}
+		}
+	}
+	for _, box := range pj.RetainedBoxes {
+		if !present[box] {
+			return false
+		}
+	}
+	return true
+}
+
 func markerKey(marker string) string {
 	m := strings.TrimSpace(marker)
 	prefix := "[" + tally.IdempotencyMarker + ":"

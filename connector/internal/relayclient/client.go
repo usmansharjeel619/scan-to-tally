@@ -16,6 +16,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -270,6 +271,29 @@ func (c *Client) acceptJob(ctx context.Context, jobID string, payload json.RawMe
 		return
 	}
 	c.log.Info("job accepted", "job", jobID, "session", pj.SessionID, "lines", len(pj.Lines))
+	previous, err := c.st.DeliveryState(ctx, pj.SessionID)
+	if err != nil {
+		c.log.Error("read accepted job", "err", err)
+		return
+	}
+	res := protocol.JobResult{SessionID: pj.SessionID, JobID: jobID, Attempts: previous.Attempts, CompletedAt: previous.UpdatedAt}
+	switch previous.State {
+	case store.JobFailed:
+		res.ErrorCode, res.ErrorMessage, _ = strings.Cut(previous.LastError, ": ")
+		res.ErrorClass = previous.ErrorClass
+	case store.JobDone:
+		posted, err := c.st.AlreadyPosted(ctx, pj.SessionID, "")
+		if err != nil || posted == nil {
+			c.log.Error("completed job missing posting record", "session", pj.SessionID, "err", err)
+			return
+		}
+		res.OK, res.Duplicate, res.TallyVoucherID = true, true, posted.TallyVchID
+	default:
+		return
+	}
+	if err := c.send(ctx, protocol.Frame{Type: protocol.MsgJobResult, Payload: res}); err != nil {
+		c.log.Warn("replay terminal result", "session", pj.SessionID, "err", err)
+	}
 }
 
 // handleDiag answers a read-only Tally query from the relay.
